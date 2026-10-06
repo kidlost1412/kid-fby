@@ -117,16 +117,30 @@ function Test-SafePath([string]$rel) {
 
 try {
     $cfg  = Get-Config
-    $base = "https://raw.githubusercontent.com/$($cfg.repo)/$($cfg.branch)"
+    $ref  = if ($cfg.branch) { $cfg.branch } else { 'main' }
+    try {
+        $apiReq = [System.Net.HttpWebRequest]::Create("https://api.github.com/repos/$($cfg.repo)/commits/$ref")
+        $apiReq.Timeout = 4000
+        $apiReq.UserAgent = 'KidFBY-Updater'
+        $apiResp = $apiReq.GetResponse()
+        $apiSr = New-Object System.IO.StreamReader($apiResp.GetResponseStream())
+        $cData = $apiSr.ReadToEnd() | ConvertFrom-Json
+        if ($cData.sha) { $ref = $cData.sha }
+        $apiResp.Close()
+    } catch { }
+
+    $base = "https://raw.githubusercontent.com/$($cfg.repo)/$ref"
     $man  = [System.Text.Encoding]::UTF8.GetString((Get-Bytes "$base/version.json")).TrimStart([char]0xFEFF) | ConvertFrom-Json
     $local = Get-LocalVersion
 
-    # Tim file khac SHA256
+    # Tim file khac SHA256 (chi can tim khi ban moi lon hon ban hien tai)
     $changed = @()
-    foreach ($f in @($man.files)) {
-        if (-not (Test-SafePath $f.path)) { continue }
-        $lp = Join-Path $root ($f.path -replace '/', '\')
-        if ((Get-FileSha $lp) -ne $f.sha256.ToUpper()) { $changed += $f }
+    if ([version]$man.version -gt [version]$local) {
+        foreach ($f in @($man.files)) {
+            if (-not (Test-SafePath $f.path)) { continue }
+            $lp = Join-Path $root ($f.path -replace '/', '\')
+            if ((Get-FileSha $lp) -ne $f.sha256.ToUpper()) { $changed += $f }
+        }
     }
     $hasNew = ([version]$man.version -gt [version]$local) -and $changed.Count -gt 0
 

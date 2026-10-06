@@ -1,10 +1,10 @@
 {
-    "version":  "1.0.2",
-    "releasedAt":  "2026-10-06 17:12",
+    "version":  "1.0.3",
+    "releasedAt":  "2026-10-06 17:14",
     "minLauncher":  "1.0.0",
     "mandatory":  false,
     "changelog":  [
-                      "Chuan hoa ma bam SHA256 tuong thich 100% moi moi truong Git va GitHub"
+                      "Cap nhat co che lay ban moi truc tiep khong bi tre cache GitHub CDN"
                   ],
     "files":  [
                   {
@@ -29,12 +29,12 @@
                   },
                   {
                       "path":  "core/updater.ps1",
-                      "sha256":  "0DC5106223ECFB96391E5D7CCD9151D5282D3639E65057D922D42EBAA442DC5E",
-                      "size":  7162
+                      "sha256":  "69308EC46D307445B11C2060D896B07CAFD358EC74D90AFB5FB75849268B013E",
+                      "size":  7802
                   },
                   {
                       "path":  "core/version.txt",
-                      "sha256":  "BFEC2E34583ADA7E6AF2CB73993FB75A3F7147A6C943E5FF5F5C4294FC577B90",
+                      "sha256":  "20D2CB096D1AB41A4140246D12F07BF6B8CB743FD48122B72532C03D44C5C14A",
                       "size":  5
                   }
               ],
