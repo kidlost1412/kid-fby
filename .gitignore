@@ -1,0 +1,8 @@
+tools/
+output/
+diagnostics/
+core/_update/
+core/_backup/
+*.log
+*.bak
+*.old

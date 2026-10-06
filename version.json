@@ -1,0 +1,55 @@
+{
+    "version":  "1.0.1",
+    "releasedAt":  "2026-10-06 16:09",
+    "minLauncher":  "1.0.0",
+    "mandatory":  false,
+    "changelog":  [
+                      "Khoi tao he thong auto-update qua GitHub va quan ly thu vien Portable"
+                  ],
+    "files":  [
+                  {
+                      "path":  "core/fix-ket-noi.ps1",
+                      "sha256":  "B69622F809FB9C322CE3D5D328FB435D50976164D969A61E86328EB2BEB0708F",
+                      "size":  5796
+                  },
+                  {
+                      "path":  "core/Kid-FB.Y.ico",
+                      "sha256":  "40EEC8AD60D232AF4ED5436D3B3F005A460E622A2C21C589D2BF561713C5F1A7",
+                      "size":  2686
+                  },
+                  {
+                      "path":  "core/kid-fby-gui.ps1",
+                      "sha256":  "65E2CC354767B1E55207DB8417C88F1817A1AFB42322650448CC82AE9A3B26F6",
+                      "size":  128839
+                  },
+                  {
+                      "path":  "core/kid-fby.ps1",
+                      "sha256":  "32927EC0341E2D5D3D1E8428849979F3DB660AEE414DB147F8D47BC134598E77",
+                      "size":  52657
+                  },
+                  {
+                      "path":  "core/updater.ps1",
+                      "sha256":  "BD818A124C2E6BC7725C810CF955CAB8A25DD0DA8942B43B937CCEB05D8F1757",
+                      "size":  5808
+                  },
+                  {
+                      "path":  "core/version.txt",
+                      "sha256":  "D51E6EC94058554A84558A5B402EE6EF5FDF5455E35C902FEDA61CDA8752943A",
+                      "size":  5
+                  }
+              ],
+    "tools":  {
+                  "yt-dlp":  {
+                                 "version":  "latest",
+                                 "exe":  "yt-dlp.exe"
+                             },
+                  "scrcpy":  {
+                                 "version":  "3.1",
+                                 "exe":  "scrcpy.exe"
+                             },
+                  "ffmpeg":  {
+                                 "version":  "release",
+                                 "exe":  "ffmpeg.exe"
+                             }
+              }
+}
