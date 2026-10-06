@@ -1,10 +1,10 @@
 {
-    "version":  "1.0.3",
-    "releasedAt":  "2026-10-06 17:14",
+    "version":  "1.0.4",
+    "releasedAt":  "2026-10-06 17:15",
     "minLauncher":  "1.0.0",
     "mandatory":  false,
     "changelog":  [
-                      "Cap nhat co che lay ban moi truc tiep khong bi tre cache GitHub CDN"
+                      "Toi uu co che so khop phien ban moi"
                   ],
     "files":  [
                   {
@@ -29,12 +29,12 @@
                   },
                   {
                       "path":  "core/updater.ps1",
-                      "sha256":  "69308EC46D307445B11C2060D896B07CAFD358EC74D90AFB5FB75849268B013E",
-                      "size":  7802
+                      "sha256":  "45CD869258DA2836956FBFE6F48179B839323BF2FC90F350536F6D650A11E403",
+                      "size":  7895
                   },
                   {
                       "path":  "core/version.txt",
-                      "sha256":  "20D2CB096D1AB41A4140246D12F07BF6B8CB743FD48122B72532C03D44C5C14A",
+                      "sha256":  "AEA5ADBEF574785273C4F39C1B7687CF801993E0CB6BF6781A41689E4EDBB20C",
                       "size":  5
                   }
               ],

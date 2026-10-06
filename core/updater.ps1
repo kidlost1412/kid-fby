@@ -141,8 +141,10 @@ try {
             $lp = Join-Path $root ($f.path -replace '/', '\')
             if ((Get-FileSha $lp) -ne $f.sha256.ToUpper()) { $changed += $f }
         }
+    $hasNew = ([version]$man.version -gt [version]$local)
+    if ($hasNew -and $changed.Count -eq 0) {
+        $changed = @($man.files | Where-Object { Test-SafePath $_.path })
     }
-    $hasNew = ([version]$man.version -gt [version]$local) -and $changed.Count -gt 0
 
     if ($Mode -eq 'check') {
         Save-Status @{
