@@ -1,15 +1,15 @@
 {
-    "version":  "1.0.1",
-    "releasedAt":  "2026-10-06 16:09",
+    "version":  "1.0.2",
+    "releasedAt":  "2026-10-06 17:12",
     "minLauncher":  "1.0.0",
     "mandatory":  false,
     "changelog":  [
-                      "Khoi tao he thong auto-update qua GitHub va quan ly thu vien Portable"
+                      "Chuan hoa ma bam SHA256 tuong thich 100% moi moi truong Git va GitHub"
                   ],
     "files":  [
                   {
                       "path":  "core/fix-ket-noi.ps1",
-                      "sha256":  "B69622F809FB9C322CE3D5D328FB435D50976164D969A61E86328EB2BEB0708F",
+                      "sha256":  "67105CCB1E7E44BF98D48F6E57108F16F2B3F64624D547C26B182BC9F42C9555",
                       "size":  5796
                   },
                   {
@@ -19,22 +19,22 @@
                   },
                   {
                       "path":  "core/kid-fby-gui.ps1",
-                      "sha256":  "65E2CC354767B1E55207DB8417C88F1817A1AFB42322650448CC82AE9A3B26F6",
+                      "sha256":  "D50A42A484B621EF3B521A836FC95BC215F4912B6939D1535C74E709BE7382FE",
                       "size":  128839
                   },
                   {
                       "path":  "core/kid-fby.ps1",
-                      "sha256":  "32927EC0341E2D5D3D1E8428849979F3DB660AEE414DB147F8D47BC134598E77",
+                      "sha256":  "B7E19ED6664AE27E129BE16584944F5D4217A58C9E33B50DDF84AAD5413A8672",
                       "size":  52657
                   },
                   {
                       "path":  "core/updater.ps1",
-                      "sha256":  "BD818A124C2E6BC7725C810CF955CAB8A25DD0DA8942B43B937CCEB05D8F1757",
-                      "size":  5808
+                      "sha256":  "0DC5106223ECFB96391E5D7CCD9151D5282D3639E65057D922D42EBAA442DC5E",
+                      "size":  7162
                   },
                   {
                       "path":  "core/version.txt",
-                      "sha256":  "D51E6EC94058554A84558A5B402EE6EF5FDF5455E35C902FEDA61CDA8752943A",
+                      "sha256":  "BFEC2E34583ADA7E6AF2CB73993FB75A3F7147A6C943E5FF5F5C4294FC577B90",
                       "size":  5
                   }
               ],

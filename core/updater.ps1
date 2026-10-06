@@ -69,9 +69,38 @@ function Get-Sha([byte[]]$b) {
     try { ([BitConverter]::ToString($sha.ComputeHash($b))).Replace('-','') } finally { $sha.Dispose() }
 }
 
+function Get-NormalizedHash([byte[]]$bytes, [string]$path) {
+    $ext = [System.IO.Path]::GetExtension($path).ToLower()
+    if ($ext -in '.ico','.exe','.dll','.zip') {
+        return Get-Sha $bytes
+    }
+    $txt = [System.Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xFEFF)
+    $cleanTxt = $txt -replace "`r`n", "`n"
+    $normBytes = [System.Text.Encoding]::UTF8.GetBytes($cleanTxt)
+    return Get-Sha $normBytes
+}
+
 function Get-FileSha([string]$p) {
     if (-not (Test-Path -LiteralPath $p)) { return '' }
-    (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash
+    $ext = [System.IO.Path]::GetExtension($p).ToLower()
+    if ($ext -in '.ico','.exe','.dll','.zip') {
+        return (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash
+    }
+    $txt = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8).TrimStart([char]0xFEFF)
+    $cleanTxt = $txt -replace "`r`n", "`n"
+    $normBytes = [System.Text.Encoding]::UTF8.GetBytes($cleanTxt)
+    return Get-Sha $normBytes
+}
+
+function Save-FileWithBom([string]$dst, [byte[]]$bytes) {
+    $ext = [System.IO.Path]::GetExtension($dst).ToLower()
+    if ($ext -in '.ico','.exe','.dll','.zip') {
+        [System.IO.File]::WriteAllBytes($dst, $bytes)
+        return
+    }
+    $txt = [System.Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xFEFF)
+    $crlfTxt = ($txt -replace "`r?`n", "`r`n")
+    [System.IO.File]::WriteAllText($dst, $crlfTxt, (New-Object System.Text.UTF8Encoding($true)))
 }
 
 function Get-LocalVersion {
@@ -105,7 +134,8 @@ try {
         Save-Status @{
             ok = $true; hasUpdate = $hasNew; local = $local; remote = $man.version
             mandatory = [bool]$man.mandatory; changelog = @($man.changelog)
-            files = @($changed | ForEach-Object { $_.path }); size = ($changed | Measure-Object -Property size -Sum).Sum
+            files = if ($hasNew) { @($changed | ForEach-Object { $_.path }) } else { @() }
+            size = if ($hasNew) { ($changed | Measure-Object -Property size -Sum).Sum } else { 0 }
         }
         exit 0
     }
@@ -117,10 +147,11 @@ try {
     $list = @()
     foreach ($f in $changed) {
         $bytes = Get-Bytes "$base/$($f.path)"
-        if ((Get-Sha $bytes) -ne $f.sha256.ToUpper()) { throw "Sai SHA256: $($f.path) (file tai ve bi hong, thu lai sau)" }
+        $calcHash = Get-NormalizedHash $bytes $f.path
+        if ($calcHash -ne $f.sha256.ToUpper()) { throw "Sai SHA256: $($f.path) (file tai ve bi hong, thu lai sau)" }
         $dst = Join-Path $stage ($f.path -replace '/', '\')
         New-Item -ItemType Directory -Path (Split-Path $dst -Parent) -Force | Out-Null
-        [System.IO.File]::WriteAllBytes($dst, $bytes)
+        Save-FileWithBom $dst $bytes
         $list += ($f.path -replace '/', '\')
     }
     # version.txt di kem

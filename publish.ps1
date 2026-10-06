@@ -77,12 +77,23 @@ if (Test-Path $csc) {
 
 # 5. Tao manifest version.json hoan chinh
 Write-Host "[5/6] Dang tao manifest version.json..." -ForegroundColor Yellow
+function Get-NormalizedFileHash([System.IO.FileInfo]$fi) {
+    if ($fi.Extension -in '.ico','.exe','.dll','.zip') {
+        return (Get-FileHash $fi.FullName -Algorithm SHA256).Hash
+    }
+    $txt = [System.IO.File]::ReadAllText($fi.FullName, [System.Text.Encoding]::UTF8).TrimStart([char]0xFEFF)
+    $cleanTxt = $txt -replace "`r`n", "`n"
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($cleanTxt)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','') } finally { $sha.Dispose() }
+}
+
 $coreFiles = Get-ChildItem 'core' -File | Where-Object {
     $_.Extension -in '.ps1','.ico','.txt' -and $_.Name -notin @('run.log')
 } | ForEach-Object {
     [ordered]@{
         path   = "core/$($_.Name)"
-        sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+        sha256 = (Get-NormalizedFileHash $_)
         size   = $_.Length
     }
 }
