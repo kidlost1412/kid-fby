@@ -61,7 +61,12 @@ namespace KidFBY
                     for (int i = 0; i < 90; i++)
                     {
                         if (File.Exists(bootOk)) { ok = true; break; }
-                        if (proc.HasExited) break;
+                        if (proc.HasExited)
+                        {
+                            System.Threading.Thread.Sleep(300);
+                            if (File.Exists(bootOk)) ok = true;
+                            break;
+                        }
                         System.Threading.Thread.Sleep(500);
                     }
                     if (!ok)

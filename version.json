@@ -1,10 +1,10 @@
 {
-    "version":  "1.0.6",
-    "releasedAt":  "2026-10-06 17:21",
+    "version":  "1.0.7",
+    "releasedAt":  "2026-10-06 17:22",
     "minLauncher":  "1.0.0",
     "mandatory":  false,
     "changelog":  [
-                      "Hoan thien co che danh dau boot va kiem thu tu dong"
+                      "Hoan thien thoi gian cho BOOT_OK giua Launcher va GUI"
                   ],
     "files":  [
                   {
@@ -34,7 +34,7 @@
                   },
                   {
                       "path":  "core/version.txt",
-                      "sha256":  "E1CB79B8BBAD0D3924995D2E16971FE3440CE2464D59D88604925C0D6B0B6C5D",
+                      "sha256":  "E9F981F1154C92381D63B653CFBFC79BE92C3F6CC95E0915A5E5C19F3924CA58",
                       "size":  5
                   }
               ],
