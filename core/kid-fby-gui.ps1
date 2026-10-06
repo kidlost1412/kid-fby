@@ -2396,6 +2396,11 @@ try {
         return
     }
     if ($SelfTest) {
+        try {
+            $ud = Join-Path $scriptDir '_update'
+            if (-not (Test-Path $ud)) { New-Item -ItemType Directory -Path $ud -Force | Out-Null }
+            [System.IO.File]::WriteAllText((Join-Path $ud 'BOOT_OK'), (Get-Date).ToString('o'))
+        } catch { }
         Write-Host "SelfTest: Kid FB.Y khoi tao thanh cong, $($ui.Keys.Count) thanh phan giao dien"
         foreach ($k in $ui.Keys) { if ($null -eq $ui[$k]) { Write-Host "  THIẾU: $k" } }
         return

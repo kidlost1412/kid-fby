@@ -1,10 +1,10 @@
 {
-    "version":  "1.0.5",
-    "releasedAt":  "2026-10-06 17:16",
+    "version":  "1.0.6",
+    "releasedAt":  "2026-10-06 17:21",
     "minLauncher":  "1.0.0",
     "mandatory":  false,
     "changelog":  [
-                      "Hoan thien bo cap nhat tu dong qua GitHub"
+                      "Hoan thien co che danh dau boot va kiem thu tu dong"
                   ],
     "files":  [
                   {
@@ -19,8 +19,8 @@
                   },
                   {
                       "path":  "core/kid-fby-gui.ps1",
-                      "sha256":  "D50A42A484B621EF3B521A836FC95BC215F4912B6939D1535C74E709BE7382FE",
-                      "size":  128839
+                      "sha256":  "6A4402E468E9C4DAAB2E35035B279B62C06071DD77C46CF6308B06CF213B2AB6",
+                      "size":  129117
                   },
                   {
                       "path":  "core/kid-fby.ps1",
@@ -34,7 +34,7 @@
                   },
                   {
                       "path":  "core/version.txt",
-                      "sha256":  "9D713F12979D62879250BC0A2035E3EF57315AC4251E85019D21C75ED7269720",
+                      "sha256":  "E1CB79B8BBAD0D3924995D2E16971FE3440CE2464D59D88604925C0D6B0B6C5D",
                       "size":  5
                   }
               ],
