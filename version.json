@@ -1,10 +1,10 @@
 {
-    "version":  "1.0.4",
-    "releasedAt":  "2026-10-06 17:15",
+    "version":  "1.0.5",
+    "releasedAt":  "2026-10-06 17:16",
     "minLauncher":  "1.0.0",
     "mandatory":  false,
     "changelog":  [
-                      "Toi uu co che so khop phien ban moi"
+                      "Hoan thien bo cap nhat tu dong qua GitHub"
                   ],
     "files":  [
                   {
@@ -29,12 +29,12 @@
                   },
                   {
                       "path":  "core/updater.ps1",
-                      "sha256":  "45CD869258DA2836956FBFE6F48179B839323BF2FC90F350536F6D650A11E403",
-                      "size":  7895
+                      "sha256":  "4FE6BDB475ECE704151FEF34A93782F99802EA52EC7A696D9BBB8D33A4894A43",
+                      "size":  7901
                   },
                   {
                       "path":  "core/version.txt",
-                      "sha256":  "AEA5ADBEF574785273C4F39C1B7687CF801993E0CB6BF6781A41689E4EDBB20C",
+                      "sha256":  "9D713F12979D62879250BC0A2035E3EF57315AC4251E85019D21C75ED7269720",
                       "size":  5
                   }
               ],
