@@ -90,3 +90,9 @@ Kiểm thử FFmpeg thực xác nhận logo trích đúng byte PNG gốc, mức 
 GUI cho chọn PNG đọc được từ máy, dùng lại Kid, kéo kích thước 5–60% chiều rộng và độ mờ 0–95%. Chế độ Free giữ đường cong mềm; Fixed có bốn góc hoặc giữa. Vị trí chỉ bật khi Fixed. PNG giữ tỷ lệ, alpha và giới hạn chiều cao 60% để không tràn. Logo riêng được kiểm tra trước Test-Ready/thu âm và copy vào work dir khi xuất để giữ bản nguồn. Các tham số cũng áp dụng cho WatermarkVideo. Chưa thêm lưu cài đặt giữa các lần đóng/mở app.
 
 Kiểm thử WPF thật không mở cửa sổ xác nhận controls/layout, nhãn slider, trạng thái busy, nút logo mặc định, đường dẫn Unicode và truyền đúng cả năm vị trí/chế độ xuống engine. FFmpeg thật kiểm tra PNG riêng, từ chối ảnh hỏng, kích thước nhỏ hơn, logo đứng yên ở góc trái qua hai khung hình; audio lồng tiếng được chọn đúng và copy nguyên packet. Các kiểm tra chuyển động tự do và giữ nguồn vẫn qua.
+
+## Bản 1.0.16 — sửa trạng thái và bố cục chọn logo
+
+Tái hiện bằng WPF render: TxtLogoPath có giá trị nhưng Height=26 và padding dọc 10px làm nội dung chữ bị cắt gần hết. Đổi Height=32, padding dọc 6px, font 11, kiểm thử vùng PART_ContentHost đủ chiều cao. Gom logo vào khung riêng, slider màu xanh và nút chọn rõ trạng thái. Thêm thumbnail, tên file đang dùng, tooltip đường dẫn đầy đủ và dấu chọn Logo Kid. Thumbnail đọc OnLoad từ stream seekable/memory, Freeze rồi đóng stream để không khóa PNG gốc. Chế độ Free ẩn cả nhãn và selector vị trí bằng Collapsed; Fixed mới hiện.
+
+Kiểm thử sự kiện chọn ảnh thật với hộp thoại giả (chỉ giả phần mở hộp thoại), PNG Unicode từ ZIP, đường dẫn/tên/thumbnail, nút logo mặc định, hủy chọn, ảnh lỗi giữ selection cũ, không khóa nguồn, không cắt chữ và layout Free/Fixed. Đã render/xem cả mặc định Free và PNG riêng Fixed ở 1120x760. Bộ xử lý video không thay đổi.

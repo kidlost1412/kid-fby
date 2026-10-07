@@ -1,10 +1,10 @@
 {
-    "version":  "1.0.15",
-    "releasedAt":  "2026-10-07 17:08",
+    "version":  "1.0.16",
+    "releasedAt":  "2026-10-07 17:21",
     "minLauncher":  "1.0.0",
     "mandatory":  false,
     "changelog":  [
-                      "Chon logo PNG rieng, kich thuoc va do mo; co dinh bon goc/giua hoac di chuyen tu do"
+                      "Sua giao dien logo: hien ten, duong dan va anh xem truoc; xac nhan Logo Kid; tu do an vi tri, co dinh moi hien"
                   ],
     "files":  [
                   {
@@ -24,8 +24,8 @@
                   },
                   {
                       "path":  "core/kid-fby-gui.ps1",
-                      "sha256":  "DF706E536F68F42B2694ED981B2199B5F752654392A537605DAAEC6E1CDC5E63",
-                      "size":  150091
+                      "sha256":  "A0D060FD0298BB59F8797247421F71ACD68FCBD4CC2708776B2998F0E100AF5F",
+                      "size":  156299
                   },
                   {
                       "path":  "core/kid-fby.ps1",
@@ -49,7 +49,7 @@
                   },
                   {
                       "path":  "core/version.txt",
-                      "sha256":  "C646138CD87ADCCB736ED6B63FEEFEC3530869669DCA4C1122BA2DDBACBBCAF0",
+                      "sha256":  "938E60BF0E7173DB40FF40B7CED3C1ACEE304DAB0CDEED19C0E598B29AE1A8DE",
                       "size":  6
                   },
                   {
@@ -59,8 +59,8 @@
                   },
                   {
                       "path":  "Kid-FB.Y.exe",
-                      "sha256":  "E295C6AA0599107770DABA7EC6EBE5C490D7F2A292D7A5A0CE3215AF31C0F1F3",
-                      "size":  2174976
+                      "sha256":  "33875BA502D4CFB24989A37C22840CBC83A2591A563B0822070604E994D3E4EE",
+                      "size":  2181120
                   }
               ],
     "tools":  {

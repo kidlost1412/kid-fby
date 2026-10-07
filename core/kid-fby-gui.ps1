@@ -222,6 +222,37 @@ try {
     </Style>
 
     <!-- Dark ComboBox Styles -->
+    <Style x:Key="LogoSlider" TargetType="Slider" BasedOn="{StaticResource {x:Type Slider}}">
+      <Setter Property="Height" Value="20"/>
+      <Setter Property="IsMoveToPointEnabled" Value="True"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Slider">
+            <Grid x:Name="SliderRoot" VerticalAlignment="Center">
+              <Track x:Name="PART_Track" Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}"
+                     Value="{Binding Value,RelativeSource={RelativeSource TemplatedParent},Mode=TwoWay}" IsDirectionReversed="{TemplateBinding IsDirectionReversed}">
+                <Track.DecreaseRepeatButton>
+                  <RepeatButton Command="Slider.DecreaseLarge" Focusable="False">
+                    <RepeatButton.Template><ControlTemplate TargetType="RepeatButton"><Border Background="#38BDF8" Height="4" CornerRadius="2"/></ControlTemplate></RepeatButton.Template>
+                  </RepeatButton>
+                </Track.DecreaseRepeatButton>
+                <Track.IncreaseRepeatButton>
+                  <RepeatButton Command="Slider.IncreaseLarge" Focusable="False">
+                    <RepeatButton.Template><ControlTemplate TargetType="RepeatButton"><Border Background="#334155" Height="4" CornerRadius="2"/></ControlTemplate></RepeatButton.Template>
+                  </RepeatButton>
+                </Track.IncreaseRepeatButton>
+                <Track.Thumb>
+                  <Thumb Width="12" Height="12">
+                    <Thumb.Template><ControlTemplate TargetType="Thumb"><Ellipse Fill="#E0F2FE" Stroke="#38BDF8" StrokeThickness="2"/></ControlTemplate></Thumb.Template>
+                  </Thumb>
+                </Track.Thumb>
+              </Track>
+            </Grid>
+            <ControlTemplate.Triggers><Trigger Property="IsEnabled" Value="False"><Setter TargetName="SliderRoot" Property="Opacity" Value="0.4"/></Trigger></ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
     <ControlTemplate x:Key="ComboBoxToggleButton" TargetType="ToggleButton">
       <Grid>
         <Grid.ColumnDefinitions>
@@ -410,41 +441,54 @@ try {
           <CheckBox x:Name="ChkLanguage" Content="Nhận diện tiếng Việt bằng tiny" IsChecked="True"
                     ToolTip="Thử tối đa 2 đoạn audio ngắn; kết quả ước tính, vẫn nghe nghiệm thu."
                     Foreground="#CBD5E1" FontSize="11" Margin="0,7,0,0"/>
-          <WrapPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,4,0,0">
-            <CheckBox x:Name="ChkWatermark" Content="Chèn logo" IsChecked="True"
-                      Foreground="#CBD5E1" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"/>
-            <TextBox x:Name="TxtLogoPath" Width="180" Height="26" IsReadOnly="True" VerticalContentAlignment="Center"
-                     ToolTip="Để trống để dùng logo Kid gỗ nguyên bản có sẵn." Margin="0,0,6,0"/>
-            <Button x:Name="BtnPickLogo" Content="Chọn PNG..." Padding="8,4" Margin="0,0,6,0"/>
-            <Button x:Name="BtnDefaultLogo" Content="Logo Kid" Padding="8,4"/>
-          </WrapPanel>
-          <WrapPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,4,0,0">
-            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0">
-              <TextBlock Text="Kích thước:" Foreground="#94A3B8" FontSize="11" VerticalAlignment="Center" Margin="0,0,5,0"/>
-              <Slider x:Name="SldLogoSize" Minimum="5" Maximum="60" Value="30" TickFrequency="1" IsSnapToTickEnabled="True" Width="100" VerticalAlignment="Center"/>
-              <TextBlock x:Name="TxtLogoSize" Text="30% chiều rộng" Foreground="#CBD5E1" FontSize="11" VerticalAlignment="Center" Margin="5,0,0,0"/>
+          <Border Background="#0C1320" BorderBrush="#223149" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,7,0,0">
+            <StackPanel>
+              <CheckBox x:Name="ChkWatermark" Content="Chèn logo vào video" IsChecked="True" Foreground="#E2E8F0" FontWeight="SemiBold" FontSize="12"/>
+              <Grid Margin="0,8,0,0">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="56"/><ColumnDefinition Width="*"/><ColumnDefinition Width="112"/></Grid.ColumnDefinitions>
+                <Border Width="46" Height="46" Background="#172235" CornerRadius="6" BorderBrush="#2C3D55" BorderThickness="1" HorizontalAlignment="Left" VerticalAlignment="Center" Padding="3">
+                  <Image x:Name="ImgLogoPreview" Stretch="Uniform"/>
+                </Border>
+                <StackPanel Grid.Column="1" Margin="0,0,8,0">
+                  <TextBlock x:Name="TxtLogoName" Text="Đang dùng: Logo Kid" Foreground="#6EE7B7" FontWeight="SemiBold" FontSize="11.5" TextTrimming="CharacterEllipsis" Margin="0,0,0,4"/>
+                  <Grid>
+                    <TextBox x:Name="TxtLogoPath" Height="32" Padding="8,3" FontSize="11" IsReadOnly="True" VerticalContentAlignment="Center" ToolTip="Đường dẫn đầy đủ của logo PNG đã chọn."/>
+                    <TextBlock x:Name="TxtLogoDefaultHint" Text="Logo Kid mặc định · ảnh số 5" Foreground="#94A3B8" FontSize="11" Margin="9,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+                  </Grid>
+                </StackPanel>
+                <StackPanel Grid.Column="2">
+                  <Button x:Name="BtnPickLogo" Content="Chọn ảnh PNG…" Height="27" Padding="8,3" FontSize="11" Margin="0,0,0,4"/>
+                  <Button x:Name="BtnDefaultLogo" Content="✓ Logo Kid" Height="27" Padding="8,3" FontSize="11" Background="#133A32" BorderBrush="#34D399" Foreground="#6EE7B7"/>
+                </StackPanel>
+              </Grid>
+              <WrapPanel Margin="0,8,0,0">
+                <StackPanel Orientation="Horizontal" Margin="0,0,16,0" VerticalAlignment="Center">
+                  <TextBlock Text="Kích thước" Foreground="#94A3B8" FontSize="11" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                  <Slider x:Name="SldLogoSize" Style="{StaticResource LogoSlider}" Minimum="5" Maximum="60" Value="30" TickFrequency="1" IsSnapToTickEnabled="True" Width="110" VerticalAlignment="Center"/>
+                  <TextBlock x:Name="TxtLogoSize" Text="30%" Foreground="#7DD3FC" FontWeight="SemiBold" FontSize="11" Width="35" VerticalAlignment="Center" Margin="6,0,0,0" ToolTip="Phần trăm chiều rộng video; ảnh giữ nguyên tỷ lệ."/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                  <TextBlock Text="Độ mờ" Foreground="#94A3B8" FontSize="11" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                  <Slider x:Name="SldLogoFade" Style="{StaticResource LogoSlider}" Minimum="0" Maximum="95" Value="60" TickFrequency="1" IsSnapToTickEnabled="True" Width="110" VerticalAlignment="Center"/>
+                  <TextBlock x:Name="TxtLogoFade" Text="60%" Foreground="#7DD3FC" FontWeight="SemiBold" FontSize="11" Width="35" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                </StackPanel>
+              </WrapPanel>
+              <WrapPanel Margin="0,8,0,0" VerticalAlignment="Center">
+                <TextBlock Text="Chuyển động" Foreground="#94A3B8" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <ComboBox x:Name="CmbLogoMode" Width="152" Height="32" SelectedIndex="0" VerticalContentAlignment="Center" Margin="0,0,14,0">
+                  <ComboBoxItem Content="Tự do · di chuyển"/>
+                  <ComboBoxItem Content="Cố định · đứng yên"/>
+                </ComboBox>
+                <StackPanel x:Name="PanelLogoPosition" Orientation="Horizontal" Visibility="Collapsed">
+                  <TextBlock Text="Vị trí" Foreground="#94A3B8" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                  <ComboBox x:Name="CmbLogoPosition" Width="125" Height="32" SelectedIndex="3" VerticalContentAlignment="Center" IsEnabled="False">
+                    <ComboBoxItem Content="Trên trái"/><ComboBoxItem Content="Trên phải"/>
+                    <ComboBoxItem Content="Dưới trái"/><ComboBoxItem Content="Dưới phải"/><ComboBoxItem Content="Giữa"/>
+                  </ComboBox>
+                </StackPanel>
+              </WrapPanel>
             </StackPanel>
-            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-              <TextBlock Text="Độ mờ:" Foreground="#94A3B8" FontSize="11" VerticalAlignment="Center" Margin="0,0,5,0"/>
-              <Slider x:Name="SldLogoFade" Minimum="0" Maximum="95" Value="60" TickFrequency="1" IsSnapToTickEnabled="True" Width="100" VerticalAlignment="Center"/>
-              <TextBlock x:Name="TxtLogoFade" Text="60%" Foreground="#CBD5E1" FontSize="11" VerticalAlignment="Center" Margin="5,0,0,0"/>
-            </StackPanel>
-          </WrapPanel>
-          <WrapPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,4,0,0">
-            <TextBlock Text="Chuyển động:" Foreground="#94A3B8" FontSize="11" VerticalAlignment="Center" Margin="0,0,6,0"/>
-            <ComboBox x:Name="CmbLogoMode" Width="100" Height="26" SelectedIndex="0" VerticalContentAlignment="Center" Margin="0,0,12,0">
-              <ComboBoxItem Content="Tự do"/>
-              <ComboBoxItem Content="Cố định"/>
-            </ComboBox>
-            <TextBlock Text="Vị trí:" Foreground="#94A3B8" FontSize="11" VerticalAlignment="Center" Margin="0,0,6,0"/>
-            <ComboBox x:Name="CmbLogoPosition" Width="125" Height="26" SelectedIndex="3" VerticalContentAlignment="Center" IsEnabled="False" ToolTip="Vị trí chỉ áp dụng khi chọn Cố định.">
-              <ComboBoxItem Content="Trên trái"/>
-              <ComboBoxItem Content="Trên phải"/>
-              <ComboBoxItem Content="Dưới trái"/>
-              <ComboBoxItem Content="Dưới phải"/>
-              <ComboBoxItem Content="Giữa"/>
-            </ComboBox>
-          </WrapPanel>
+          </Border>
         </StackPanel>
 
         <!-- Right actions -->
@@ -1042,6 +1086,7 @@ foreach ($n in @('BtnWinMin','BtnWinMax','BtnWinClose',
                   'BtnInstallWhisper','BadgeStatusWhisper','TxtStatusWhisper','ChkLanguage',
                  'ChkWatermark','TxtLogoPath','BtnPickLogo','BtnDefaultLogo','SldLogoSize','TxtLogoSize',
                  'SldLogoFade','TxtLogoFade','CmbLogoMode','CmbLogoPosition',
+                 'ImgLogoPreview','TxtLogoName','TxtLogoDefaultHint','PanelLogoPosition',
                  'BadgeStage1','TxtStage1Status','TxtStage1Info',
                  'BadgeStage2','TxtStage2Status','TxtStage2Info',
                  'BadgeStage3','TxtStage3Status','TxtStage3Info',
@@ -2383,13 +2428,59 @@ $ui.BtnPick.Add_Click({
     } catch { }
 })
 $ui.SldLogoSize.Add_ValueChanged({
-    $ui.TxtLogoSize.Text = ('{0}% chiều rộng' -f [int][Math]::Round($ui.SldLogoSize.Value))
+    $ui.TxtLogoSize.Text = ('{0}%' -f [int][Math]::Round($ui.SldLogoSize.Value))
 })
-$ui.CmbLogoMode.Add_SelectionChanged({ $ui.CmbLogoPosition.IsEnabled = ($ui.CmbLogoMode.IsEnabled -and $ui.CmbLogoMode.SelectedIndex -eq 1) })
+$ui.CmbLogoMode.Add_SelectionChanged({
+    $fixed = ($ui.CmbLogoMode.SelectedIndex -eq 1)
+    $ui.PanelLogoPosition.Visibility = $(if ($fixed) { 'Visible' } else { 'Collapsed' })
+    $ui.CmbLogoPosition.IsEnabled = ($ui.CmbLogoMode.IsEnabled -and $fixed)
+})
 $ui.SldLogoFade.Add_ValueChanged({
     $ui.TxtLogoFade.Text = ('{0}%' -f [int][Math]::Round($ui.SldLogoFade.Value))
 })
-$ui.BtnDefaultLogo.Add_Click({ $ui.TxtLogoPath.Clear() })
+function Set-LogoSelection {
+    param([string]$Path)
+    $stream = $null; $zip = $null
+    try {
+        if ([string]::IsNullOrWhiteSpace($Path)) {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $scriptDir 'kid-logo.zip'))
+            $entry = $zip.GetEntry('kid-logo.png')
+            if (-not $entry) { throw 'Không tìm thấy logo Kid.' }
+            $stream = New-Object IO.MemoryStream
+            $entryStream = $entry.Open()
+            try { $entryStream.CopyTo($stream) } finally { $entryStream.Dispose() }
+            $stream.Position = 0
+        } else {
+            $stream = [IO.File]::OpenRead($Path)
+        }
+        $bitmap = New-Object Windows.Media.Imaging.BitmapImage
+        $bitmap.BeginInit()
+        $bitmap.DecodePixelWidth = 96
+        $bitmap.CacheOption = [Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+        $bitmap.StreamSource = $stream
+        $bitmap.EndInit()
+        $bitmap.Freeze()
+    } finally {
+        if ($stream) { $stream.Dispose() }
+        if ($zip) { $zip.Dispose() }
+    }
+    $custom = -not [string]::IsNullOrWhiteSpace($Path)
+    $ui.ImgLogoPreview.Source = $bitmap
+    $ui.TxtLogoPath.Text = $(if ($custom) { $Path } else { '' })
+    $ui.TxtLogoPath.ToolTip = $(if ($custom) { $Path } else { 'Đang dùng logo Kid có sẵn trong ứng dụng.' })
+    $ui.TxtLogoPath.CaretIndex = 0
+    $ui.TxtLogoPath.ScrollToHome()
+    $ui.TxtLogoName.Text = $(if ($custom) { 'Đang dùng: ' + [IO.Path]::GetFileName($Path) } else { 'Đang dùng: Logo Kid' })
+    $ui.TxtLogoName.ToolTip = $ui.TxtLogoPath.ToolTip
+    $ui.TxtLogoDefaultHint.Visibility = $(if ($custom) { 'Collapsed' } else { 'Visible' })
+    $ui.BtnDefaultLogo.Content = $(if ($custom) { 'Dùng Logo Kid' } else { '✓ Logo Kid' })
+    $ui.BtnDefaultLogo.Background = $(if ($custom) { '#172033' } else { '#133A32' })
+    $ui.BtnDefaultLogo.BorderBrush = $(if ($custom) { '#334155' } else { '#34D399' })
+}
+$ui.BtnDefaultLogo.Add_Click({
+    try { Set-LogoSelection -Path '' } catch { Show-Toast 'Không đọc được logo Kid. Hãy cập nhật lại app.' }
+})
 $ui.BtnPickLogo.Add_Click({
     $dialog = New-Object Microsoft.Win32.OpenFileDialog
     $dialog.Filter = 'PNG (*.png)|*.png'
@@ -2409,8 +2500,9 @@ $ui.BtnPickLogo.Add_Click({
     } finally {
         if ($image) { $image.Dispose() }
     }
-    $ui.TxtLogoPath.Text = $validPath
+    try { Set-LogoSelection -Path $validPath } catch { Show-Toast 'Không đọc được ảnh PNG đã chọn.' }
 })
+try { Set-LogoSelection -Path '' } catch { Add-Log 'Không đọc được ảnh xem trước logo Kid.' '#F59E0B' }
 function Open-FolderSafe([string]$targetPath) {
     try {
         if (-not $targetPath -or $targetPath.Trim() -eq '') {
