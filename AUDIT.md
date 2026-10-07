@@ -70,3 +70,11 @@ Kiểm tra link thật, với đúng nội dung Markdown/NBSP anh gửi, đọc 
 Log thực tế của anh xác nhận link đã tải đúng; scrcpy 3.1 dừng với `Couldn't find matching render driver`, kéo theo không có stream để ghi. Code dùng `SDL_VIDEODRIVER=dummy` nhưng chỉ tắt video/audio playback, chưa yêu cầu bỏ cửa sổ. Đã thêm `--no-window` và bỏ ép driver dummy, giữ AAC, time-limit, buffer +10 giây và mốc mở Reel 1,8 giây.
 
 Đã chạy chính cấu hình ProcessStartInfo/args từ engine với scrcpy thật trên `emulator-5554`, thu thử ba giây không thao tác Facebook. Tiến trình thoát thành công; ffprobe xác nhận stream AAC, thời lượng 2,880458 giây, file 47.954 byte. Đây là kiểm chứng lỗi renderer đã được xử lý trong cấu hình hiện tại, không phải đánh giá ngôn ngữ hoặc đồng bộ của Reel. Test recorder giả cũng từ chối cấu hình thiếu `--no-window`/ép dummy và xác nhận engine đi tiếp tới bước cắt âm thanh.
+
+## Bản 1.0.13 — video có side data bị loại nhầm sau khi ghép
+
+Log hai video của anh cho thấy video đầu xong; video thứ hai (`1611768867126932`) có thông số bị đọc thành `1440,x2560, av1,`, rồi báo ghép lỗi với stderr trống. Đã tải đúng file video thứ hai, xác nhận metadata `Ambient viewing environment` trong side_data_list làm ffprobe CSV trả `video,` thay vì `video`.
+
+Tái hiện riêng ngoài hàng đợi: FFmpeg chuyển mã/ghép toàn bộ video thứ hai thành công, nhưng hàm kiểm tra cũ trả false vì so sánh nguyên dòng CSV với `video`. Lỗi phụ thuộc metadata file, không phụ thuộc số thứ tự; tiny vẫn cho xử lý tiếp dù kết quả chưa rõ. File ghép thử dùng audio có sẵn chỉ để kiểm tra container/stream, không phải kết luận audio tiếng Việt của video thứ hai.
+
+Đã đọc codec, kích thước, stream duration và stream/format validation bằng JSON. Giữ nguyên encoder, codec/bitrate audio, căn tiếng và hàng đợi. Tách thông báo FFmpeg ghép lỗi khỏi trường hợp file ghép xong nhưng probe không đạt. File ghép thử thật của video hai và file hoàn tất thật của video một đều được validator mới chấp nhận; metadata nguồn hai đọc sạch thành 1440x2560, av1. File thử giữ ở diagnostics, không thay file đầu đang có trong output.

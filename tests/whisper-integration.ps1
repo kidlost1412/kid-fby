@@ -37,6 +37,7 @@ public static class LanguageIntegrationRecorder {
     function Open-Reel { param($T,[string]$Url) }
     function Get-VideoDuration { param($T,[string]$File) 10.0 }
     function Get-VideoSize { param($T,[string]$File) [pscustomobject]@{W='640';H='360'} }
+    function Get-VideoCodec { param($T,[string]$File) 'h264' }
     function Get-Duration { param($T,[string]$File) 20.0 }
     function Get-AudioOnset { param($T,[string]$File) 1.8 }
     function Get-MeanVolume { param($T,[string]$File) -18.0 }

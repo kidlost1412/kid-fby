@@ -5,7 +5,7 @@ $enginePath = Join-Path $Root 'core/kid-fby.ps1'
 $parseTokens = $null; $parseErrors = $null
 $engineAst = [System.Management.Automation.Language.Parser]::ParseFile($enginePath, [ref]$parseTokens, [ref]$parseErrors)
 if ($parseErrors.Count -gt 0) { throw "Engine parse failed: $($parseErrors[0].Message)" }
-$needed = @('Write-Step','Write-Ok','Write-Note','Write-Warn2','Show-Fail','Quote-Arg','Invoke-Exe','Get-ReelProcessTimeoutMs','Test-ValidReelOutput','Publish-ReelFiles','Invoke-OneLink')
+$needed = @('Write-Step','Write-Ok','Write-Note','Write-Warn2','Show-Fail','Quote-Arg','Invoke-Exe','Get-VideoCodec','Get-ReelProcessTimeoutMs','Test-ValidReelOutput','Publish-ReelFiles','Invoke-OneLink')
 foreach ($name in $needed) {
     $functionAst = $engineAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true) | Select-Object -First 1
     if (-not $functionAst) { throw "Missing function in engine AST: $name" }
@@ -171,6 +171,7 @@ function Invoke-Exe {
         return [pscustomobject]@{ Code=$(if ($script:InvokeMode -eq 'DownloadExit') { 7 } else { 0 }); Out=''; Err='synthetic download failure' }
     }
     if ($Exe -eq 'ffprobe') {
+        if ($ExeArgs -contains 'json') { return [pscustomobject]@{Code=0;Out='{"streams":[{"codec_name":"h264","codec_type":"video","width":640,"height":360,"duration":"3.0"},{"codec_type":"audio"}],"format":{"duration":"3.0"}}';Err=''} }
         $joined = $ExeArgs -join ' '
         if ($joined -match 'stream=duration') { return [pscustomobject]@{ Code=0; Out='3.0'; Err='' } }
         if ($joined -match 'stream=width') { return [pscustomobject]@{ Code=0; Out='640'; Err='' } }

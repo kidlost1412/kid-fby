@@ -1,10 +1,10 @@
 {
-    "version":  "1.0.12",
-    "releasedAt":  "2026-10-07 11:38",
+    "version":  "1.0.13",
+    "releasedAt":  "2026-10-07 15:13",
     "minLauncher":  "1.0.0",
     "mandatory":  false,
     "changelog":  [
-                      "Sua scrcpy khong tao duoc renderer khi thu audio: dung no-window, bo SDL dummy; giu AAC va thoi luong thu"
+                      "Sua doc metadata va kiem tra file video bang ffprobe JSON; tranh loai nham video co side data; tach loi ghep va loi kiem tra dau ra"
                   ],
     "files":  [
                   {
@@ -29,8 +29,8 @@
                   },
                   {
                       "path":  "core/kid-fby.ps1",
-                      "sha256":  "320BB018D2ABEDFAFAF70AB9C4AC17F580F8BC1CDEECA7F407351D855008165C",
-                      "size":  69264
+                      "sha256":  "8B50E68B50E13DEE299CD429576177A760D584D01B70AE02474D74293C2439D4",
+                      "size":  71608
                   },
                   {
                       "path":  "core/update.json",
@@ -44,7 +44,7 @@
                   },
                   {
                       "path":  "core/version.txt",
-                      "sha256":  "123E6D68829E78385839A990152031E31EB7F5AD51F444E9FFBF758DBDE7175C",
+                      "sha256":  "C48E6E8E49A7201F328A87456445464807AAA2EA2826EA6AA0AA64DCB504D540",
                       "size":  6
                   },
                   {
@@ -54,8 +54,8 @@
                   },
                   {
                       "path":  "Kid-FB.Y.exe",
-                      "sha256":  "693C519088F78409CAD7750B358F21B43C50592332880D2C91E4A1FA09FF5585",
-                      "size":  263168
+                      "sha256":  "6DB861C50D7111FB38B42F8F4DB2B7B1F12D9CE7D2B1C9C0AB69E5E717250707",
+                      "size":  265216
                   }
               ],
     "tools":  {

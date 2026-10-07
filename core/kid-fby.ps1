@@ -754,17 +754,46 @@ function Get-Duration {
 
 function Get-VideoDuration {
     param($T, [string]$File)
-    $r = Invoke-Exe $T.ffprobe @('-v','error','-select_streams','v:0','-show_entries','stream=duration','-of','csv=p=0',$File)
-    $v = ($r.Out -split "`n")[0].Trim(); $d = 0.0
-    if ([double]::TryParse($v, [Globalization.NumberStyles]::Float, [cultureinfo]::InvariantCulture, [ref]$d) -and $d -gt 0.5) { return $d }
+    $r = Invoke-Exe $T.ffprobe @('-v','error','-select_streams','v:0','-show_entries','stream=duration','-of','json',$File)
+    if ($r.Code -eq 0) {
+        try {
+            $data = ConvertFrom-Json -InputObject $r.Out -ErrorAction Stop
+            $stream = @($data.streams | Select-Object -First 1)[0]
+            $duration = 0.0
+            if ($null -ne $stream -and [double]::TryParse([string]$stream.duration, [Globalization.NumberStyles]::Float, [cultureinfo]::InvariantCulture, [ref]$duration) -and -not [double]::IsNaN($duration) -and -not [double]::IsInfinity($duration) -and $duration -gt 0.5) { return $duration }
+        } catch { }
+    }
     Get-Duration $T $File
 }
 
 function Get-VideoSize {
     param($T, [string]$File)
-    $w = (Invoke-Exe $T.ffprobe @('-v','error','-select_streams','v:0','-show_entries','stream=width','-of','csv=p=0:nk=1',$File)).Out
-    $h = (Invoke-Exe $T.ffprobe @('-v','error','-select_streams','v:0','-show_entries','stream=height','-of','csv=p=0:nk=1',$File)).Out
-    [pscustomobject]@{ W = ($w -split "`n")[0].Trim(); H = ($h -split "`n")[0].Trim() }
+    $r = Invoke-Exe $T.ffprobe @('-v','error','-select_streams','v:0','-show_entries','stream=width,height','-of','json',$File)
+    if ($r.Code -ne 0) { throw ("ffprobe could not read video dimensions (exit code {0}): {1}" -f $r.Code, ([string]$r.Err).Trim()) }
+    try {
+        $data = ConvertFrom-Json -InputObject $r.Out -ErrorAction Stop
+        $stream = @($data.streams | Select-Object -First 1)[0]
+        $width = 0; $height = 0
+        if ($null -eq $stream -or -not [int]::TryParse([string]$stream.width, [Globalization.NumberStyles]::None, [cultureinfo]::InvariantCulture, [ref]$width) -or -not [int]::TryParse([string]$stream.height, [Globalization.NumberStyles]::None, [cultureinfo]::InvariantCulture, [ref]$height) -or $width -le 0 -or $height -le 0) { throw 'ffprobe returned missing or invalid width/height values.' }
+        return [pscustomobject]@{ W = [int]$width; H = [int]$height }
+    } catch {
+        throw ("Could not read video dimensions from ffprobe JSON: {0}" -f $_.Exception.Message)
+    }
+}
+
+function Get-VideoCodec {
+    param($T, [string]$File)
+    $r = Invoke-Exe $T.ffprobe @('-v','error','-select_streams','v:0','-show_entries','stream=codec_name','-of','json',$File)
+    if ($r.Code -ne 0) { throw ("ffprobe could not read the video codec (exit code {0}): {1}" -f $r.Code, ([string]$r.Err).Trim()) }
+    try {
+        $data = ConvertFrom-Json -InputObject $r.Out -ErrorAction Stop
+        $stream = @($data.streams | Select-Object -First 1)[0]
+        $codec = ([string]$stream.codec_name).Trim().ToLowerInvariant()
+        if ($null -eq $stream -or $codec -notmatch '^[a-zA-Z0-9_]+$') { throw 'ffprobe returned a missing or invalid codec name.' }
+        return $codec
+    } catch {
+        throw ("Could not read video codec from ffprobe JSON: {0}" -f $_.Exception.Message)
+    }
 }
 
 function Get-MeanVolume {
@@ -925,15 +954,23 @@ function Test-ValidReelOutput {
     param($T, [string]$File)
     if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { return $false }
     if ((Get-Item -LiteralPath $File).Length -le 0) { return $false }
-    $streams = Invoke-Exe $T.ffprobe @('-v','error','-show_entries','stream=codec_type','-of','csv=p=0',$File)
-    if ($streams.Code -ne 0) { return $false }
-    $types = @($streams.Out -split "`r?`n" | ForEach-Object { $_.Trim() })
-    if ($types -notcontains 'video' -or $types -notcontains 'audio') { return $false }
-    $durationResult = Invoke-Exe $T.ffprobe @('-v','error','-show_entries','format=duration','-of','csv=p=0',$File)
-    if ($durationResult.Code -ne 0) { return $false }
-    $duration = 0.0
-    $value = ($durationResult.Out -split "`r?`n")[0].Trim()
-    return [double]::TryParse($value, [Globalization.NumberStyles]::Float, [cultureinfo]::InvariantCulture, [ref]$duration) -and $duration -gt 0.5
+    try {
+        $probe = Invoke-Exe $T.ffprobe @('-v','error','-show_entries','stream=codec_type:format=duration','-of','json',$File) -TimeoutMs 15000
+        if ($probe.Code -ne 0) { return $false }
+        $data = ConvertFrom-Json -InputObject $probe.Out -ErrorAction Stop
+        $types = @($data.streams | ForEach-Object { [string]$_.codec_type })
+        if ($types -notcontains 'video' -or $types -notcontains 'audio') { return $false }
+        $duration = 0.0
+        $value = [string]$data.format.duration
+        return [double]::TryParse($value, [Globalization.NumberStyles]::Float, [cultureinfo]::InvariantCulture, [ref]$duration) -and -not [double]::IsNaN($duration) -and -not [double]::IsInfinity($duration) -and $duration -gt 0.5
+    } catch {
+        $exception = $_.Exception
+        while ($null -ne $exception) {
+            if ($exception -is [System.Management.Automation.PipelineStoppedException]) { throw $exception }
+            $exception = $exception.InnerException
+        }
+        return $false
+    }
 }
 
 function Publish-ReelFiles {
@@ -1046,7 +1083,7 @@ function Invoke-OneLink {
             return $null
         }
         $sz = Get-VideoSize $T $vf.FullName
-        $cv = (Invoke-Exe $T.ffprobe @('-v','error','-select_streams','v:0','-show_entries','stream=codec_name','-of','csv=p=0',$vf.FullName)).Out.Trim()
+        $cv = Get-VideoCodec -T $T -File $vf.FullName
         Write-Ok "$($sz.W)x$($sz.H)  $cv  |  $([Math]::Round($dur, 2)) giay  |  $([Math]::Round($vf.Length/1MB, 1)) MB"
 
         # ---------- 4. dam bao Facebook da bat tieng Viet ----------
@@ -1223,8 +1260,12 @@ function Invoke-OneLink {
         $muxArgs = @('-hide_banner','-loglevel','error','-y','-i',$vf.FullName,'-i',$cut,
                      '-map','0:v:0','-map','1:a:0') + $vCodecOpt + @('-c:a','copy','-shortest','-movflags','+faststart',$out)
         $muxResult = Invoke-Exe $T.ffmpeg $muxArgs -TimeoutMs (Get-ReelProcessTimeoutMs $dur)
-        if ($muxResult.Code -ne 0 -or -not (Test-Path -LiteralPath $out -PathType Leaf) -or (Get-Item -LiteralPath $out).Length -le 0 -or -not (Test-ValidReelOutput -T $T -File $out)) {
+        if ($muxResult.Code -ne 0 -or -not (Test-Path -LiteralPath $out -PathType Leaf) -or (Get-Item -LiteralPath $out).Length -le 0) {
             Show-Fail -Message 'Ghep video that bai.' -Fix @('Chay lai thu.', $muxResult.Err)
+            return $null
+        }
+        if (-not (Test-ValidReelOutput -T $T -File $out)) {
+            Show-Fail -Message 'File da ghep nhung khong qua kiem tra dau ra.' -Fix @('FFmpeg da ket thuc thanh cong; ffprobe can doc du stream video/audio va thoi luong hop le.','Kiem tra lai ffprobe hoac giu file tam bang -Keep de doi chieu.')
             return $null
         }
 
