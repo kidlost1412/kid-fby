@@ -30,12 +30,14 @@ namespace KidFBY
 
                 string guiFile = Path.Combine(coreDir, "kid-fby-gui.ps1");
                 string engineFile = Path.Combine(coreDir, "kid-fby.ps1");
+                string languageFile = Path.Combine(coreDir, "whisper-language.ps1");
                 string fixFile = Path.Combine(coreDir, "fix-ket-noi.ps1");
                 string icoFile = Path.Combine(coreDir, "Kid-FB.Y.ico");
 
                 // Tu dong giai nen script neu chua co o thu muc core
                 ExtractResourceIfMissing("kid-fby-gui.ps1", guiFile);
                 ExtractResourceIfMissing("kid-fby.ps1", engineFile);
+                ExtractResourceIfMissing("whisper-language.ps1", languageFile);
                 ExtractResourceIfMissing("fix-ket-noi.ps1", fixFile);
                 ExtractResourceIfMissing("Kid-FB.Y.ico", icoFile);
 
@@ -82,6 +84,7 @@ namespace KidFBY
                 if (args != null && args.Length > 0 && Array.IndexOf(args, "-SelfTest") >= 0)
                 {
                     proc.WaitForExit();
+                    Environment.ExitCode = proc.ExitCode;
                 }
             }
             catch (Exception ex)
@@ -113,7 +116,30 @@ namespace KidFBY
             string stage = Path.Combine(updDir, "files");
             if (!File.Exists(ready) || !Directory.Exists(stage)) return false;
 
-            string[] list = File.ReadAllLines(ready);
+            // Bo qua goi cu con sot lai; khong ha phien ban khi mo ban moi.
+            string stagedVersion = Path.Combine(stage, "core", "version.txt");
+            string localVersion = Path.Combine(baseDir, "core", "version.txt");
+            Version nextVersion;
+            Version currentVersion;
+            if (!File.Exists(stagedVersion) ||
+                !Version.TryParse(File.ReadAllText(stagedVersion).Trim(), out nextVersion) ||
+                (File.Exists(localVersion) &&
+                 Version.TryParse(File.ReadAllText(localVersion).Trim(), out currentVersion) &&
+                 nextVersion <= currentVersion))
+            {
+                File.Delete(ready);
+                return false;
+            }
+
+            // File trung lap khong duoc ghi de ban sao luu cua chinh no.
+            var paths = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var uniqueList = new System.Collections.Generic.List<string>();
+            foreach (string line in File.ReadAllLines(ready))
+            {
+                string rel = line.Trim();
+                if (rel.Length > 0 && paths.Add(rel)) uniqueList.Add(rel);
+            }
+            string[] list = uniqueList.ToArray();
             // Kiem tra du file truoc khi dong vao bat cu gi
             foreach (string rel in list)
             {

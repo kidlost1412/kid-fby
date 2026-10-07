@@ -29,6 +29,7 @@ Write-Host "=== PHAT HANH PHIEN BAN MOI: v$Version (hien tai: v$old) ===" -Foreg
 if (-not (Test-Path (Join-Path $root '.git'))) {
     Write-Host "[1/6] Khoi tao Git repository..." -ForegroundColor Yellow
     & git init -b main | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'git init that bai. Dung phat hanh.' }
 } else {
     Write-Host "[1/6] Git repository da san sang." -ForegroundColor Green
 }
@@ -61,18 +62,25 @@ Write-Host "[3/6] Da ghi version $Version vao core\version.txt" -ForegroundColor
 # 4. Build lai Kid-FB.Y.exe de nhung code moi nhat
 Write-Host "[4/6] Dang bien dich Kid-FB.Y.exe moi..." -ForegroundColor Yellow
 $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+if (-not (Test-Path -LiteralPath $csc)) { throw 'Khong tim thay C# compiler. Dung phat hanh de tranh dung EXE cu.' }
 if (Test-Path $csc) {
     & $csc /nologo /target:winexe /out:Kid-FB.Y.exe /win32icon:core\Kid-FB.Y.ico `
         /r:System.Windows.Forms.dll `
         /res:core\kid-fby-gui.ps1,kid-fby-gui.ps1 `
         /res:core\kid-fby.ps1,kid-fby.ps1 `
+        /res:core\whisper-language.ps1,whisper-language.ps1 `
         /res:core\fix-ket-noi.ps1,fix-ket-noi.ps1 `
         /res:core\Kid-FB.Y.ico,Kid-FB.Y.ico Program.cs
     if ($LASTEXITCODE -eq 0) {
         Write-Host "    -> Bien dich Kid-FB.Y.exe thanh cong." -ForegroundColor Green
     } else {
-        Write-Host "    ! Khong bien dich duoc Kid-FB.Y.exe (ma $LASTEXITCODE). Giu nguyen file cu." -ForegroundColor Yellow
+        throw "Bien dich Kid-FB.Y.exe that bai (ma $LASTEXITCODE). Dung phat hanh."
     }
+}
+
+# Kiem tra khoi tao tren thu muc tam, khong ap dung READY trong thu muc dang phat trien.
+foreach ($test in @('startup.ps1','engine-runtime.ps1','gui-runtime.ps1','media-output.ps1','whisper-runtime.ps1','whisper-gui.ps1','whisper-media.ps1','whisper-integration.ps1')) {
+    & (Join-Path $root "tests\$test") -Root $root
 }
 
 # 5. Tao manifest version.json hoan chinh
@@ -89,7 +97,7 @@ function Get-NormalizedFileHash([System.IO.FileInfo]$fi) {
 }
 
 $coreFiles = Get-ChildItem 'core' -File | Where-Object {
-    $_.Extension -in '.ps1','.ico','.txt' -and $_.Name -notin @('run.log')
+    $_.Extension -in '.ps1','.ico','.txt','.json' -and $_.Name -notin @('run.log')
 } | ForEach-Object {
     [ordered]@{
         path   = "core/$($_.Name)"
@@ -97,6 +105,11 @@ $coreFiles = Get-ChildItem 'core' -File | Where-Object {
         size   = $_.Length
     }
 }
+$coreFiles = @($coreFiles) + @([ordered]@{
+    path = 'Kid-FB.Y.exe'
+    sha256 = (Get-FileHash -LiteralPath (Join-Path $root 'Kid-FB.Y.exe') -Algorithm SHA256).Hash
+    size = (Get-Item -LiteralPath (Join-Path $root 'Kid-FB.Y.exe')).Length
+})
 
 $man = [ordered]@{
     version     = $Version
@@ -132,11 +145,16 @@ if (-not $remoteUrl) {
 }
 
 & git add -A
+if ($LASTEXITCODE -ne 0) { throw 'git add that bai. Chua phat hanh.' }
 $commitMsg = if ($Note -and $Note.Count -gt 0) { "v$Version - $($Note -join '; ')" } else { "Release v$Version" }
 & git commit -m $commitMsg
-& git tag -f "v$Version"
+if ($LASTEXITCODE -ne 0) { throw 'git commit that bai. Chua push.' }
+& git tag "v$Version"
+if ($LASTEXITCODE -ne 0) { throw 'Khong tao duoc tag (co the da ton tai). Chua push.' }
 & git push -u origin main
+if ($LASTEXITCODE -ne 0) { throw 'Push branch that bai. Kiem tra Git truoc khi phat hanh lai.' }
 & git push origin "v$Version"
+if ($LASTEXITCODE -ne 0) { throw 'Push tag that bai. Branch da push; can kiem tra va push tag lai.' }
 
 Write-Host "`n[THANH CONG] Da phat hanh ban v$Version len GitHub!" -ForegroundColor Green
 Write-Host "May khach chi can mo tool hoac bam nut 'Cap nhat' la se tu dong nhan ban moi!" -ForegroundColor Green

@@ -13,6 +13,9 @@
 #>
 param([switch]$SelfTest)
 
+# SelfTest phai that bai ngay khi co loi khoi tao, khong bao BOOT_OK gia.
+if ($SelfTest) { $ErrorActionPreference = 'Stop' }
+
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
@@ -32,6 +35,14 @@ $root = if ((Split-Path $scriptDir -Leaf) -in @('core','src','app')) {
     Split-Path $scriptDir -Parent
 } else {
     $scriptDir
+}
+$script:whisperLanguageHelperAvailable = $false
+$whisperLanguageHelper = Join-Path $scriptDir 'whisper-language.ps1'
+if (Test-Path -LiteralPath $whisperLanguageHelper) {
+    try {
+        . $whisperLanguageHelper
+        $script:whisperLanguageHelperAvailable = [bool](Get-Command 'Get-WhisperPaths' -ErrorAction SilentlyContinue)
+    } catch { $script:whisperLanguageHelperAvailable = $false }
 }
 $script:verLocal = '1.0.0'
 try {
@@ -394,6 +405,9 @@ try {
             <Button    Grid.Column="2" x:Name="BtnPick" Content="📂 Chọn..." Margin="8,0,0,0" Padding="12,6"/>
             <Button    Grid.Column="3" x:Name="BtnOpenOut" Content="↗ Mở" Margin="6,0,0,0" Padding="10,6"/>
           </Grid>
+          <CheckBox x:Name="ChkLanguage" Content="Nhận diện tiếng Việt bằng tiny" IsChecked="True"
+                    ToolTip="Thử tối đa 2 đoạn audio ngắn; kết quả ước tính, vẫn nghe nghiệm thu."
+                    Foreground="#CBD5E1" FontSize="11" Margin="0,7,0,0"/>
         </StackPanel>
 
         <!-- Right actions -->
@@ -712,7 +726,7 @@ try {
                   </Border>
 
                   <!-- Tool: FFmpeg -->
-                  <Border Background="#0C101A" BorderBrush="#1C2436" BorderThickness="1" CornerRadius="8" Padding="12,10">
+                  <Border Background="#0C101A" BorderBrush="#1C2436" BorderThickness="1" CornerRadius="8" Padding="12,10" Margin="0,0,0,8">
                     <Grid>
                       <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="36"/>
@@ -729,6 +743,27 @@ try {
                         <TextBlock x:Name="TxtStatusFfmpeg" Text="Kiểm tra..." Foreground="#64748B" FontSize="11" FontWeight="Bold"/>
                       </Border>
                       <Button Grid.Column="3" x:Name="BtnInstallFfmpeg" Content="📥 Cài đặt" Padding="10,5" VerticalAlignment="Center"/>
+                    </Grid>
+                  </Border>
+
+                  <!-- Tool: Whisper tiny -->
+                  <Border Background="#0C101A" BorderBrush="#1C2436" BorderThickness="1" CornerRadius="8" Padding="12,10">
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="36"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                      </Grid.ColumnDefinitions>
+                      <TextBlock Grid.Column="0" Text="🌐" FontSize="20" VerticalAlignment="Center"/>
+                      <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="6,0,10,0">
+                        <TextBlock Text="Whisper tiny · Nhận diện ngôn ngữ" FontWeight="Bold" Foreground="#F1F5F9" FontSize="12.5"/>
+                        <TextBlock Text="Ước tính ngôn ngữ audio bằng model tiny; vẫn cần nghe nghiệm thu." Foreground="#64748B" FontSize="11" Margin="0,2,0,0"/>
+                      </StackPanel>
+                      <Border Grid.Column="2" x:Name="BadgeStatusWhisper" Background="#161B26" BorderBrush="#252D3D" BorderThickness="1" CornerRadius="8" Padding="8,3" VerticalAlignment="Center" Margin="0,0,8,0">
+                        <TextBlock x:Name="TxtStatusWhisper" Text="Kiểm tra..." Foreground="#64748B" FontSize="11" FontWeight="Bold"/>
+                      </Border>
+                      <Button Grid.Column="3" x:Name="BtnInstallWhisper" Content="📥 Cài đặt" Padding="10,5" VerticalAlignment="Center"/>
                     </Grid>
                   </Border>
                 </StackPanel>
@@ -792,8 +827,8 @@ try {
 
             <!-- A/B Audio Switcher -->
             <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-              <Button x:Name="BtnTrackA" Content="🎧 Bản Gốc" Padding="8,3" Margin="0,0,4,0" FontSize="11"
-                      Background="Transparent" Foreground="#64748B" BorderBrush="#253248" ToolTip="Nghe âm thanh gốc trước khi lồng tiếng"/>
+              <Button x:Name="BtnTrackA" Content="🎧 Audio Tách" Padding="8,3" Margin="0,0,4,0" FontSize="11"
+                      Background="Transparent" Foreground="#64748B" BorderBrush="#253248" ToolTip="Nghe âm thanh lồng tiếng đã tách và chuẩn hóa"/>
               <Button x:Name="BtnTrackB" Content="🎙 Meta AI Dub" Padding="8,3" FontSize="11"
                       Background="#064E3B" Foreground="#34D399" BorderBrush="#059669" ToolTip="Nghe bản lồng tiếng Việt chuẩn Meta AI"/>
             </StackPanel>
@@ -966,7 +1001,8 @@ foreach ($n in @('BtnWinMin','BtnWinMax','BtnWinClose',
                  'BtnInstallScrcpy','BadgeStatusScrcpy','TxtStatusScrcpy',
                  'BtnInstallAdb','BadgeStatusAdb','TxtStatusAdb',
                  'BtnInstallYtdlp','BadgeStatusYtdlp','TxtStatusYtdlp',
-                 'BtnInstallFfmpeg','BadgeStatusFfmpeg','TxtStatusFfmpeg',
+                  'BtnInstallFfmpeg','BadgeStatusFfmpeg','TxtStatusFfmpeg',
+                  'BtnInstallWhisper','BadgeStatusWhisper','TxtStatusWhisper','ChkLanguage',
                  'BadgeStage1','TxtStage1Status','TxtStage1Info',
                  'BadgeStage2','TxtStage2Status','TxtStage2Info',
                  'BadgeStage3','TxtStage3Status','TxtStage3Info',
@@ -978,7 +1014,8 @@ foreach ($n in @('BtnWinMin','BtnWinMax','BtnWinClose',
                  'PanelRev','TxtRev','BtnCopyReup','BtnKeep','BtnRedo','BtnDeleteCurrent','BtnSkip','BtnFolder')) {
     $ui[$n] = $win.FindName($n)
 }
-$ui.TxtOut.Text = Join-Path $root 'output'`r`nif ($ui.TxtAppVersion) { $ui.TxtAppVersion.Text = "v$($script:verLocal)" }
+$ui.TxtOut.Text = Join-Path $root 'output'
+if ($ui.TxtAppVersion) { $ui.TxtAppVersion.Text = "v$($script:verLocal)" }
 
 # ------------------------------------------------------------- trang thai ----
 $script:ps            = $null
@@ -994,6 +1031,13 @@ $script:bo            = 0
 $script:keoSeek       = $false
 $script:wasPlaying    = $false
 $script:stopping      = $false
+$script:stopHandle    = $null
+$script:childProcesses = [hashtable]::Synchronized(@{})
+$script:seenErrors    = 0
+$script:loggedErrors  = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+$script:cancelRequested = $false
+$script:closeAfterStop = $false
+$script:txtOutWasEnabled = $true
 $script:activeTrack   = 'B'
 $script:filterDate    = 'all'
 $script:filterTikTok  = 'all'
@@ -1081,6 +1125,23 @@ function Add-Line {
     param([string]$L)
     $script:runLog += $L + "`n"
 
+    if ($L -match '\bDUB_UNVERIFIED\b') {
+        Set-Stage 3 "Cần nghe kiểm tra" "#F59E0B" "Chưa xác nhận được tiếng Việt từ giao diện"
+    } elseif ($L -match '\bDUB_SELECTED\b') {
+        Set-Stage 3 "Đã gửi lựa chọn" "#F59E0B" "Đã chọn trên giao diện; cần nghe nghiệm thu"
+    }
+    if ($L -match '\bAUDIO_LANG_VI\b') {
+        Set-Stage 3 "Ước tính: tiếng Việt" "#10B981" "Whisper tiny · cần nghe nghiệm thu"
+    } elseif ($L -match '\bAUDIO_LANG_OTHER\b') {
+        $languageCode = ''
+        if ($L -match '\blanguage=([a-zA-Z0-9_-]+)\b') { $languageCode = $Matches[1] }
+        $languageInfo = 'Whisper tiny · cần nghe nghiệm thu'
+        if ($languageCode) { $languageInfo += " · language=$languageCode" }
+        Set-Stage 3 "Ước tính: ngôn ngữ khác" "#F59E0B" $languageInfo
+    } elseif ($L -match '\bAUDIO_LANG_UNKNOWN\b') {
+        Set-Stage 3 "Chưa xác định ngôn ngữ" "#F59E0B" "Whisper tiny · cần nghe nghiệm thu"
+    }
+
     # Cap nhat pipeline stages thoi gian thuc
     if ($L -match '\[1\]|Kiem tra cong cu') { Set-Stage 1 "Đang kiểm tra..." "#38BDF8" }
     if ($L -match 'MAY DA SAN SANG|man hinh sang') { Set-Stage 1 "Sẵn sàng ✔" "#10B981" }
@@ -1093,7 +1154,7 @@ function Add-Line {
     }
 
     if ($L -match '\[4\]\s+Kiem tra che do long tieng') { Set-Stage 3 "Đang cấu hình AI..." "#38BDF8" }
-    if ($L -match 'Tieng Viet da la ngon ngu duoc chon san|Da chon Tieng Viet thanh cong') {
+    if ($L -match 'Tieng Viet da la ngon ngu duoc chon san') {
         Set-Stage 3 "Đã kích hoạt ✔" "#10B981" "Meta AI: Tiếng Việt (Ngôn ngữ ưu tiên)"
     }
 
@@ -1129,7 +1190,10 @@ function Set-Busy {
     $ui.BtnOpenTools.IsEnabled = -not $On
     $ui.BtnStop.IsEnabled  = $On
     $ui.TxtLinks.IsEnabled = -not $On
+    if ($On) { $script:txtOutWasEnabled = $ui.TxtOut.IsEnabled; $ui.TxtOut.IsEnabled = $false }
+    else { $ui.TxtOut.IsEnabled = $script:txtOutWasEnabled }
     $ui.BtnPick.IsEnabled  = -not $On
+    if ($ui.ChkLanguage) { $ui.ChkLanguage.IsEnabled = -not $On }
     $ui.Bar.Visibility = $(if ($On) { 'Visible' } else { 'Collapsed' })
 }
 
@@ -1252,9 +1316,7 @@ function Switch-AudioTrack {
     $targetFile = $null
     if ($Track -eq 'A') {
         $fAm  = Join-Path $dir "$id-2-am-thanh-tho.m4a"
-        $fGoc = Join-Path $dir "$id-1-video-goc.mp4"
         if (Test-Path $fAm)       { $targetFile = $fAm }
-        elseif (Test-Path $fGoc)  { $targetFile = $fGoc }
     } else {
         $targetFile = $script:lastOut
     }
@@ -1278,7 +1340,7 @@ function Switch-AudioTrack {
             $ui.BtnTrackB.Background = [System.Windows.Media.Brushes]::Transparent
             $ui.BtnTrackB.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#64748B')
             $ui.BtnTrackB.BorderBrush = (New-Object Windows.Media.BrushConverter).ConvertFromString('#253248')
-            Show-Toast "ĐANG NGHE [TRACK A: ÂM THANH GỐC]"
+            Show-Toast "ĐANG NGHE [TRACK A: AUDIO TÁCH]"
         } else {
             $ui.BtnTrackB.Background = (New-Object Windows.Media.BrushConverter).ConvertFromString('#064E3B')
             $ui.BtnTrackB.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#34D399')
@@ -1323,7 +1385,8 @@ function Remove-ReelFiles {
 function Update-Gallery {
     $outDir = $ui.TxtOut.Text
     $ui.GalleryPanel.Children.Clear()
-    if (-not (Test-Path $outDir)) { return }
+    $ui.TxtGalleryCount.Text = "0 video"
+    if ([string]::IsNullOrWhiteSpace($outDir) -or -not (Test-Path -LiteralPath $outDir -PathType Container)) { return }
     $allVids = Get-ChildItem -Path $outDir -Filter '*-3-hoan-chinh.mp4' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
     if (-not $allVids -or $allVids.Count -eq 0) {
         $tb = New-Object Windows.Controls.TextBlock
@@ -1378,7 +1441,7 @@ function Update-Gallery {
         } elseif ($script:filterDate -eq 'yesterday') {
             $dateMatch = ($v.LastWriteTime.Date -eq $today.AddDays(-1))
         } elseif ($script:filterDate -eq '7days') {
-            $dateMatch = ($v.LastWriteTime.Date -ge $today.AddDays(-7))
+            $dateMatch = ($v.LastWriteTime.Date -ge $today.AddDays(-6) -and $v.LastWriteTime.Date -le $today)
         } elseif ($script:filterDate -match '^\d{4}-\d{2}-\d{2}$') {
             $dateMatch = ($v.LastWriteTime.ToString('yyyy-MM-dd') -eq $script:filterDate)
         }
@@ -1534,6 +1597,10 @@ function Update-Gallery {
         $btnPlayThis.BorderBrush = (New-Object Windows.Media.BrushConverter).ConvertFromString('#25354F')
         $btnPlayThis.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#38BDF8')
         $btnPlayThis.Add_Click({
+            if ($script:ps -or ($script:queue -and $script:queue.Count -gt 0)) {
+                Show-Toast 'Hãy hoàn tất hoặc bỏ qua video đang nghiệm thu trước khi xem video khác.'
+                return
+            }
             $script:lastOut = $fPath
             Load-Player $fPath
             $ui.TxtRev.Text = "Đang xem lại: $(Split-Path $fPath -Leaf)"
@@ -1579,6 +1646,10 @@ function Update-Gallery {
         $btnDelThis.BorderBrush = (New-Object Windows.Media.BrushConverter).ConvertFromString('#7F1D1D')
         $btnDelThis.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#F87171')
         $btnDelThis.Add_Click({
+            if ($script:ps -or ($script:queue -and $script:queue.Count -gt 0)) {
+                Show-Toast 'Hãy hoàn tất tác vụ và hàng đợi trước khi xóa video trong kho.'
+                return
+            }
             $ans = [System.Windows.MessageBox]::Show(
                 "Bạn có chắc chắn muốn xóa video này khỏi kho xuất?`n`nReel #$idName`nFile: $(Split-Path $fPath -Leaf)",
                 "Xác nhận xóa video",
@@ -1637,6 +1708,10 @@ function Update-ToolsStatus {
                      (Test-Path (Join-Path $root 'tools\ffmpeg\bin\ffmpeg.exe')) -or 
                      (Test-Path (Join-Path $root 'tools\ffmpeg.exe'))
     $hasFfmpeg = $inToolsFfmpeg -or (Get-Command 'ffmpeg' -ErrorAction SilentlyContinue)
+    $inToolsFfprobe = (Test-Path (Join-Path $root 'tools\ffmpeg\ffprobe.exe')) -or
+                      (Test-Path (Join-Path $root 'tools\ffmpeg\bin\ffprobe.exe')) -or
+                      (Test-Path (Join-Path $root 'tools\ffprobe.exe'))
+    $hasFfprobe = $inToolsFfprobe -or (Get-Command 'ffprobe' -ErrorAction SilentlyContinue)
 
     function Set-ToolCard($txtElem, $badgeElem, $btnElem, [bool]$installed, [bool]$inTools = $false) {
         if (-not $txtElem -or -not $badgeElem) { return }
@@ -1665,10 +1740,29 @@ function Update-ToolsStatus {
     Set-ToolCard $ui.TxtStatusAdb    $ui.BadgeStatusAdb    $ui.BtnInstallAdb    $hasAdb    $inToolsAdb
     Set-ToolCard $ui.TxtStatusYtdlp  $ui.BadgeStatusYtdlp  $ui.BtnInstallYtdlp  $hasYtdlp  $inToolsYtdlp
     Set-ToolCard $ui.TxtStatusFfmpeg $ui.BadgeStatusFfmpeg $ui.BtnInstallFfmpeg $hasFfmpeg $inToolsFfmpeg
+    $hasWhisper = $false
+    if ($script:whisperLanguageHelperAvailable) {
+        try {
+            $whisperPaths = Get-WhisperPaths $root
+            $hasWhisper = [bool]$whisperPaths.Ready
+        } catch { $hasWhisper = $false }
+    }
+    Set-ToolCard $ui.TxtStatusWhisper $ui.BadgeStatusWhisper $ui.BtnInstallWhisper $hasWhisper $hasWhisper
+    if ($hasWhisper -and $ui.BtnInstallWhisper) { $ui.BtnInstallWhisper.Content = '✔ Kiểm tra' }
+    if ($hasFfmpeg -and -not $hasFfprobe) {
+        $ui.TxtStatusFfmpeg.Text = 'Thiếu ffprobe ✖'
+        $ui.TxtStatusFfmpeg.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#F87171')
+        $ui.BadgeStatusFfmpeg.BorderBrush = (New-Object Windows.Media.BrushConverter).ConvertFromString('#7F1D1D')
+        $ui.BadgeStatusFfmpeg.Background = (New-Object Windows.Media.BrushConverter).ConvertFromString('#251417')
+    }
 }
 
 function Install-ToolGUI {
     param([string]$ToolName)
+    if ($script:ps -or ($script:queue -and $script:queue.Count -gt 0)) {
+        Show-Toast 'Hãy hoàn tất tác vụ và hàng đợi trước khi cài công cụ.'
+        return
+    }
     $tDir = Join-Path $root 'tools'
     foreach ($sub in @('', '_download', 'scrcpy', 'ffmpeg')) {
         $p = if ($sub) { Join-Path $tDir $sub } else { $tDir }
@@ -1685,53 +1779,56 @@ function Install-ToolGUI {
 function Start-Engine {
     param([string[]]$Links, [hashtable]$Named, [string]$Mode, [bool]$XoaLog = $true)
     if ($script:ps) { return }
+    if ($Mode -ne 'run' -and $script:queue -and $script:queue.Count -gt 0) {
+        Show-Toast 'Hãy hoàn tất hàng đợi đang nghiệm thu trước khi kiểm tra hoặc cài công cụ.'
+        return
+    }
+    # The engine registers only subprocesses it owns; a fresh registry is safe after Finish-Engine disposed the prior pipeline.
+    $script:childProcesses = [hashtable]::Synchronized(@{})
+    $script:stopHandle = $null
+    $script:seenErrors = 0
+    $script:loggedErrors = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $script:cancelRequested = $false
     if ($XoaLog) { if ($ui.TxtLog) { $ui.TxtLog.Clear() }; $script:runLog = '' }
     $script:seen = 0; $script:mode = $Mode; $script:runLog = ''; $script:stopping = $false
     $ui.PanelRev.Visibility = 'Collapsed'
     Set-Busy $true
     try { [System.Environment]::CurrentDirectory = $root } catch { }
     $script:ps = [PowerShell]::Create()
-    [void]$script:ps.AddScript("[System.Environment]::CurrentDirectory = '$($root -replace '\\','\\')'")
-    [void]$script:ps.AddStatement()
     [void]$script:ps.AddCommand('Set-Location').AddParameter('LiteralPath', $root)
     [void]$script:ps.AddStatement()
     [void]$script:ps.AddCommand($engine)
     if ($Links) { foreach ($l in $Links) { [void]$script:ps.AddArgument($l) } }
     if ($Named) { foreach ($k in $Named.Keys) { [void]$script:ps.AddParameter($k, $Named[$k]) } }
+    [void]$script:ps.AddParameter('ProcessRegistry', $script:childProcesses)
     $script:handle = $script:ps.BeginInvoke()
     $timer.Start()
 }
 
 function Stop-Engine {
+    if (-not $script:ps) { return }
     $script:stopping = $true
-    $timer.Stop()
-    if ($script:ps) {
-        $psInstance = $script:ps
-        $script:ps = $null
-        $script:handle = $null
-
-        # 1. Diệt dứt điểm các tiến trình phụ trợ (adb, scrcpy, ffmpeg) để nhả block ngay lập tức
-        try {
-            $psiKill = New-Object System.Diagnostics.ProcessStartInfo
-            $psiKill.FileName = 'taskkill.exe'
-            $psiKill.Arguments = '/F /IM adb.exe /IM scrcpy.exe /IM ffmpeg.exe /IM ffprobe.exe /IM yt-dlp.exe'
-            $psiKill.CreateNoWindow = $true
-            $psiKill.UseShellExecute = $false
-            [void][System.Diagnostics.Process]::Start($psiKill)
-        } catch { }
-
-        # 2. Dừng pipeline bất đồng bộ (chỉ mất ~20ms, KHÔNG BAO GIỜ KHÓA UI HOẶC CRASH GIAO DIỆN)
-        try {
-            [void]$psInstance.BeginStop($null, $null)
-        } catch { }
+    $script:cancelRequested = $true
+    $owned = @()
+    $registry = $script:childProcesses
+    if ($registry) {
+        [System.Threading.Monitor]::Enter($registry.SyncRoot)
+        try { $owned = @($registry.Values) }
+        finally { [System.Threading.Monitor]::Exit($registry.SyncRoot) }
     }
-    Set-Busy $false
+    foreach ($proc in $owned) {
+        try { if ($proc -and -not $proc.HasExited) { $proc.Kill() } } catch { }
+    }
+    if (-not $script:stopHandle) {
+        try { $script:stopHandle = $script:ps.BeginStop($null, $null) }
+        catch { $script:stopHandle = $null }
+    }
+    # Keep the dispatcher timer and busy state active until both async operations finish.
 }
 
 function Pump-Output {
     if (-not $script:ps) { return }
     $inf = $script:ps.Streams.Information
-    if ($script:seen -ge $inf.Count) { return }
     while ($script:seen -lt $inf.Count) {
         $rec = $inf[$script:seen]; $script:seen++
         $md = $rec.MessageData; $msg = ''
@@ -1741,9 +1838,68 @@ function Pump-Output {
         }
         foreach ($ln in ($msg -split "`r?`n")) { Add-Line $ln }
     }
+    $errs = $script:ps.Streams.Error
+    while ($script:seenErrors -lt $errs.Count) {
+        $rec = $errs[$script:seenErrors]
+        $script:seenErrors++
+        if (-not ($script:cancelRequested -and (Test-PipelineStoppedException $rec.Exception))) {
+            $errText = [string]$rec.Exception.Message
+            if (-not $script:loggedErrors.Contains($errText)) {
+                [void]$script:loggedErrors.Add($errText)
+                Add-Line "LỖI: $errText"
+            }
+        }
+    }
+}
+
+function Test-PipelineStoppedException {
+    param([System.Exception]$Exception)
+    $current = $Exception
+    while ($current) {
+        if ($current -is [System.Management.Automation.PipelineStoppedException]) { return $true }
+        $current = $current.InnerException
+    }
+    return $false
+}
+
+function Finish-Engine {
+    param([bool]$Cancelled = $false)
+    $psInstance = $script:ps
+    $invokeHandle = $script:handle
+    if (-not $psInstance) { return }
+    try {
+        if ($invokeHandle) {
+            try { [void]$psInstance.EndInvoke($invokeHandle) }
+            catch {
+                if (-not ($Cancelled -and (Test-PipelineStoppedException $_.Exception))) {
+                    $errText = [string]$_.Exception.Message
+                    if (-not $script:loggedErrors.Contains($errText)) {
+                        [void]$script:loggedErrors.Add($errText)
+                        Add-Line "LỖI: $errText"
+                    }
+                }
+            }
+        }
+        Pump-Output
+    } finally {
+        try { $psInstance.Dispose() } catch { }
+        if ([object]::ReferenceEquals($script:ps, $psInstance)) {
+            $script:ps = $null
+            $script:handle = $null
+            $script:stopHandle = $null
+            $script:stopping = $false
+            $script:cancelRequested = $false
+            $timer.Stop()
+            Set-Busy $false
+        }
+    }
 }
 
 function Start-Link {
+    if (-not $script:queue -or $script:queue.Count -eq 0 -or $script:idx -lt 0 -or $script:idx -ge $script:queue.Count) {
+        Show-Toast 'Chỉ ghi âm lại video đang nghiệm thu trong hàng đợi.'
+        return
+    }
     Clear-Player
     Reset-Stages
     $n = $script:idx + 1
@@ -1751,7 +1907,7 @@ function Start-Link {
     Add-Log $script:queue[$script:idx] '#94A3B8'
     $ui.TxtStat.Text = "Đang xử lý Video ($n/$($script:queue.Count))..."
     $ui.TxtStat.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#38BDF8')
-    Start-Engine -Links @($script:queue[$script:idx]) -Named @{ OutDir = $ui.TxtOut.Text } -Mode 'run' -XoaLog $false
+    Start-Engine -Links @($script:queue[$script:idx]) -Named @{ OutDir = $ui.TxtOut.Text; SkipLanguageCheck = ([bool](-not $ui.ChkLanguage.IsChecked)) } -Mode 'run' -XoaLog $false
 }
 
 function Next-Link {
@@ -1774,12 +1930,24 @@ $timer.Interval = [TimeSpan]::FromMilliseconds(200)
 $timer.Add_Tick({
     try {
         Pump-Output
+        if ($script:stopping) {
+            $stopDone = (-not $script:stopHandle -or $script:stopHandle.IsCompleted)
+            $invokeDone = (-not $script:handle -or $script:handle.IsCompleted)
+            if ($stopDone -and $invokeDone) {
+                if ($script:stopHandle) { try { $script:ps.EndStop($script:stopHandle) } catch { } }
+                Finish-Engine -Cancelled $true
+                $script:queue = @()
+                $ui.PanelRev.Visibility = 'Collapsed'
+                if ($ui.TxtStat) { $ui.TxtStat.Text = 'Đã dừng theo yêu cầu'; $ui.TxtStat.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#FBBF24') }
+                if ($script:closeAfterStop) { $script:closeAfterStop = $false; $win.Close() }
+            }
+            return
+        }
         if ($script:handle -and $script:handle.IsCompleted) {
-            Pump-Output
             $laCheck = ($script:mode -eq 'check')
             $laSetup = ($script:mode -eq 'setup')
+            Finish-Engine -Cancelled $false
             $txt = $script:runLog
-            Stop-Engine
             if ($laSetup) {
                 Update-ToolsStatus
                 $hasScrcpy = (Test-Path (Join-Path $root 'tools\scrcpy\scrcpy.exe')) -or 
@@ -1806,10 +1974,14 @@ $timer.Add_Tick({
                              (Test-Path (Join-Path $root 'tools\ffmpeg\bin\ffmpeg.exe')) -or 
                              (Test-Path (Join-Path $root 'tools\ffmpeg.exe')) -or 
                              (Get-Command 'ffmpeg' -ErrorAction SilentlyContinue)
-                $allReady = $hasScrcpy -and $hasAdb -and $hasYtdlp -and $hasFfmpeg
+                $hasFfprobe = (Test-Path (Join-Path $root 'tools\ffmpeg\ffprobe.exe')) -or
+                              (Test-Path (Join-Path $root 'tools\ffmpeg\bin\ffprobe.exe')) -or
+                              (Test-Path (Join-Path $root 'tools\ffprobe.exe')) -or
+                              (Get-Command 'ffprobe' -ErrorAction SilentlyContinue)
+                $allReady = $hasScrcpy -and $hasAdb -and $hasYtdlp -and $hasFfmpeg -and $hasFfprobe
                 if ($allReady) {
-                    Show-Toast "ĐÃ CÀI ĐẶT ĐẦY ĐỦ CÔNG CỤ!"
-                    Add-Log "Hoàn tất cài đặt: Toàn bộ công cụ đã sẵn sàng trong thư mục tools." '#10B981'
+                    Show-Toast "Công cụ xử lý video đã sẵn sàng"
+                    Add-Log "Các công cụ xử lý video đã sẵn sàng; xem trạng thái tiny tại thẻ Whisper." '#10B981'
                 } else {
                     Show-Toast "ĐÃ CẬP NHẬT TRẠNG THÁI CÔNG CỤ"
                     Add-Log "Kiểm tra hoàn tất: Xem trạng thái các công cụ tại tab CÔNG CỤ & HỆ THỐNG." '#38BDF8'
@@ -1844,7 +2016,17 @@ $timer.Add_Tick({
                     $ui.TxtRes.Text = $mRes.Groups[1].Value.Trim()
                     $ui.BadgeRes.Visibility = 'Visible'
                 }
-                if ($ui.TxtRev) { $ui.TxtRev.Text = 'Nghe hết video bên phải. Nếu chuẩn thì bấm "Dùng bản này" hoặc Copy để đăng ngay.' }
+                if ($ui.TxtRev) {
+                    $ui.TxtRev.Text = if ($txt -match '\bAUDIO_LANG_VI\b') {
+                        'Whisper tiny ước tính tiếng Việt. Nghe kiểm tra trước khi dùng.'
+                    } elseif ($txt -match '\bAUDIO_LANG_OTHER\b') {
+                        'Whisper tiny ước tính ngôn ngữ khác. Kiểm tra audio trước khi dùng.'
+                    } elseif ($txt -match '\bAUDIO_LANG_UNKNOWN\b') {
+                        'Chưa xác định được ngôn ngữ audio. Nghe kiểm tra trước khi dùng.'
+                    } elseif ($txt -match '\bDUB_(?:UNVERIFIED|SELECTED)\b') {
+                        'Chưa xác nhận ngôn ngữ từ audio; nghe kiểm tra trước khi dùng.'
+                    } else { 'Nghe hết video bên phải. Nếu chuẩn thì bấm "Dùng bản này" hoặc Copy để đăng ngay.' }
+                }
                 if ($ui.BtnKeep) { $ui.BtnKeep.Visibility = 'Visible' }
                 if ($ui.BtnRedo) { $ui.BtnRedo.Content = '🔄 Ghi âm lại' }
                 if ($ui.TxtStat) {
@@ -2068,24 +2250,33 @@ $ui.BtnInstallScrcpy.Add_Click({   Install-ToolGUI 'scrcpy' })
 $ui.BtnInstallAdb.Add_Click({      Install-ToolGUI 'adb' })
 $ui.BtnInstallYtdlp.Add_Click({    Install-ToolGUI 'ytdlp' })
 $ui.BtnInstallFfmpeg.Add_Click({   Install-ToolGUI 'ffmpeg' })
+$ui.BtnInstallWhisper.Add_Click({  Install-ToolGUI 'whisper' })
 $ui.BtnCheckTools.Add_Click({      Update-ToolsStatus })
 $ui.BtnOpenUninstall.Add_Click({
+    if ($script:ps) { Show-Toast 'Đang chạy tác vụ — không thể gỡ thư viện lúc này.'; return }
     $ans = [System.Windows.MessageBox]::Show(
-        "Bạn có muốn gỡ bỏ toàn bộ bộ thư viện trong thư mục 'tools' để giải phóng dung lượng không?`n`nLưu ý: Mọi tiến trình phụ trợ (adb, scrcpy, ffmpeg) sẽ được tắt an toàn trước khi xóa.",
+        "Bạn có muốn gỡ bỏ toàn bộ bộ thư viện trong thư mục 'tools' để giải phóng dung lượng không?",
         "Kid FB.Y - Gỡ cài đặt bộ thư viện",
         [System.Windows.MessageBoxButton]::YesNo,
         [System.Windows.MessageBoxImage]::Question
     )
     if ($ans -eq [System.Windows.MessageBoxResult]::Yes) {
-        Stop-Process -Name 'adb','scrcpy','ffmpeg','ffprobe','yt-dlp' -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Milliseconds 400
-        $tDir = Join-Path $root 'tools'
-        if (Test-Path $tDir) {
-            Remove-Item -Path $tDir -Recurse -Force -ErrorAction SilentlyContinue
+        try {
+            $rootFull = [System.IO.Path]::GetFullPath($root).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+            $tDir = [System.IO.Path]::GetFullPath((Join-Path $rootFull 'tools'))
+            if (-not [string]::Equals([System.IO.Path]::GetDirectoryName($tDir).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar), $rootFull, [System.StringComparison]::OrdinalIgnoreCase) -or
+                -not [string]::Equals([System.IO.Path]::GetFileName($tDir), 'tools', [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Đường dẫn thư mục tools không nằm trực tiếp trong thư mục dự án.'
+            }
+            if (Test-Path -LiteralPath $tDir) { Remove-Item -LiteralPath $tDir -Recurse -Force -ErrorAction Stop }
+            if (Test-Path -LiteralPath $tDir) { throw 'Một số tệp vẫn còn hoặc đang bị khóa.' }
+            Update-ToolsStatus
+            Show-Toast 'ĐÃ GỠ BỎ BỘ THƯ VIỆN'
+            Add-Log 'Đã gỡ bỏ thư viện trong thư mục tools.' '#34D399'
+        } catch {
+            Show-Toast "Gỡ thư viện thất bại: $($_.Exception.Message)"
+            Add-Log "Gỡ thư viện thất bại: $($_.Exception.Message)" '#F87171'
         }
-        Update-ToolsStatus
-        Show-Toast "ĐÃ GỠ BỎ BỘ THƯ VIỆN"
-        Add-Log "Đã gỡ bỏ sạch sẽ bộ thư viện trong thư mục tools." '#34D399'
     }
 })
 
@@ -2173,11 +2364,8 @@ $ui.BtnCheck.Add_Click({
     } catch { }
 })
 $ui.BtnStop.Add_Click({
+    if (-not $script:ps) { return }
     Stop-Engine
-    $script:queue = @()
-    $ui.PanelRev.Visibility = 'Collapsed'
-    $ui.TxtStat.Text = 'Đã dừng theo yêu cầu'
-    $ui.TxtStat.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#FBBF24')
     Add-Log ''; Add-Log 'Đã dừng theo yêu cầu của người dùng.' '#FBBF24'
 })
 $ui.BtnPlay.Add_Click({
@@ -2244,6 +2432,8 @@ $ui.BtnOpenExt.Add_Click({
 })
 
 $ui.BtnKeep.Add_Click({
+    if ($script:ps) { Show-Toast 'Hãy đợi tác vụ đang chạy hoàn tất.'; return }
+    if (-not $script:queue -or $script:queue.Count -eq 0 -or $script:idx -lt 0 -or $script:idx -ge $script:queue.Count) { Show-Toast 'Không có video đang nghiệm thu trong hàng đợi.'; return }
     $ui.PanelRev.Visibility = 'Collapsed'
     $script:giu++
     Add-Log "Đã giữ: $($script:lastOut)" '#34D399'
@@ -2251,14 +2441,15 @@ $ui.BtnKeep.Add_Click({
 })
 
 $ui.BtnRedo.Add_Click({
+    if ($script:ps) { Show-Toast 'Hãy đợi tác vụ đang chạy hoàn tất.'; return }
+    if (-not $script:queue -or $script:queue.Count -eq 0 -or $script:idx -lt 0 -or $script:idx -ge $script:queue.Count) {
+        Show-Toast 'Chỉ ghi âm lại video đang nghiệm thu trong hàng đợi.'
+        return
+    }
     $redoFile = $script:lastOut
     $ui.PanelRev.Visibility = 'Collapsed'
     Clear-Player
-    Start-Sleep -Milliseconds 200
-    if ($redoFile -and (Test-Path $redoFile)) {
-        Remove-ReelFiles $redoFile
-        Add-Log 'Đã xoá bản hiện tại, chuẩn bị ghi âm lại...' '#FBBF24'
-    } else { Add-Log 'Thử lại...' '#FBBF24' }
+    Add-Log 'Chuẩn bị ghi âm lại video đang nghiệm thu...' '#FBBF24'
     Start-Link
 })
 
@@ -2281,6 +2472,8 @@ $ui.BtnDeleteCurrent.Add_Click({
 })
 
 $ui.BtnSkip.Add_Click({
+    if ($script:ps) { Show-Toast 'Hãy đợi tác vụ đang chạy hoàn tất.'; return }
+    if (-not $script:queue -or $script:queue.Count -eq 0 -or $script:idx -lt 0 -or $script:idx -ge $script:queue.Count) { Show-Toast 'Không có video đang nghiệm thu trong hàng đợi.'; return }
     $ui.PanelRev.Visibility = 'Collapsed'
     Clear-Player
     $script:bo++
@@ -2289,6 +2482,8 @@ $ui.BtnSkip.Add_Click({
 })
 
 $ui.BtnStart.Add_Click({
+    if ($script:ps) { Show-Toast 'Đang chạy tác vụ — hãy đợi hoàn tất.'; return }
+    if ($script:queue -and $script:queue.Count -gt 0) { Show-Toast 'Hãy hoàn tất hoặc bỏ qua hàng đợi đang nghiệm thu trước khi bắt đầu.'; return }
     $links = @()
     foreach ($l in ($ui.TxtLinks.Text -split "`r?`n")) {
         $t = $l.Trim().Trim('"').Trim("'").Trim()
@@ -2313,8 +2508,6 @@ $ui.BtnStart.Add_Click({
 
 # ------------------------------------------------------------- cap nhat qua GitHub ----
 $script:updProc = $null; $script:updMode = ''; $script:updSilent = $false
-$script:verLocal = '0.0.0'
-try { $vf = Join-Path $scriptDir 'version.txt'; if (Test-Path $vf) { $script:verLocal = (Get-Content $vf -Raw).Trim() } } catch { }
 if ($ui.BtnUpdate) { $ui.BtnUpdate.ToolTip = "Phiên bản hiện tại: v$($script:verLocal) — bấm để kiểm tra bản mới" }
 $tUpd = New-Object Windows.Threading.DispatcherTimer
 $tUpd.Interval = [TimeSpan]::FromMilliseconds(400)
@@ -2380,7 +2573,13 @@ if ($ui.BtnUpdate) {
     })
 }
 
-$win.Add_Closing({
+$win.Add_Closing({ param($sender,$eventArgs)
+    if ($script:ps) {
+        $eventArgs.Cancel = $true
+        $script:closeAfterStop = $true
+        Stop-Engine
+        return
+    }
     try { if ($tUpd) { $tUpd.Stop() } } catch { }
     try { Stop-Engine } catch { }
     try { if ($tPlay) { $tPlay.Stop() } } catch { }
@@ -2391,24 +2590,27 @@ $win.Add_Closing({
 try {
     # ------------------------------------------------------------------ chay ----
     if (-not (Test-Path $engine)) {
+        if ($SelfTest) { throw "Khong tim thay engine: $engine" }
         [System.Windows.MessageBox]::Show("Không tìm thấy kid-fby.ps1 cạnh file này.`n`n$engine",
             'Thiếu file','OK','Error') | Out-Null
         return
     }
-    if ($SelfTest) {
-        try {
-            $ud = Join-Path $scriptDir '_update'
-            if (-not (Test-Path $ud)) { New-Item -ItemType Directory -Path $ud -Force | Out-Null }
-            [System.IO.File]::WriteAllText((Join-Path $ud 'BOOT_OK'), (Get-Date).ToString('o'))
-        } catch { }
-        Write-Host "SelfTest: Kid FB.Y khoi tao thanh cong, $($ui.Keys.Count) thanh phan giao dien"
-        foreach ($k in $ui.Keys) { if ($null -eq $ui[$k]) { Write-Host "  THIẾU: $k" } }
-        return
-    }
-
     # Auto scan gallery va tools on launch
     Update-Gallery
     Update-ToolsStatus
+
+    if ($SelfTest) {
+        foreach ($k in $ui.Keys) {
+            if ($null -eq $ui[$k]) { throw "Thieu thanh phan giao dien: $k" }
+        }
+        if ($ui.TxtOut.Text -ne (Join-Path $root 'output')) { throw 'Thu muc xuat khoi tao khong dung.' }
+        if ($ui.TxtAppVersion.Text -ne "v$($script:verLocal)") { throw 'Nhan phien ban khoi tao khong dung.' }
+        $ud = Join-Path $scriptDir '_update'
+        if (-not (Test-Path -LiteralPath $ud)) { New-Item -ItemType Directory -Path $ud -Force | Out-Null }
+        [System.IO.File]::WriteAllText((Join-Path $ud 'BOOT_OK'), (Get-Date).ToString('o'))
+        Write-Host "SelfTest: Kid FB.Y khoi tao thanh cong, $($ui.Keys.Count) thanh phan giao dien"
+        return
+    }
 
     # Auto preview latest finished video if available
     $latestVid = Get-ChildItem -Path $ui.TxtOut.Text -Filter '*-3-hoan-chinh.mp4' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -2446,5 +2648,6 @@ try {
     })
     [void]$win.ShowDialog()
 } catch {
+    if ($SelfTest) { Write-Error $_ -ErrorAction Continue; exit 1 }
     [System.Windows.MessageBox]::Show("Đã xảy ra sự cố giao diện:`n`n$($_.Exception.Message)", "Kid FB.Y", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
 }
