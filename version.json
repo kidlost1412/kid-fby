@@ -1,10 +1,10 @@
 {
-    "version":  "1.0.13",
-    "releasedAt":  "2026-10-07 15:13",
+    "version":  "1.0.14",
+    "releasedAt":  "2026-10-07 16:57",
     "minLauncher":  "1.0.0",
     "mandatory":  false,
     "changelog":  [
-                      "Sua doc metadata va kiem tra file video bang ffprobe JSON; tranh loai nham video co side data; tach loi ghep va loi kiem tra dau ra"
+                      "Them logo Kid go moc di chuyen, do mo 50-70%; thu logo tu video co san; dong goi logo cho may moi va cap nhat"
                   ],
     "files":  [
                   {
@@ -24,13 +24,18 @@
                   },
                   {
                       "path":  "core/kid-fby-gui.ps1",
-                      "sha256":  "F3E374771751A1AF53B71AB58FE837721A7E72CE13A6BDC972B42D3873125511",
-                      "size":  144841
+                      "sha256":  "2161DAFD17D193CD17F1FE701A1F39EBE4C40BA3B546C9CD27894F0D97807DFC",
+                      "size":  145931
                   },
                   {
                       "path":  "core/kid-fby.ps1",
-                      "sha256":  "8B50E68B50E13DEE299CD429576177A760D584D01B70AE02474D74293C2439D4",
-                      "size":  71608
+                      "sha256":  "FE1033F0252CAE7C707FD98F1637F755652FF93AF2104DFAA58B8E476C9DC4A1",
+                      "size":  76412
+                  },
+                  {
+                      "path":  "core/kid-logo.zip",
+                      "sha256":  "04CC321E27BD14418AAEB2AFEA9E6E9D04D76C9E67C71B3668004FDB4D5611FD",
+                      "size":  1897044
                   },
                   {
                       "path":  "core/update.json",
@@ -44,7 +49,7 @@
                   },
                   {
                       "path":  "core/version.txt",
-                      "sha256":  "C48E6E8E49A7201F328A87456445464807AAA2EA2826EA6AA0AA64DCB504D540",
+                      "sha256":  "4DA7C078DA68921AFF035847E3C2483C31811BD40124CC8BC029654D58960C29",
                       "size":  6
                   },
                   {
@@ -54,8 +59,8 @@
                   },
                   {
                       "path":  "Kid-FB.Y.exe",
-                      "sha256":  "6DB861C50D7111FB38B42F8F4DB2B7B1F12D9CE7D2B1C9C0AB69E5E717250707",
-                      "size":  265216
+                      "sha256":  "39E4DF63CA0BC2D188CEBFF64268549C4404F9B837BB9CF04522410FA95475E5",
+                      "size":  2168320
                   }
               ],
     "tools":  {

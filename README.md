@@ -1,10 +1,10 @@
-# Kid FB.Y — v1.0.13
+# Kid FB.Y — v1.0.14
 
 Tải video Facebook và ghép audio lồng tiếng Meta AI thu từ Facebook trên Android/LDPlayer. Video hoàn tất vẫn cần nghe nghiệm thu trước khi dùng.
 
 ## Thử trên máy Windows mới
 
-1. Tải toàn bộ dự án bằng **Code → Download ZIP**, hoặc tải [ZIP bản v1.0.13](https://github.com/kidlost1412/kid-fby/archive/refs/tags/v1.0.13.zip).
+1. Tải toàn bộ dự án bằng **Code → Download ZIP**, hoặc tải [ZIP bản v1.0.14](https://github.com/kidlost1412/kid-fby/archive/refs/tags/v1.0.14.zip).
 2. Giải nén ra một thư mục có quyền ghi. Giữ `Kid-FB.Y.exe` cùng thư mục `core`; chạy EXE sau khi giải nén, không chạy bên trong ZIP.
 3. Trong tab **Bộ Thư Viện**, bấm **Tải & Cài Đặt Tất Cả**. Lần đầu cần Internet để tải công cụ và model. Các file nằm trong thư mục `tools` và không đi kèm ZIP GitHub.
 4. Mở LDPlayer/Android đã có Facebook, đăng nhập và bật kết nối ADB. Quy trình thu audio cần Android hỗ trợ audio capture; cấu hình đang dùng của dự án là LDPlayer Android 14.
@@ -19,3 +19,15 @@ Tiny lấy tối đa hai đoạn audio ngắn, chỉ ước tính ngôn ngữ. T
 Xem [WHISPER.md](WHISPER.md) để biết cách thử audio có sẵn, số đo tốc độ, bộ mẫu và giới hạn. Các sửa lỗi khởi tạo/hủy tác vụ/giữ bản cũ được ghi trong [AUDIT.md](AUDIT.md). Bản này đã qua kiểm tra khởi tạo WPF trong thư mục trống và model thật trên máy phát triển; lần thử của anh trên máy mới vẫn cần kiểm tra cả Facebook/LDPlayer.
 
 Nếu gặp lỗi, giữ nội dung tab **Terminal Logs** và thông báo lỗi, kèm phiên bản Windows/LDPlayer để đối chiếu. Không cần cung cấp thông tin đăng nhập Facebook.
+
+## Logo Kid di chuyển
+
+Bật **Chèn logo Kid di chuyển** để chèn đúng logo chữ gỗ mộc ban đầu vào video hoàn chỉnh. Độ mờ chọn 50%, 60% (mặc định) hoặc 70%; mờ 60% nghĩa là độ đậm còn 40%. Logo chuyển động theo đường cong mềm trong khung hình. Video gốc và audio tách vẫn được giữ riêng. Chèn logo cần mã hóa lại hình ảnh bằng H.264 nên có thể lâu hơn khi tắt logo; độ phân giải và audio được giữ nguyên.
+
+Có thể tạo bản thử từ một video đã có mà không mở Facebook/Android:
+
+```powershell
+.\core\kid-fby.ps1 -WatermarkVideo '.\output\video-hoan-chinh.mp4' -LogoFade 60
+```
+
+Xuất file `video-hoan-chinh-logo-preview.mp4` cạnh file đầu vào, không ghi đè video gốc hoặc bản thử đã có. Logo được đóng gói trong `core/kid-logo.zip` và nhúng vào EXE để máy mới/cập nhật nhận đủ file.

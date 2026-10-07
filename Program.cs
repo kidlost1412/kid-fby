@@ -42,6 +42,7 @@ namespace KidFBY
                 ExtractResourceIfMissing("facebook-links.ps1", linkFile);
                 ExtractResourceIfMissing("fix-ket-noi.ps1", fixFile);
                 ExtractResourceIfMissing("Kid-FB.Y.ico", icoFile);
+                ExtractResourceIfMissing("kid-logo.zip", Path.Combine(coreDir, "kid-logo.zip"));
 
                 if (!File.Exists(guiFile))
                 {

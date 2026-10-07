@@ -23,6 +23,9 @@ param(
     [switch]$Keep,
     [switch]$SkipLanguageCheck,
     [string]$DetectLanguageFile,
+    [switch]$Watermark,
+    [ValidateRange(50,70)][int]$LogoFade = 60,
+    [string]$WatermarkVideo,
     [System.Collections.IDictionary]$ProcessRegistry
 )
 
@@ -950,6 +953,36 @@ function Get-ReelProcessTimeoutMs {
     return [int][Math]::Min(3600000, [Math]::Max(300000, $scaled))
 }
 
+function Expand-KidLogo {
+    param([string]$WorkDir)
+    $archive = Join-Path $script:Here 'core/kid-logo.zip'
+    if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) { throw 'Thieu logo Kid: core/kid-logo.zip. Hay cap nhat lai app.' }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [IO.Compression.ZipFile]::OpenRead($archive)
+    try {
+        $entry = $zip.GetEntry('kid-logo.png')
+        if ($null -eq $entry -or $entry.Length -le 0) { throw 'Goi logo Kid khong hop le.' }
+        $target = Join-Path $WorkDir 'kid-logo.png'
+        [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $true)
+        return $target
+    } finally { $zip.Dispose() }
+}
+
+function Get-MovingLogoMuxArgs {
+    param([string]$Video, [string]$Audio, [string]$Logo, [string]$Output,
+          [int]$Width, [int]$Height, [ValidateRange(50,70)][int]$Fade = 60)
+    if ($Width -le 0 -or $Height -le 0) { throw 'Kich thuoc video khong hop le de chen logo.' }
+    $logoWidth = [Math]::Max(2, [int]($Width * 0.30))
+    $logoHeight = [Math]::Max(2, [int]($Height * 0.20))
+    $alpha = ((100 - $Fade) / 100.0).ToString('0.00', [cultureinfo]::InvariantCulture)
+    # Smooth independent horizontal/vertical waves; the logo stays inside the frame.
+    $filter = "[2:v]format=rgba,scale=${logoWidth}:${logoHeight}:force_original_aspect_ratio=decrease,colorchannelmixer=aa=${alpha}[logo];[0:v][logo]overlay=x='(W-w)*(0.5+0.46*sin(0.23*t+0.6))':y='(H-h)*(0.5+0.46*sin(0.17*t-1.1))':eval=frame:shortest=1:format=auto[v]"
+    return @('-hide_banner','-loglevel','error','-y','-i',$Video,'-i',$Audio,
+             '-loop','1','-i',$Logo,'-filter_complex',$filter,'-map','[v]','-map','1:a:0',
+             '-c:v','libx264','-crf','18','-preset','veryfast','-pix_fmt','yuv420p',
+             '-c:a','copy','-shortest','-movflags','+faststart',$Output)
+}
+
 function Test-ValidReelOutput {
     param($T, [string]$File)
     if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { return $false }
@@ -1259,6 +1292,11 @@ function Invoke-OneLink {
         # Ghep video goc + audio long tieng
         $muxArgs = @('-hide_banner','-loglevel','error','-y','-i',$vf.FullName,'-i',$cut,
                      '-map','0:v:0','-map','1:a:0') + $vCodecOpt + @('-c:a','copy','-shortest','-movflags','+faststart',$out)
+        if ($Watermark) {
+            $logo = Expand-KidLogo -WorkDir $tmp
+            Write-Note "Chen logo Kid di chuyen, do mo $LogoFade% (giu nguyen kich thuoc video)."
+            $muxArgs = Get-MovingLogoMuxArgs -Video $vf.FullName -Audio $cut -Logo $logo -Output $out -Width $sz.W -Height $sz.H -Fade $LogoFade
+        }
         $muxResult = Invoke-Exe $T.ffmpeg $muxArgs -TimeoutMs (Get-ReelProcessTimeoutMs $dur)
         if ($muxResult.Code -ne 0 -or -not (Test-Path -LiteralPath $out -PathType Leaf) -or (Get-Item -LiteralPath $out).Length -le 0) {
             Show-Fail -Message 'Ghep video that bai.' -Fix @('Chay lai thu.', $muxResult.Err)
@@ -1306,6 +1344,38 @@ function Invoke-OneLink {
 # ------------------------------------------------------------------ chay ----
 Write-Host ''
 Write-Host '  Kid FB.Y - tai video Facebook kem long tieng Meta AI  ' -ForegroundColor White -BackgroundColor DarkBlue
+
+# Chen logo vao video co san, khong ket noi Android hay tai video.
+if ($WatermarkVideo) {
+    if (-not (Test-Path -LiteralPath $WatermarkVideo -PathType Leaf)) { throw 'Khong tim thay video can chen logo.' }
+    $sourceVideo = (Resolve-Path -LiteralPath $WatermarkVideo).Path
+    $previewOutput = Join-Path (Split-Path $sourceVideo -Parent) (([IO.Path]::GetFileNameWithoutExtension($sourceVideo)) + '-logo-preview.mp4')
+    if (Test-Path -LiteralPath $previewOutput) { throw "File thu da ton tai: $previewOutput. Hay doi ten truoc khi xuat lai." }
+    $logoTools = Get-Toolset
+    if (-not $logoTools.ffmpeg -or -not $logoTools.ffprobe) { throw 'Can FFmpeg va ffprobe de chen logo.' }
+    $logoTemp = Join-Path ([IO.Path]::GetTempPath()) ('kidfby-logo-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $logoTemp -ErrorAction Stop | Out-Null
+    try {
+        $logoFile = Expand-KidLogo -WorkDir $logoTemp
+        $size = Get-VideoSize $logoTools $sourceVideo
+        $duration = Get-VideoDuration $logoTools $sourceVideo
+        $stagedVideo = Join-Path $logoTemp 'preview.mp4'
+        $logoArgs = Get-MovingLogoMuxArgs -Video $sourceVideo -Audio $sourceVideo -Logo $logoFile -Output $stagedVideo -Width $size.W -Height $size.H -Fade $LogoFade
+        Write-Note "Chen logo Kid di chuyen, do mo $LogoFade%..."
+        $result = Invoke-Exe $logoTools.ffmpeg $logoArgs -TimeoutMs (Get-ReelProcessTimeoutMs $duration)
+        if ($result.Code -ne 0) { throw "Chen logo that bai: $($result.Err)" }
+        if (-not (Test-ValidReelOutput $logoTools $stagedVideo)) { throw 'Video chen logo khong qua kiem tra dau ra.' }
+        [IO.File]::Copy($stagedVideo, $previewOutput, $false)
+        Write-Ok "Video thu: $previewOutput"
+        $previewOutput
+    } finally {
+        $tempPrefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+        $resolved = [IO.Path]::GetFullPath($logoTemp)
+        if (-not $resolved.StartsWith($tempPrefix,[StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($resolved) -notmatch '^kidfby-logo-[0-9a-f]{32}$') { throw 'Duong dan don dep logo khong an toan.' }
+        Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    return
+}
 
 # Kiem tra file audio co san, khong ket noi Android hay tai video.
 if ($DetectLanguageFile) {
@@ -1374,6 +1444,9 @@ if ($links.Count -eq 0) {
 }
 if ($links.Count -eq 0) { Write-Note 'Khong co link nao, thoat.'; return }
 
+if ($Watermark -and -not (Test-Path -LiteralPath (Join-Path $script:Here 'core/kid-logo.zip') -PathType Leaf)) {
+    throw 'Thieu logo Kid: core/kid-logo.zip. Hay cap nhat lai app.'
+}
 $tools = Test-Ready
 if (-not $tools) { return }
 

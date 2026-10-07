@@ -410,6 +410,17 @@ try {
           <CheckBox x:Name="ChkLanguage" Content="Nhận diện tiếng Việt bằng tiny" IsChecked="True"
                     ToolTip="Thử tối đa 2 đoạn audio ngắn; kết quả ước tính, vẫn nghe nghiệm thu."
                     Foreground="#CBD5E1" FontSize="11" Margin="0,7,0,0"/>
+          <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,5,0,0">
+            <CheckBox x:Name="ChkWatermark" Content="Chèn logo Kid di chuyển" IsChecked="True"
+                      ToolTip="Dùng logo Kid gỗ nguyên bản làm lớp phủ di chuyển nhẹ trên video."
+                      Foreground="#CBD5E1" FontSize="11" VerticalAlignment="Center"/>
+            <TextBlock Text="Độ mờ:" Foreground="#94A3B8" FontSize="11" VerticalAlignment="Center" Margin="14,0,6,0"/>
+            <ComboBox x:Name="CmbLogoFade" Width="68" Height="26" SelectedIndex="1" VerticalContentAlignment="Center">
+              <ComboBoxItem Content="50%"/>
+              <ComboBoxItem Content="60%"/>
+              <ComboBoxItem Content="70%"/>
+            </ComboBox>
+          </StackPanel>
         </StackPanel>
 
         <!-- Right actions -->
@@ -1004,7 +1015,7 @@ foreach ($n in @('BtnWinMin','BtnWinMax','BtnWinClose',
                  'BtnInstallAdb','BadgeStatusAdb','TxtStatusAdb',
                  'BtnInstallYtdlp','BadgeStatusYtdlp','TxtStatusYtdlp',
                   'BtnInstallFfmpeg','BadgeStatusFfmpeg','TxtStatusFfmpeg',
-                  'BtnInstallWhisper','BadgeStatusWhisper','TxtStatusWhisper','ChkLanguage',
+                  'BtnInstallWhisper','BadgeStatusWhisper','TxtStatusWhisper','ChkLanguage','ChkWatermark','CmbLogoFade',
                  'BadgeStage1','TxtStage1Status','TxtStage1Info',
                  'BadgeStage2','TxtStage2Status','TxtStage2Info',
                  'BadgeStage3','TxtStage3Status','TxtStage3Info',
@@ -1196,6 +1207,8 @@ function Set-Busy {
     else { $ui.TxtOut.IsEnabled = $script:txtOutWasEnabled }
     $ui.BtnPick.IsEnabled  = -not $On
     if ($ui.ChkLanguage) { $ui.ChkLanguage.IsEnabled = -not $On }
+    if ($ui.ChkWatermark) { $ui.ChkWatermark.IsEnabled = -not $On }
+    if ($ui.CmbLogoFade) { $ui.CmbLogoFade.IsEnabled = -not $On }
     $ui.Bar.Visibility = $(if ($On) { 'Visible' } else { 'Collapsed' })
 }
 
@@ -1909,7 +1922,7 @@ function Start-Link {
     Add-Log $script:queue[$script:idx] '#94A3B8'
     $ui.TxtStat.Text = "Đang xử lý Video ($n/$($script:queue.Count))..."
     $ui.TxtStat.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#38BDF8')
-    Start-Engine -Links @($script:queue[$script:idx]) -Named @{ OutDir = $ui.TxtOut.Text; SkipLanguageCheck = ([bool](-not $ui.ChkLanguage.IsChecked)) } -Mode 'run' -XoaLog $false
+    Start-Engine -Links @($script:queue[$script:idx]) -Named @{ OutDir = $ui.TxtOut.Text; SkipLanguageCheck = ([bool](-not $ui.ChkLanguage.IsChecked)); Watermark = [bool]$ui.ChkWatermark.IsChecked; LogoFade = [int](50+10*$ui.CmbLogoFade.SelectedIndex) } -Mode 'run' -XoaLog $false
 }
 
 function Next-Link {
