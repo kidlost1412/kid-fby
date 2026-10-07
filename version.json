@@ -1,10 +1,10 @@
 {
-    "version":  "1.0.11",
-    "releasedAt":  "2026-10-07 11:33",
+    "version":  "1.0.12",
+    "releasedAt":  "2026-10-07 11:38",
     "minLauncher":  "1.0.0",
     "mandatory":  false,
     "changelog":  [
-                      "Nhan dien link Facebook share/r, share/v, fb.watch va van ban/Markdown; chuyen huong link chia se truoc khi doc video; hien loi yt-dlp thuc te"
+                      "Sua scrcpy khong tao duoc renderer khi thu audio: dung no-window, bo SDL dummy; giu AAC va thoi luong thu"
                   ],
     "files":  [
                   {
@@ -29,8 +29,8 @@
                   },
                   {
                       "path":  "core/kid-fby.ps1",
-                      "sha256":  "65186A64E3FDBDB250E237C8CACCA1B84BC2ADE2EEFD372FB3314AC345A5FA41",
-                      "size":  69300
+                      "sha256":  "320BB018D2ABEDFAFAF70AB9C4AC17F580F8BC1CDEECA7F407351D855008165C",
+                      "size":  69264
                   },
                   {
                       "path":  "core/update.json",
@@ -44,7 +44,7 @@
                   },
                   {
                       "path":  "core/version.txt",
-                      "sha256":  "B69DACB21950A555C32812EF66EC2153E340ED5F0E4B022B3023005688907B6B",
+                      "sha256":  "123E6D68829E78385839A990152031E31EB7F5AD51F444E9FFBF758DBDE7175C",
                       "size":  6
                   },
                   {
@@ -54,7 +54,7 @@
                   },
                   {
                       "path":  "Kid-FB.Y.exe",
-                      "sha256":  "5A5AD8308774155E9DF6B970F779743F0CAC136B9E69D696BC12CF10414A56E8",
+                      "sha256":  "693C519088F78409CAD7750B358F21B43C50592332880D2C91E4A1FA09FF5585",
                       "size":  263168
                   }
               ],

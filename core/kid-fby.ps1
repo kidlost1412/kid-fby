@@ -1068,6 +1068,7 @@ function Invoke-OneLink {
         $captureArgs = @(
             '--serial', $T.Serial,
             '--no-video',
+            '--no-window',
             '--no-audio-playback',
             '--audio-codec=aac',
             '--require-audio',
@@ -1084,7 +1085,6 @@ function Invoke-OneLink {
         $psi.RedirectStandardError  = $true
         $psi.CreateNoWindow         = $true
         $psi.WindowStyle            = [System.Diagnostics.ProcessWindowStyle]::Hidden
-        $psi.EnvironmentVariables['SDL_VIDEODRIVER'] = 'dummy'
 
         $proc = New-Object System.Diagnostics.Process
         $proc.StartInfo = $psi

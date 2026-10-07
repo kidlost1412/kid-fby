@@ -64,3 +64,9 @@ Anh báo link `https://www.facebook.com/share/r/19bVLUNWK5/` bị báo không đ
 Đã bổ sung tách URL Facebook từ văn bản, Markdown, dấu nháy, NBSP và danh sách; loại trùng. Link chia sẻ được thử chuyển hướng có giới hạn thời gian trước khi đọc ID, rồi dùng URL video trực tiếp cho tải và mở Facebook trên Android. Nếu không chuyển hướng được, giữ link gốc để yt-dlp thử; không đoán ID từ token chia sẻ hay URL đăng nhập. Bỏ ảnh hưởng cấu hình yt-dlp ngoài app, không lấy playlist; thông báo thất bại hiện lỗi thực của yt-dlp thay cho kết luận chung “link sai/phải công khai”.
 
 Kiểm tra link thật, với đúng nội dung Markdown/NBSP anh gửi, đọc được một URL và ID đúng, chuẩn hóa thành `https://www.facebook.com/reel/949206081560084/`. Chỉ truy vấn metadata/chuyển hướng; chưa tải/thu toàn bộ Reel này trên LDPlayer. Bộ test link kiểm tra parser, host, ID và các redirect lỗi/đăng nhập/checkpoint bằng mock; suite startup kiểm tra helper mới được nhúng vào EXE.
+
+## Bản 1.0.12 — scrcpy lỗi renderer khi thu audio
+
+Log thực tế của anh xác nhận link đã tải đúng; scrcpy 3.1 dừng với `Couldn't find matching render driver`, kéo theo không có stream để ghi. Code dùng `SDL_VIDEODRIVER=dummy` nhưng chỉ tắt video/audio playback, chưa yêu cầu bỏ cửa sổ. Đã thêm `--no-window` và bỏ ép driver dummy, giữ AAC, time-limit, buffer +10 giây và mốc mở Reel 1,8 giây.
+
+Đã chạy chính cấu hình ProcessStartInfo/args từ engine với scrcpy thật trên `emulator-5554`, thu thử ba giây không thao tác Facebook. Tiến trình thoát thành công; ffprobe xác nhận stream AAC, thời lượng 2,880458 giây, file 47.954 byte. Đây là kiểm chứng lỗi renderer đã được xử lý trong cấu hình hiện tại, không phải đánh giá ngôn ngữ hoặc đồng bộ của Reel. Test recorder giả cũng từ chối cấu hình thiếu `--no-window`/ép dummy và xác nhận engine đi tiếp tới bước cắt âm thanh.

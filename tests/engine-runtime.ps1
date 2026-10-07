@@ -134,6 +134,10 @@ using System;
 using System.IO;
 public static class KidFbyTestRecorder {
     public static int Main(string[] args) {
+        if (Array.IndexOf(args, "--no-window") < 0 || Environment.GetEnvironmentVariable("SDL_VIDEODRIVER") == "dummy") {
+            Console.Error.WriteLine("Recording must request no window and must not force the dummy video driver.");
+            return 9;
+        }
         foreach (string arg in args) {
             if (arg.StartsWith("--record=", StringComparison.Ordinal)) {
                 File.WriteAllBytes(arg.Substring("--record=".Length), new byte[2048]);
@@ -175,6 +179,7 @@ function Invoke-Exe {
         return [pscustomobject]@{ Code=0; Out="video`naudio`n3.0"; Err='' }
     }
     if ($Exe -eq 'ffmpeg') {
+        if ($ExeArgs -contains '192k') { $script:CutCalls++ }
         $target = $ExeArgs[-1]
         if ($target -ne '-') { [IO.File]::WriteAllBytes($target, [byte[]]@(5,6,7)) }
         if ($script:InvokeMode -eq 'FfmpegExit' -and $ExeArgs -contains '192k') { return [pscustomobject]@{ Code=19; Out=''; Err='synthetic ffmpeg failure' } }
@@ -210,7 +215,9 @@ for ($i = 0; $i -lt 3; $i++) { Assert-Bytes $oldPaths[$i] $oldEnv[$i] 'download 
 Write-Host 'PASS nonzero download cannot report success or alter outputs'
 
 $script:InvokeMode = 'FfmpegExit'
+$script:CutCalls = 0
 $ffmpegResult = Invoke-OneLink -T $testTools -Url 'https://example.invalid/reel' -Dest $destDir
+Assert-True ($script:CutCalls -eq 1) 'windowless recorder completes and reaches the FFmpeg cut stage without a dummy renderer'
 Assert-True ($null -eq $ffmpegResult) 'nonzero FFmpeg cut cannot return success'
 for ($i = 0; $i -lt 3; $i++) { Assert-Bytes $oldPaths[$i] $oldEnv[$i] 'FFmpeg failure leaves old destinations untouched' }
 Write-Host 'PASS nonzero FFmpeg cannot report success or alter outputs'
