@@ -1,72 +1,75 @@
 {
-  "version": "1.0.10",
-  "releasedAt": "2026-10-07 11:07",
-  "minLauncher": "1.0.0",
-  "mandatory": false,
-  "changelog": [
-    "Sua loi khoi tao giao dien tren ban tai moi; kiem tra startup va tai nguyen EXE.",
-    "Dung dung tien trinh cua tac vu; giu va khoi phuc ban cu khi ghi lai; kiem tra file xuat va bao ve hang doi.",
-    "Them Whisper tiny CPU nhan dien ngon ngu tu toi da hai doan audio ngan; ket qua uoc tinh va nghe nghiem thu."
-  ],
-  "files": [
-    {
-      "path": "core/fix-ket-noi.ps1",
-      "sha256": "67105CCB1E7E44BF98D48F6E57108F16F2B3F64624D547C26B182BC9F42C9555",
-      "size": 5796
-    },
-    {
-      "path": "core/Kid-FB.Y.ico",
-      "sha256": "40EEC8AD60D232AF4ED5436D3B3F005A460E622A2C21C589D2BF561713C5F1A7",
-      "size": 2686
-    },
-    {
-      "path": "core/kid-fby-gui.ps1",
-      "sha256": "61877E8357631892698A738606B33868DD00B045863A4F04CA4C3B006C90CFDA",
-      "size": 144325
-    },
-    {
-      "path": "core/kid-fby.ps1",
-      "sha256": "26ED905C1C7CAA7E43290EB0B3F9FA4283492B257EE206B993D402EE532D3D27",
-      "size": 67603
-    },
-    {
-      "path": "core/update.json",
-      "sha256": "F32DCCFF34D3183A8ED519F0269421D7DC8B2F095A3DB1F10F00E5BE68137F55",
-      "size": 56
-    },
-    {
-      "path": "core/updater.ps1",
-      "sha256": "4FE6BDB475ECE704151FEF34A93782F99802EA52EC7A696D9BBB8D33A4894A43",
-      "size": 7901
-    },
-    {
-      "path": "core/version.txt",
-      "sha256": "AEFF856AF84F6FD019532674CD9E77AAA9865CCFF9F4A412C408323A66753168",
-      "size": 6
-    },
-    {
-      "path": "core/whisper-language.ps1",
-      "sha256": "EF929A5A5B66E86211A63468025927D0B6100092AA90D8F331752B291FD5A175",
-      "size": 21197
-    },
-    {
-      "path": "Kid-FB.Y.exe",
-      "sha256": "44D0EA20797F7A35E60DBB343D72D5ED36AAF68EBBD16C4E1B19140E7A7A884A",
-      "size": 253952
-    }
-  ],
-  "tools": {
-    "yt-dlp": {
-      "version": "latest",
-      "exe": "yt-dlp.exe"
-    },
-    "scrcpy": {
-      "version": "3.1",
-      "exe": "scrcpy.exe"
-    },
-    "ffmpeg": {
-      "version": "release",
-      "exe": "ffmpeg.exe"
-    }
-  }
+    "version":  "1.0.11",
+    "releasedAt":  "2026-10-07 11:33",
+    "minLauncher":  "1.0.0",
+    "mandatory":  false,
+    "changelog":  [
+                      "Nhan dien link Facebook share/r, share/v, fb.watch va van ban/Markdown; chuyen huong link chia se truoc khi doc video; hien loi yt-dlp thuc te"
+                  ],
+    "files":  [
+                  {
+                      "path":  "core/facebook-links.ps1",
+                      "sha256":  "B97F5C411162C407FF5156EF9B6DD8030DBD58363936B2C4DB33E9D2B9566214",
+                      "size":  6755
+                  },
+                  {
+                      "path":  "core/fix-ket-noi.ps1",
+                      "sha256":  "67105CCB1E7E44BF98D48F6E57108F16F2B3F64624D547C26B182BC9F42C9555",
+                      "size":  5796
+                  },
+                  {
+                      "path":  "core/Kid-FB.Y.ico",
+                      "sha256":  "40EEC8AD60D232AF4ED5436D3B3F005A460E622A2C21C589D2BF561713C5F1A7",
+                      "size":  2686
+                  },
+                  {
+                      "path":  "core/kid-fby-gui.ps1",
+                      "sha256":  "F3E374771751A1AF53B71AB58FE837721A7E72CE13A6BDC972B42D3873125511",
+                      "size":  144841
+                  },
+                  {
+                      "path":  "core/kid-fby.ps1",
+                      "sha256":  "65186A64E3FDBDB250E237C8CACCA1B84BC2ADE2EEFD372FB3314AC345A5FA41",
+                      "size":  69300
+                  },
+                  {
+                      "path":  "core/update.json",
+                      "sha256":  "F32DCCFF34D3183A8ED519F0269421D7DC8B2F095A3DB1F10F00E5BE68137F55",
+                      "size":  56
+                  },
+                  {
+                      "path":  "core/updater.ps1",
+                      "sha256":  "4FE6BDB475ECE704151FEF34A93782F99802EA52EC7A696D9BBB8D33A4894A43",
+                      "size":  7901
+                  },
+                  {
+                      "path":  "core/version.txt",
+                      "sha256":  "B69DACB21950A555C32812EF66EC2153E340ED5F0E4B022B3023005688907B6B",
+                      "size":  6
+                  },
+                  {
+                      "path":  "core/whisper-language.ps1",
+                      "sha256":  "EF929A5A5B66E86211A63468025927D0B6100092AA90D8F331752B291FD5A175",
+                      "size":  21197
+                  },
+                  {
+                      "path":  "Kid-FB.Y.exe",
+                      "sha256":  "5A5AD8308774155E9DF6B970F779743F0CAC136B9E69D696BC12CF10414A56E8",
+                      "size":  263168
+                  }
+              ],
+    "tools":  {
+                  "yt-dlp":  {
+                                 "version":  "latest",
+                                 "exe":  "yt-dlp.exe"
+                             },
+                  "scrcpy":  {
+                                 "version":  "3.1",
+                                 "exe":  "scrcpy.exe"
+                             },
+                  "ffmpeg":  {
+                                 "version":  "release",
+                                 "exe":  "ffmpeg.exe"
+                             }
+              }
 }

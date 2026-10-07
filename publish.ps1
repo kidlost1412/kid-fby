@@ -69,6 +69,7 @@ if (Test-Path $csc) {
         /res:core\kid-fby-gui.ps1,kid-fby-gui.ps1 `
         /res:core\kid-fby.ps1,kid-fby.ps1 `
         /res:core\whisper-language.ps1,whisper-language.ps1 `
+        /res:core\facebook-links.ps1,facebook-links.ps1 `
         /res:core\fix-ket-noi.ps1,fix-ket-noi.ps1 `
         /res:core\Kid-FB.Y.ico,Kid-FB.Y.ico Program.cs
     if ($LASTEXITCODE -eq 0) {
@@ -79,7 +80,7 @@ if (Test-Path $csc) {
 }
 
 # Kiem tra khoi tao tren thu muc tam, khong ap dung READY trong thu muc dang phat trien.
-foreach ($test in @('startup.ps1','engine-runtime.ps1','gui-runtime.ps1','media-output.ps1','whisper-runtime.ps1','whisper-gui.ps1','whisper-media.ps1','whisper-integration.ps1')) {
+foreach ($test in @('startup.ps1','engine-runtime.ps1','gui-runtime.ps1','media-output.ps1','whisper-runtime.ps1','whisper-gui.ps1','whisper-media.ps1','whisper-integration.ps1','facebook-links.ps1')) {
     & (Join-Path $root "tests\$test") -Root $root
 }
 

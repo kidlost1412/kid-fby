@@ -33,6 +33,8 @@ $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } elseif ($MyInvocation.MyComman
 $script:Here = if ((Split-Path $scriptDir -Leaf) -in @('core','src','app')) { Split-Path $scriptDir -Parent } else { $scriptDir }
 $languageHelper = Join-Path $scriptDir 'whisper-language.ps1'
 if (Test-Path -LiteralPath $languageHelper) { . $languageHelper }
+$linkHelper = Join-Path $scriptDir 'facebook-links.ps1'
+if (Test-Path -LiteralPath $linkHelper) { . $linkHelper }
 if (-not (Test-Path (Join-Path $script:Here 'tools'))) {
     if (Test-Path (Join-Path (Get-Location).Path 'tools')) {
         $script:Here = (Get-Location).Path
@@ -1007,16 +1009,29 @@ function Invoke-OneLink {
     try {
         # ---------- 3. tai video goc va do thoi luong ----------
         Write-Step 3 'Tai video HD va doc thoi luong chuan'
-        $idr = Invoke-Exe $T.ytdlp @('--no-warnings','--print','%(id)s',$Url) -TimeoutMs 120000
+        if (Get-Command Get-FacebookInputLinks -CommandType Function -ErrorAction SilentlyContinue) {
+            $cleanLinks = @(Get-FacebookInputLinks -Text $Url)
+            if ($cleanLinks.Count -ne 1) {
+                Show-Fail -Message 'Can mot link video Facebook hop le cho moi tac vu.' -Fix @('Dan URL Facebook/share/Reel, khong dan nhieu link vao mot tac vu.')
+                return $null
+            }
+            $Url = $cleanLinks[0]
+            $resolvedUrl = Resolve-FacebookShareUrl -Url $Url
+            if ($resolvedUrl -ne $Url) { Write-Note "Link chia se -> $resolvedUrl"; $Url = $resolvedUrl }
+        }
+        $idr = Invoke-Exe $T.ytdlp @('--ignore-config','--no-playlist','--no-warnings','--print','%(id)s',$Url) -TimeoutMs 120000
         $vid = ($idr.Out -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -First 1)
         if ($vid) { $vid = $vid.Trim() }
         if ($idr.Code -ne 0 -or -not $vid) {
-            Show-Fail -Message 'Khong doc duoc link.' -Fix @('Kiem tra lai link, video phai la cong khai.', $idr.Err)
+            Show-Fail -Message 'Chua doc duoc video tu link Facebook.' -Fix @('Xem loi yt-dlp ben duoi; neu video can dang nhap, rieng tu hoac bi gioi han thi thu link cong khai.', 'Neu bao Unsupported URL, tai lai yt-dlp tai tab cong cu.', $idr.Err)
             return $null
+        }
+        if (Get-Command Get-FacebookCanonicalVideoUrl -CommandType Function -ErrorAction SilentlyContinue) {
+            $Url = Get-FacebookCanonicalVideoUrl -Url $Url -VideoId $vid
         }
 
         # Tai ban chat luong cao nhat tuyet doi (4K / 2K / 1080p, uu tien do phan giai va bitrate cao nhat)
-        $dlr = Invoke-Exe $T.ytdlp @('-S','res,fps,br','-f','bestvideo/best','--no-warnings','-o',"$tmp\v.%(ext)s",$Url) -TimeoutMs 600000
+        $dlr = Invoke-Exe $T.ytdlp @('--ignore-config','--no-playlist','-S','res,fps,br','-f','bestvideo/best','--no-warnings','-o',"$tmp\v.%(ext)s",$Url) -TimeoutMs 600000
         $vf = Get-ChildItem -LiteralPath $tmp -File -ErrorAction SilentlyContinue | Where-Object {
             $_.Name -like 'v.*' -and $_.Name -notmatch '\.(part|ytdl|tmp)$' -and $_.Extension.ToLowerInvariant() -notin @('.part','.ytdl','.tmp')
         } | Select-Object -First 1
@@ -1299,12 +1314,22 @@ if (-not $OutDir -or $OutDir -eq '') {
 }
 
 $links = @()
-if ($Link) { $links = @($Link | Where-Object { $_ -match '\S' }) }
+if ($Link) {
+    if (Get-Command Get-FacebookInputLinks -CommandType Function -ErrorAction SilentlyContinue) { $links = @(Get-FacebookInputLinks -Text ($Link -join "`n")) }
+    else { $links = @($Link | Where-Object { $_ -match '\S' }) }
+}
+if ($Link -and $links.Count -eq 0) {
+    Show-Fail -Message 'Khong tim thay URL Facebook hop le trong noi dung da dan.' -Fix @('Dan URL Facebook/Reel/share, co the kem van ban.')
+    return
+}
 if ($links.Count -eq 0) {
     Write-Host ''
     Write-Host '  Dan link video Facebook roi bam Enter:' -ForegroundColor Gray
     $typed = Read-Host '  Link'
-    if ($typed -match '\S') { $links = @($typed -split '\s+' | Where-Object { $_ -match '\S' }) }
+    if ($typed -match '\S') {
+        if (Get-Command Get-FacebookInputLinks -CommandType Function -ErrorAction SilentlyContinue) { $links = @(Get-FacebookInputLinks -Text $typed) }
+        else { $links = @($typed -split '\s+' | Where-Object { $_ -match '\S' }) }
+    }
 }
 if ($links.Count -eq 0) { Write-Note 'Khong co link nao, thoat.'; return }
 

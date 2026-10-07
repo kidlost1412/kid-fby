@@ -56,3 +56,11 @@ Manifest 1.0.9 khớp kích thước và SHA256 của cả tám file theo quy t�
 ## Bổ sung tiny theo yêu cầu sau đó — bản 1.0.10
 
 Anh đã đồng ý triển khai thử nhận diện ngôn ngữ từ audio ngắn. Vì vậy quyết định “chưa thêm Whisper” phía trên mô tả đợt 1.0.9, đã được thay bằng bản thử tùy chọn trong 1.0.10. Không thay thuật toán căn tiếng. Chi tiết chức năng, ngưỡng thử, số đo bằng model thật và giới hạn kiểm chứng nằm trong [WHISPER.md](WHISPER.md).
+
+## Bản 1.0.11 — link Facebook chia sẻ
+
+Anh báo link `https://www.facebook.com/share/r/19bVLUNWK5/` bị báo không đọc được/phải công khai. Trên máy phát triển, cả redirect HTTP và yt-dlp 2026.08.19 đọc được ID `949206081560084`, nên chưa tái hiện được đúng lỗi môi trường của máy anh. Gợi ý “phải công khai” cũ chỉ là thông báo chung khi đọc ID thất bại, không phải kết luận từ Facebook rằng video riêng tư.
+
+Đã bổ sung tách URL Facebook từ văn bản, Markdown, dấu nháy, NBSP và danh sách; loại trùng. Link chia sẻ được thử chuyển hướng có giới hạn thời gian trước khi đọc ID, rồi dùng URL video trực tiếp cho tải và mở Facebook trên Android. Nếu không chuyển hướng được, giữ link gốc để yt-dlp thử; không đoán ID từ token chia sẻ hay URL đăng nhập. Bỏ ảnh hưởng cấu hình yt-dlp ngoài app, không lấy playlist; thông báo thất bại hiện lỗi thực của yt-dlp thay cho kết luận chung “link sai/phải công khai”.
+
+Kiểm tra link thật, với đúng nội dung Markdown/NBSP anh gửi, đọc được một URL và ID đúng, chuẩn hóa thành `https://www.facebook.com/reel/949206081560084/`. Chỉ truy vấn metadata/chuyển hướng; chưa tải/thu toàn bộ Reel này trên LDPlayer. Bộ test link kiểm tra parser, host, ID và các redirect lỗi/đăng nhập/checkpoint bằng mock; suite startup kiểm tra helper mới được nhúng vào EXE.

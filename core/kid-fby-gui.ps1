@@ -27,6 +27,8 @@ if (-not (Test-Path (Join-Path $scriptDir 'kid-fby.ps1'))) {
     }
 }
 $engine = Join-Path $scriptDir 'kid-fby.ps1'
+$linkHelper = Join-Path $scriptDir 'facebook-links.ps1'
+if (Test-Path -LiteralPath $linkHelper) { . $linkHelper }
 if (-not (Test-Path $engine)) {
     $cand = Join-Path (Split-Path $scriptDir -Parent) 'core\kid-fby.ps1'
     if (Test-Path $cand) { $engine = $cand }
@@ -2315,7 +2317,9 @@ if ($ui.BtnClearLog) {
 
 # Dynamic Link Count Tracker
 $ui.TxtLinks.Add_TextChanged({
-    $lines = @($ui.TxtLinks.Text -split "`r?`n" | Where-Object { $_ -match '\S' })
+    $lines = if (Get-Command Get-FacebookInputLinks -CommandType Function -ErrorAction SilentlyContinue) {
+        @(Get-FacebookInputLinks -Text $ui.TxtLinks.Text)
+    } else { @($ui.TxtLinks.Text -split "`r?`n" | Where-Object { $_ -match '\S' }) }
     if ($lines.Count -eq 0) {
         $ui.TxtQueueCount.Text = "Chưa có liên kết nào"
         $ui.TxtQueueCount.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#64748B')
@@ -2485,12 +2489,16 @@ $ui.BtnStart.Add_Click({
     if ($script:ps) { Show-Toast 'Đang chạy tác vụ — hãy đợi hoàn tất.'; return }
     if ($script:queue -and $script:queue.Count -gt 0) { Show-Toast 'Hãy hoàn tất hoặc bỏ qua hàng đợi đang nghiệm thu trước khi bắt đầu.'; return }
     $links = @()
-    foreach ($l in ($ui.TxtLinks.Text -split "`r?`n")) {
-        $t = $l.Trim().Trim('"').Trim("'").Trim()
-        if ($t -match '\S') { $links += $t }
+    if (Get-Command Get-FacebookInputLinks -CommandType Function -ErrorAction SilentlyContinue) {
+        $links = @(Get-FacebookInputLinks -Text $ui.TxtLinks.Text)
+    } else {
+        foreach ($l in ($ui.TxtLinks.Text -split "`r?`n")) {
+            $t = $l.Trim().Trim('"').Trim("'").Trim()
+            if ($t -match '\S') { $links += $t }
+        }
     }
     if ($links.Count -eq 0) {
-        [System.Windows.MessageBox]::Show('Chưa có liên kết nào. Dán link video Facebook vào ô phía trên.',
+        [System.Windows.MessageBox]::Show('Chưa tìm thấy URL Facebook hợp lệ. Dán link video, Reel hoặc share/r vào ô phía trên.',
             'Thiếu link','OK','Information') | Out-Null
         return
     }

@@ -31,6 +31,7 @@ namespace KidFBY
                 string guiFile = Path.Combine(coreDir, "kid-fby-gui.ps1");
                 string engineFile = Path.Combine(coreDir, "kid-fby.ps1");
                 string languageFile = Path.Combine(coreDir, "whisper-language.ps1");
+                string linkFile = Path.Combine(coreDir, "facebook-links.ps1");
                 string fixFile = Path.Combine(coreDir, "fix-ket-noi.ps1");
                 string icoFile = Path.Combine(coreDir, "Kid-FB.Y.ico");
 
@@ -38,6 +39,7 @@ namespace KidFBY
                 ExtractResourceIfMissing("kid-fby-gui.ps1", guiFile);
                 ExtractResourceIfMissing("kid-fby.ps1", engineFile);
                 ExtractResourceIfMissing("whisper-language.ps1", languageFile);
+                ExtractResourceIfMissing("facebook-links.ps1", linkFile);
                 ExtractResourceIfMissing("fix-ket-noi.ps1", fixFile);
                 ExtractResourceIfMissing("Kid-FB.Y.ico", icoFile);
 

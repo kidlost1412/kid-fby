@@ -51,7 +51,7 @@ try {
     Assert-True ((Invoke-LauncherTest $fresh) -eq 0) 'Ban cai moi khong khoi tao duoc.'
     Assert-True (Test-Path -LiteralPath (Join-Path $fresh 'core\_update\BOOT_OK')) 'Thieu BOOT_OK.'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $fresh 'output'))) 'SelfTest khong duoc tao output gia.'
-    foreach ($name in @('kid-fby-gui.ps1','kid-fby.ps1','whisper-language.ps1','fix-ket-noi.ps1','Kid-FB.Y.ico')) {
+    foreach ($name in @('kid-fby-gui.ps1','kid-fby.ps1','whisper-language.ps1','facebook-links.ps1','fix-ket-noi.ps1','Kid-FB.Y.ico')) {
         $expected = (Get-FileHash -LiteralPath (Join-Path $Root "core\$name")).Hash
         $actual = (Get-FileHash -LiteralPath (Join-Path $fresh "core\$name")).Hash
         Assert-True ($actual -eq $expected) "EXE nhung sai tai nguyen: $name"
