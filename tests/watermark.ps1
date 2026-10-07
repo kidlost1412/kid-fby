@@ -4,7 +4,7 @@ $ErrorActionPreference='Stop'
 $tokens=$null; $errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $Root 'core/kid-fby.ps1'),[ref]$tokens,[ref]$errors)
 if ($errors.Count) { throw 'Engine parse failed.' }
-foreach ($name in @('Quote-Arg','Invoke-Exe','Expand-KidLogo','Test-LogoPng','Resolve-WatermarkLogo','Get-MovingLogoMuxArgs','Get-VideoSize','Test-ValidReelOutput')) {
+foreach ($name in @('Write-Note','Quote-Arg','Invoke-Exe','Expand-KidLogo','Test-LogoPng','Resolve-WatermarkLogo','Get-MovingLogoMuxArgs','Get-Duration','Get-VideoDuration','Get-VideoSize','Get-ReelProcessTimeoutMs','Publish-ReelFiles','Invoke-ReeditVideo','Test-ValidReelOutput')) {
     $fn=$ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true) | Select-Object -First 1
     if (-not $fn) { throw "Missing function: $name" }
     Invoke-Expression $fn.Extent.Text
@@ -48,7 +48,7 @@ try {
     }
     $ffmpeg=(Get-Command ffmpeg -ErrorAction Stop).Source
     $probe=(Get-Command ffprobe -ErrorAction Stop).Source
-    $tools=@{ffprobe=$probe}
+    $tools=@{ffprobe=$probe;ffmpeg=$ffmpeg}
     $source=Join-Path $work 'source with spaces.mp4'
     $output=Join-Path $work 'moving logo.mp4'
     $r=Invoke-Exe $ffmpeg @('-v','error','-y','-f','lavfi','-i','color=c=blue:s=320x568:r=10:d=6','-f','lavfi','-i','sine=frequency=440:duration=6','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-shortest',$source)
@@ -111,6 +111,32 @@ try {
     Assert ([Math]::Abs($fixedBounds[0].X-$fixedBounds[1].X) -lt 3 -and [Math]::Abs($fixedBounds[0].Y-$fixedBounds[1].Y) -lt 3) 'Fixed logo moved between frames.'
     Assert ($fixedBounds[0].X -lt 80 -and $fixedBounds[0].Y -lt 100) 'Top-left position was not applied.'
     Assert ($fixedBounds[0].Width -lt $movingBounds.Width/2) 'Smaller size did not reduce encoded logo dimensions.'
+    $originalSaved=Join-Path $work 'fixture-1-video-goc.mp4'
+    $audioSaved=Join-Path $work 'fixture-2-am-thanh-tho.m4a'
+    $finalSaved=Join-Path $work 'fixture-3-hoan-chinh.mp4'
+    Copy-Item $source $originalSaved; Copy-Item $audio $audioSaved; Copy-Item $output $finalSaved
+    $originalSavedHash=(Get-FileHash $originalSaved).Hash
+    $audioSavedHash=(Get-FileHash $audioSaved).Hash
+    $null=Invoke-ReeditVideo -T $tools -File $finalSaved -Enabled -Size 20 -Fade 80 -Motion Fixed -Position BottomRight
+    Assert (Test-ValidReelOutput $tools $finalSaved) 'Reedit output invalid.'
+    $null=Invoke-ReeditVideo -T $tools -File $finalSaved
+    $videoHashes=@()
+    foreach($file in @($originalSaved,$finalSaved)){
+        $r=Invoke-Exe $ffmpeg @('-v','error','-i',$file,'-map','0:v:0','-c:v','copy','-f','hash','-hash','sha256','-')
+        Assert ($r.Code -eq 0) 'Cannot hash restored clean video.'
+        $videoHashes+=$r.Out.Trim()
+    }
+    Assert ($videoHashes[0] -eq $videoHashes[1]) 'Disabling logo did not restore clean original video.'
+    Assert ((Get-FileHash $originalSaved).Hash -eq $originalSavedHash -and (Get-FileHash $audioSaved).Hash -eq $audioSavedHash) 'Reedit changed original/audio files.'
+    $previousHash=(Get-FileHash $finalSaved).Hash
+    $rejected=$false
+    try { $null=Invoke-ReeditVideo -T $tools -File $finalSaved -Enabled -CustomLogo $invalid } catch { $rejected=$true }
+    Assert ($rejected -and (Get-FileHash $finalSaved).Hash -eq $previousHash) 'Failed reedit damaged existing final video.'
+    Remove-Item -LiteralPath $audioSaved
+    $rejected=$false
+    try { $null=Invoke-ReeditVideo -T $tools -File $finalSaved } catch { $rejected=$_.Exception.Message -match 'Thieu file' }
+    Assert ($rejected -and (Get-FileHash $finalSaved).Hash -eq $previousHash) 'Missing saved audio did not safely stop reedit.'
+    Write-Host 'PASS reedit: saved clean source/audio, repeat editing without stacked logo, removal restores original packets, failure/missing audio preserve prior final.'
     Write-Host 'PASS watermark: original/custom PNG; invalid PNG rejection; fade/size/locale; free movement; fixed position and smaller size; preserved source and selected audio.'
 } finally {
     $resolved=[IO.Path]::GetFullPath($work)

@@ -343,7 +343,6 @@ try {
   <Grid Margin="0">
     <Grid.RowDefinitions>
       <RowDefinition Height="46"/>
-      <RowDefinition Height="Auto"/>
       <RowDefinition Height="*"/>
       <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
@@ -409,16 +408,27 @@ try {
       </Grid>
     </Border>
 
-    <!-- ROW 1: INPUT DECK -->
-    <Border Grid.Row="1" Background="#111724" BorderBrush="#1E293E" BorderThickness="1" CornerRadius="10" Margin="16,10,16,6" Padding="16,12">
+    <!-- ROW 1: INPUT, WORKFLOW, AND VIDEO PREVIEW -->
+    <Grid Grid.Row="1" Margin="16,10,16,6">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="0.55*" MinWidth="600"/>
+        <ColumnDefinition Width="8"/>
+        <ColumnDefinition Width="0.45*" MinWidth="360"/>
+      </Grid.ColumnDefinitions>
+      <Grid Grid.Column="0">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <Border x:Name="InputPane" Grid.Row="0" Background="#111724" BorderBrush="#1E293E" BorderThickness="1" CornerRadius="10" Margin="0,0,0,8" Padding="12,10">
       <Grid>
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="*"/>
-          <ColumnDefinition Width="Auto"/>
-        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
 
         <!-- Left inputs -->
-        <StackPanel Grid.Column="0" Margin="0,0,16,0">
+        <StackPanel Grid.Row="0" Grid.Column="0" Margin="0">
           <Grid Margin="0,0,0,6">
             <TextBlock Text="DANH SÁCH LIÊN KẾT FACEBOOK (REEL / VIDEO)" FontWeight="Bold" FontSize="11" Foreground="#94A3B8"/>
             <TextBlock x:Name="TxtQueueCount" Text="Chưa có liên kết nào" HorizontalAlignment="Right" Foreground="#64748B" FontSize="11"/>
@@ -486,14 +496,17 @@ try {
                     <ComboBoxItem Content="Dưới trái"/><ComboBoxItem Content="Dưới phải"/><ComboBoxItem Content="Giữa"/>
                   </ComboBox>
                 </StackPanel>
-              </WrapPanel>
+          </WrapPanel>
+              <Button x:Name="BtnReedit" Content="Áp dụng logo · Sửa lại video" Height="32" Margin="0,8,0,0" IsEnabled="False"
+                      Background="#102A3C" BorderBrush="#0EA5E9" Foreground="#7DD3FC"
+                      ToolTip="Dùng lại video gốc và audio đã lưu để áp dụng logo, không tải xuống hoặc ghi âm lại."/>
             </StackPanel>
           </Border>
         </StackPanel>
 
         <!-- Right actions -->
-        <StackPanel Grid.Column="1" VerticalAlignment="Center">
-          <Button x:Name="BtnStart" Height="48" MinWidth="220" FontWeight="Bold" FontSize="14" Foreground="#FFFFFF" BorderThickness="1" BorderBrush="#38BDF8">
+        <StackPanel Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" Margin="0,8,0,0">
+          <Button x:Name="BtnStart" Height="38" HorizontalAlignment="Stretch" MinWidth="0" FontWeight="Bold" FontSize="13" Foreground="#FFFFFF" BorderThickness="1" BorderBrush="#38BDF8">
             <Button.Background>
               <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
                 <GradientStop Color="#0062E0" Offset="0.0"/>
@@ -519,18 +532,10 @@ try {
           </StackPanel>
         </StackPanel>
       </Grid>
-    </Border>
-
-    <!-- ROW 2: WORKSPACE (STAGE PIPELINE / GALLERY / TOOLS / LOGS vs STUDIO VIEWPORT) -->
-    <Grid Grid.Row="2" Margin="16,4,16,6">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="1.2*"/>
-        <ColumnDefinition Width="8"/>
-        <ColumnDefinition Width="1*"/>
-      </Grid.ColumnDefinitions>
+      </Border>
 
       <!-- LEFT: WORKFLOW & PROGRESS / GALLERY / TOOLS / LOGS -->
-      <Border Grid.Column="0" Background="#111724" BorderBrush="#1E293E" BorderThickness="1" CornerRadius="10" Padding="14,12">
+      <Border x:Name="WorkflowPane" Grid.Row="1" Background="#111724" BorderBrush="#1E293E" BorderThickness="1" CornerRadius="10" Margin="0" Padding="10">
         <DockPanel>
           <!-- Top bar with tabs: Tien trinh -> Kho Video -> Bo Thu Vien -> Terminal Logs (CUOI CUNG) -->
           <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
@@ -886,12 +891,13 @@ try {
           </Border>
         </DockPanel>
       </Border>
+      </Grid>
 
       <!-- SPLITTER -->
       <GridSplitter Grid.Column="1" Width="8" HorizontalAlignment="Stretch" Background="Transparent" Cursor="SizeWE"/>
 
       <!-- RIGHT: STUDIO CINEMA VIEWPORT -->
-      <Border Grid.Column="2" Background="#111724" BorderBrush="#1E293E" BorderThickness="1" CornerRadius="10" Padding="14,12">
+      <Border x:Name="PreviewPane" Grid.Column="2" Background="#111724" BorderBrush="#1E293E" BorderThickness="1" CornerRadius="10" Margin="0" Padding="14,12">
         <DockPanel>
           <!-- Viewport Header: Title + A/B Switcher + Resolution Badge -->
           <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
@@ -999,8 +1005,8 @@ try {
       </Border>
     </Grid>
 
-    <!-- ROW 3: QUALITY QA DECISION PANEL -->
-    <Border Grid.Row="3" x:Name="PanelRev" BorderThickness="1" BorderBrush="#059669" CornerRadius="10"
+    <!-- ROW 2: QUALITY QA DECISION PANEL -->
+    <Border Grid.Row="2" x:Name="PanelRev" BorderThickness="1" BorderBrush="#059669" CornerRadius="10"
             Margin="16,4,16,12" Padding="14,10" Visibility="Collapsed">
       <Border.Background>
         <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
@@ -1087,6 +1093,7 @@ foreach ($n in @('BtnWinMin','BtnWinMax','BtnWinClose',
                  'ChkWatermark','TxtLogoPath','BtnPickLogo','BtnDefaultLogo','SldLogoSize','TxtLogoSize',
                  'SldLogoFade','TxtLogoFade','CmbLogoMode','CmbLogoPosition',
                  'ImgLogoPreview','TxtLogoName','TxtLogoDefaultHint','PanelLogoPosition',
+                 'BtnReedit',
                  'BadgeStage1','TxtStage1Status','TxtStage1Info',
                  'BadgeStage2','TxtStage2Status','TxtStage2Info',
                  'BadgeStage3','TxtStage3Status','TxtStage3Info',
@@ -1283,6 +1290,7 @@ function Set-Busy {
         if ($logoControl) { $logoControl.IsEnabled = -not $On }
     }
     if ($ui.CmbLogoPosition) { $ui.CmbLogoPosition.IsEnabled = (-not $On -and $ui.CmbLogoMode.SelectedIndex -eq 1) }
+    if ($ui.BtnReedit) { $ui.BtnReedit.IsEnabled = (-not $On -and $script:lastOut -match '-3-hoan-chinh\.mp4$' -and (Test-Path -LiteralPath $script:lastOut)) }
     $ui.Bar.Visibility = $(if ($On) { 'Visible' } else { 'Collapsed' })
 }
 
@@ -1335,6 +1343,7 @@ function Clear-Player {
     $ui.TxtTime.Text         = '0:00 / 0:00'
     $ui.PanelRev.Visibility  = 'Collapsed'
     $script:lastOut          = $null
+    if ($ui.BtnReedit) { $ui.BtnReedit.IsEnabled = $false }
     $script:activeTrack      = 'B'
 }
 
@@ -1346,6 +1355,7 @@ function Load-Player {
     }
     try {
         $script:lastOut = $Path
+        if ($ui.BtnReedit) { $ui.BtnReedit.IsEnabled = (-not $script:ps -and $Path -match '-3-hoan-chinh\.mp4$') }
         try { $ui.Player.Stop() }  catch { }
         try { $ui.Player.Close() } catch { }
         $full = [System.IO.Path]::GetFullPath($Path)
@@ -1868,7 +1878,7 @@ function Install-ToolGUI {
 function Start-Engine {
     param([string[]]$Links, [hashtable]$Named, [string]$Mode, [bool]$XoaLog = $true)
     if ($script:ps) { return }
-    if ($Mode -ne 'run' -and $script:queue -and $script:queue.Count -gt 0) {
+    if ($Mode -notin @('run','reedit') -and $script:queue -and $script:queue.Count -gt 0) {
         Show-Toast 'Hãy hoàn tất hàng đợi đang nghiệm thu trước khi kiểm tra hoặc cài công cụ.'
         return
     }
@@ -1999,6 +2009,31 @@ function Start-Link {
     Start-Engine -Links @($script:queue[$script:idx]) -Named @{ OutDir = $ui.TxtOut.Text; SkipLanguageCheck = ([bool](-not $ui.ChkLanguage.IsChecked)); Watermark = [bool]$ui.ChkWatermark.IsChecked; LogoFile = $ui.TxtLogoPath.Text; LogoSize = [int]$ui.SldLogoSize.Value; LogoFade = [int]$ui.SldLogoFade.Value; LogoMotion = $(if ($ui.CmbLogoMode.SelectedIndex -eq 0) { 'Free' } else { 'Fixed' }); LogoPosition = @('TopLeft','TopRight','BottomLeft','BottomRight','Center')[[int]$ui.CmbLogoPosition.SelectedIndex] } -Mode 'run' -XoaLog $false
 }
 
+function Start-Reedit {
+    if ($script:ps) { return }
+    if (-not $script:lastOut -or -not (Test-Path -LiteralPath $script:lastOut)) { Show-Toast 'Chọn video đã xuất trong Kho Video trước khi sửa.'; return }
+    $script:reeditTarget = $script:lastOut
+    $script:reeditReviewVisible = ($ui.PanelRev.Visibility -eq 'Visible')
+    $named = @{ ReeditVideo=$script:reeditTarget; Watermark=[bool]$ui.ChkWatermark.IsChecked; LogoFile=$ui.TxtLogoPath.Text;
+                LogoSize=[int]$ui.SldLogoSize.Value; LogoFade=[int]$ui.SldLogoFade.Value;
+                LogoMotion=$(if ($ui.CmbLogoMode.SelectedIndex -eq 0) {'Free'} else {'Fixed'});
+                LogoPosition=@('TopLeft','TopRight','BottomLeft','BottomRight','Center')[[int]$ui.CmbLogoPosition.SelectedIndex] }
+    Clear-Player
+    Add-Log 'Sửa logo từ video gốc và audio đã lưu…' '#38BDF8'
+    $ui.TxtStat.Text='Đang áp dụng thay đổi logo…'
+    Start-Engine -Links @() -Named $named -Mode 'reedit' -XoaLog $false
+}
+
+function Complete-Reedit {
+    param([bool]$Cancelled = $false)
+    $ok = (-not $Cancelled -and $script:runLog -match '(?m)^REEDIT_OK:')
+    if ($script:reeditTarget -and (Test-Path -LiteralPath $script:reeditTarget)) { Load-Player $script:reeditTarget }
+    $ui.PanelRev.Visibility = $(if ($script:reeditReviewVisible) {'Visible'} else {'Collapsed'})
+    $ui.TxtStat.Text = $(if ($ok) {'Đã sửa logo · sẵn sàng xem lại'} elseif ($Cancelled) {'Đã dừng sửa · giữ video cũ'} else {'Chưa sửa được · giữ video cũ, xem Logs'})
+    Update-Gallery
+    if ($ok) { Show-Toast 'Đã áp dụng logo mới vào video.' }
+}
+
 function Next-Link {
     $script:idx++
     if ($script:idx -lt $script:queue.Count) { Start-Link }
@@ -2025,6 +2060,11 @@ $timer.Add_Tick({
             if ($stopDone -and $invokeDone) {
                 if ($script:stopHandle) { try { $script:ps.EndStop($script:stopHandle) } catch { } }
                 Finish-Engine -Cancelled $true
+                if ($script:mode -eq 'reedit') {
+                    Complete-Reedit -Cancelled $true
+                    if ($script:closeAfterStop) { $script:closeAfterStop = $false; $win.Close() }
+                    return
+                }
                 $script:queue = @()
                 $ui.PanelRev.Visibility = 'Collapsed'
                 if ($ui.TxtStat) { $ui.TxtStat.Text = 'Đã dừng theo yêu cầu'; $ui.TxtStat.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#FBBF24') }
@@ -2037,6 +2077,7 @@ $timer.Add_Tick({
             $laSetup = ($script:mode -eq 'setup')
             Finish-Engine -Cancelled $false
             $txt = $script:runLog
+            if ($script:mode -eq 'reedit') { Complete-Reedit; return }
             if ($laSetup) {
                 Update-ToolsStatus
                 $hasScrcpy = (Test-Path (Join-Path $root 'tools\scrcpy\scrcpy.exe')) -or 
@@ -2535,6 +2576,7 @@ $ui.BtnStop.Add_Click({
     Stop-Engine
     Add-Log ''; Add-Log 'Đã dừng theo yêu cầu của người dùng.' '#FBBF24'
 })
+$ui.BtnReedit.Add_Click({ Start-Reedit })
 $ui.BtnPlay.Add_Click({
     if ($ui.BtnPlay.Content -match 'Phát') {
         $ui.Player.Play()

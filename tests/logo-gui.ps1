@@ -20,7 +20,7 @@ try {
         if($name){$ui[$name]=$window.FindName($name)}
     }
     foreach($name in @('ChkWatermark','TxtLogoPath','BtnPickLogo','BtnDefaultLogo','SldLogoSize','TxtLogoSize','SldLogoFade','TxtLogoFade','CmbLogoMode','CmbLogoPosition')){Assert ($null -ne $ui[$name]) "Missing logo control: $name"}
-    foreach($name in @('Start-Link','Set-Busy','Set-LogoSelection')) {
+    foreach($name in @('Start-Link','Set-Busy','Set-LogoSelection','Start-Reedit','Complete-Reedit')) {
         $fn=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
         Invoke-Expression $fn.Extent.Text
     }
@@ -81,6 +81,20 @@ try {
         # The preview must not lock the source file after selecting it.
         $exclusive=[IO.File]::Open($pickedPath,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
         $exclusive.Dispose()
+        $editPath=Join-Path $testDir 'fixture-3-hoan-chinh.mp4';[IO.File]::WriteAllBytes($editPath,[byte[]](1,2,3))
+        $script:ps=$null;$script:lastOut=$editPath;$script:queue=@('first','second');$script:idx=0
+        $ui.PanelRev.Visibility='Visible'
+        function Clear-Player { $script:lastOut=$null }
+        function Load-Player {param($Path);$script:lastOut=$Path}
+        function Update-Gallery {}
+        Start-Reedit
+        Assert ($script:captured.ReeditVideo -eq $editPath -and $script:captured.LogoFade -eq 42 -and $script:captured.LogoSize -eq 17 -and $script:captured.LogoFile -eq $pickedPath) 'Reedit did not pass current logo settings and selected video.'
+        $script:runLog='REEDIT_OK: '+$editPath
+        Complete-Reedit
+        Assert ($script:lastOut -eq $editPath -and $script:queue.Count -eq 2 -and $script:idx -eq 0 -and $ui.PanelRev.Visibility -eq 'Visible') 'Successful reedit changed pending review queue or failed to reload video.'
+        $script:runLog='failure'
+        Complete-Reedit -Cancelled $true
+        Assert ($script:lastOut -eq $editPath -and $script:queue.Count -eq 2 -and $ui.TxtStat.Text -match 'giữ video cũ') 'Cancelled reedit did not preserve video and review queue.'
     } finally {
         $resolved=[IO.Path]::GetFullPath($testDir)
         $prefix=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'
@@ -96,5 +110,10 @@ try {
     Assert ($ui.PanelLogoPosition.ActualWidth -eq 0) 'Hidden position controls still take layout space.'
     $ui.CmbLogoMode.SelectedIndex=1; $window.Content.UpdateLayout()
     Assert ($ui.CmbLogoPosition.ActualWidth -gt 0) 'Fixed position selector not visible in layout.'
+    $inputOrigin=$ui.InputPane.TranslatePoint((New-Object Windows.Point 0,0),$window.Content)
+    $previewOrigin=$ui.PreviewPane.TranslatePoint((New-Object Windows.Point 0,0),$window.Content)
+    Assert ([Math]::Abs($inputOrigin.Y-$previewOrigin.Y) -lt 1) 'Video preview still starts below the controls.'
+    Assert ($previewOrigin.X -ge $inputOrigin.X+$ui.InputPane.ActualWidth) 'Settings overlap video preview.'
+    Assert ($ui.PreviewPane.ActualHeight -gt 450) 'Preview too short at minimum window size.'
     Write-Host 'PASS logo GUI: picker path/name/thumbnail, default selection confirmation, no image lock, non-clipped text, free hides position, fixed shows it, and engine bindings.'
 } finally { $window.Close() }

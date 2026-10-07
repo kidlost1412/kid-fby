@@ -30,6 +30,7 @@ param(
     [ValidateSet('Free','Fixed')][string]$LogoMotion = 'Free',
     [ValidateSet('TopLeft','TopRight','BottomLeft','BottomRight','Center')][string]$LogoPosition = 'BottomRight',
     [string]$WatermarkVideo,
+    [string]$ReeditVideo,
     [System.Collections.IDictionary]$ProcessRegistry
 )
 
@@ -1023,6 +1024,48 @@ function Get-MovingLogoMuxArgs {
              '-c:a','copy','-shortest','-movflags','+faststart',$Output)
 }
 
+function Invoke-ReeditVideo {
+    param($T, [string]$File, [switch]$Enabled,
+          [string]$CustomLogo, [int]$Size = 30, [int]$Fade = 60,
+          [string]$Motion = 'Free', [string]$Position = 'BottomRight')
+    if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { throw 'Khong tim thay video can sua.' }
+    $final = (Resolve-Path -LiteralPath $File).Path
+    $name = [IO.Path]::GetFileName($final)
+    if ($name -notmatch '^(.+)-3-hoan-chinh\.mp4$') { throw 'Hay chon video hoan chinh trong Kho Video de sua logo.' }
+    $id = $matches[1]; $dest = Split-Path $final -Parent
+    $source = Join-Path $dest ($id + '-1-video-goc.mp4')
+    $audio = Join-Path $dest ($id + '-2-am-thanh-tho.m4a')
+    foreach ($inputFile in @($source,$audio)) {
+        if (-not (Test-Path -LiteralPath $inputFile -PathType Leaf)) { throw "Thieu file da luu de sua video: $inputFile. Khong tai hoac thu am lai tu dong." }
+    }
+    $sizeInfo = Get-VideoSize $T $source
+    $duration = Get-VideoDuration $T $source
+    $tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    $work = Join-Path $tempBase ('kidfby-reedit-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $work -ErrorAction Stop | Out-Null
+    try {
+        $staged = Join-Path $work 'edited.mp4'
+        if ($Enabled) {
+            $logo = Resolve-WatermarkLogo -WorkDir $work -CustomFile $CustomLogo
+            $editArgs = Get-MovingLogoMuxArgs -Video $source -Audio $audio -Logo $logo -Output $staged -Width $sizeInfo.W -Height $sizeInfo.H -Fade $Fade -Size $Size -Motion $Motion -Position $Position
+        } else {
+            $editArgs = @('-hide_banner','-loglevel','error','-y','-i',$source,'-i',$audio,'-map','0:v:0','-map','1:a:0','-c','copy','-shortest','-movflags','+faststart',$staged)
+        }
+        Write-Note 'Sua tu video goc va audio da luu; khong tai video, khong thu am lai.'
+        $result = Invoke-Exe $T.ffmpeg $editArgs -TimeoutMs (Get-ReelProcessTimeoutMs $duration)
+        if ($result.Code -ne 0) { throw "Sua video that bai: $($result.Err)" }
+        if (-not (Test-ValidReelOutput $T $staged)) { throw 'Video sua khong qua kiem tra. Giu nguyen ban cu.' }
+        Publish-ReelFiles -Dest $dest -Pairs @(@{Source=$staged;Destination=$final})
+        Write-Host "REEDIT_OK: $final"
+        Write-Host "Video : $final"
+        return $final
+    } finally {
+        $resolved = [IO.Path]::GetFullPath($work)
+        if (-not $resolved.StartsWith($tempBase,[StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($resolved) -notmatch '^kidfby-reedit-[0-9a-f]{32}$') { throw 'Duong dan don dep sua video khong an toan.' }
+        Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Test-ValidReelOutput {
     param($T, [string]$File)
     if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { return $false }
@@ -1384,6 +1427,13 @@ function Invoke-OneLink {
 # ------------------------------------------------------------------ chay ----
 Write-Host ''
 Write-Host '  Kid FB.Y - tai video Facebook kem long tieng Meta AI  ' -ForegroundColor White -BackgroundColor DarkBlue
+
+if ($ReeditVideo) {
+    $editTools = Get-Toolset
+    if (-not $editTools.ffmpeg -or -not $editTools.ffprobe) { throw 'Can FFmpeg va ffprobe de sua video.' }
+    Invoke-ReeditVideo -T $editTools -File $ReeditVideo -Enabled:$Watermark -CustomLogo $LogoFile -Size $LogoSize -Fade $LogoFade -Motion $LogoMotion -Position $LogoPosition
+    return
+}
 
 # Chen logo vao video co san, khong ket noi Android hay tai video.
 if ($WatermarkVideo) {
