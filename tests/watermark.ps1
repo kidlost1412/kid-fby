@@ -4,7 +4,7 @@ $ErrorActionPreference='Stop'
 $tokens=$null; $errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $Root 'core/kid-fby.ps1'),[ref]$tokens,[ref]$errors)
 if ($errors.Count) { throw 'Engine parse failed.' }
-foreach ($name in @('Quote-Arg','Invoke-Exe','Expand-KidLogo','Get-MovingLogoMuxArgs','Get-VideoSize','Test-ValidReelOutput')) {
+foreach ($name in @('Quote-Arg','Invoke-Exe','Expand-KidLogo','Test-LogoPng','Resolve-WatermarkLogo','Get-MovingLogoMuxArgs','Get-VideoSize','Test-ValidReelOutput')) {
     $fn=$ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true) | Select-Object -First 1
     if (-not $fn) { throw "Missing function: $name" }
     Invoke-Expression $fn.Extent.Text
@@ -20,6 +20,13 @@ try {
     try { Assert ($zip.Entries.Count -eq 1 -and $zip.Entries[0].FullName -eq 'kid-logo.png') 'Logo archive must contain only the selected original PNG.' } finally { $zip.Dispose() }
     # SHA256 of the original fifth logo approved by the user (not a redesigned variant).
     Assert ((Get-FileHash $logo).Hash -eq 'C236D2FAC8D7C7AECF743BF2094D91F9D86A36741C7832DA9203251DE1706A2C') 'Packaged logo differs from original selection.'
+    $custom=Join-Path $work 'logo rieng co dau va khoang trang.png'
+    Copy-Item -LiteralPath $logo -Destination $custom
+    $resolvedCustom=Resolve-WatermarkLogo $work $custom
+    Assert ((Get-FileHash $resolvedCustom).Hash -eq (Get-FileHash $custom).Hash) 'Custom PNG changed when copied to work directory.'
+    $invalid=Join-Path $work 'invalid.png'; [IO.File]::WriteAllText($invalid,'not an image')
+    $rejected=$false; try { Test-LogoPng $invalid } catch { $rejected=$true }
+    Assert $rejected 'Corrupt custom PNG was accepted.'
     $culture=[Threading.Thread]::CurrentThread.CurrentCulture
     try {
         [Threading.Thread]::CurrentThread.CurrentCulture=[cultureinfo]'de-DE'
@@ -32,8 +39,13 @@ try {
         Assert (($a -join ' ').Contains($expected)) 'Fade control does not map to correct opacity.'
     }
     $rejected=$false
-    try { $null=Get-MovingLogoMuxArgs 'v' 'a' $logo 'o' 320 568 90 } catch { $rejected=$true }
+    try { $null=Get-MovingLogoMuxArgs 'v' 'a' $logo 'o' 320 568 96 } catch { $rejected=$true }
     Assert $rejected 'Unsupported fade was accepted.'
+    foreach($position in @('TopLeft','TopRight','BottomLeft','BottomRight','Center')) {
+        $fixedArgs=Get-MovingLogoMuxArgs 'v' 'a' $logo 'o' 320 568 60 20 'Fixed' $position
+        Assert (($fixedArgs -join ' ') -notmatch 'sin\(') "Fixed mode still moves: $position"
+        Assert (($fixedArgs -join ' ') -match 'scale=64:341:') 'Logo size did not scale by video width.'
+    }
     $ffmpeg=(Get-Command ffmpeg -ErrorAction Stop).Source
     $probe=(Get-Command ffprobe -ErrorAction Stop).Source
     $tools=@{ffprobe=$probe}
@@ -60,12 +72,8 @@ try {
     Assert ($hashes[0] -eq $hashes[1]) 'Overlay changed audio packets.'
     Assert ($hashes[1] -ne $hashes[2]) 'Overlay mapped source audio instead of the selected dubbed track.'
     Add-Type -AssemblyName System.Drawing
-    $centers=@()
-    foreach($time in @('0','4')) {
-        $frame=Join-Path $work ('frame-'+$time+'.png')
-        $r=Invoke-Exe $ffmpeg @('-v','error','-y','-ss',$time,'-i',$output,'-frames:v','1',$frame)
-        Assert ($r.Code -eq 0) "Cannot extract overlay frame: $($r.Err)"
-        $bitmap=[Drawing.Bitmap]::FromFile($frame)
+    function Get-LogoFrameBounds([string]$Frame) {
+        $bitmap=[Drawing.Bitmap]::FromFile($Frame)
         try {
             $background=$bitmap.GetPixel(0,0); $count=0; $sumX=0.0; $sumY=0.0
             $minX=320; $minY=568; $maxX=0; $maxY=0
@@ -74,14 +82,36 @@ try {
                 $difference=[Math]::Abs([int]$p.R-$background.R)+[Math]::Abs([int]$p.G-$background.G)+[Math]::Abs([int]$p.B-$background.B)
                 if($difference -gt 45){$count++;$sumX+=$x;$sumY+=$y;$minX=[Math]::Min($minX,$x);$maxX=[Math]::Max($maxX,$x);$minY=[Math]::Min($minY,$y);$maxY=[Math]::Max($maxY,$y)}
             }}
-            Assert ($count -gt 30) 'Logo not visible in encoded frame.'
+            Assert ($count -gt 10) 'Logo not visible in encoded frame.'
             Assert ($minX -gt 0 -and $maxX -lt 319 -and $minY -gt 0 -and $maxY -lt 567) 'Logo clipped at frame edge.'
-            $centers+=[pscustomobject]@{X=$sumX/$count;Y=$sumY/$count}
+            return [pscustomobject]@{X=$sumX/$count;Y=$sumY/$count;Width=$maxX-$minX;Height=$maxY-$minY}
         } finally { $bitmap.Dispose() }
+    }
+    $centers=@()
+    foreach($time in @('0','4')) {
+        $frame=Join-Path $work ('frame-'+$time+'.png')
+        $r=Invoke-Exe $ffmpeg @('-v','error','-y','-ss',$time,'-i',$output,'-frames:v','1',$frame)
+        Assert ($r.Code -eq 0) "Cannot extract overlay frame: $($r.Err)"
+        $centers+=Get-LogoFrameBounds $frame
     }
     $distance=[Math]::Sqrt([Math]::Pow($centers[1].X-$centers[0].X,2)+[Math]::Pow($centers[1].Y-$centers[0].Y,2))
     Assert ($distance -gt 10) 'Encoded logo did not move between frames.'
-    Write-Host 'PASS watermark: exact original PNG; fade 50/60/70%; locale; real encode; dimensions; unchanged source/audio; visible movement inside frame.'
+    $movingBounds=Get-LogoFrameBounds (Join-Path $work 'frame-0.png')
+    $fixedOutput=Join-Path $work 'fixed custom logo.mp4'
+    $r=Invoke-Exe $ffmpeg (Get-MovingLogoMuxArgs $source $audio $resolvedCustom $fixedOutput 320 568 60 10 'Fixed' 'TopLeft') -TimeoutMs 60000
+    Assert ($r.Code -eq 0) "Fixed custom logo encode failed: $($r.Err)"
+    Assert (Test-ValidReelOutput $tools $fixedOutput) 'Fixed custom logo output invalid.'
+    $fixedBounds=@()
+    foreach($time in @('0','4')) {
+        $frame=Join-Path $work ('fixed-'+$time+'.png')
+        $r=Invoke-Exe $ffmpeg @('-v','error','-y','-ss',$time,'-i',$fixedOutput,'-frames:v','1',$frame)
+        Assert ($r.Code -eq 0) 'Cannot extract fixed frame.'
+        $fixedBounds+=Get-LogoFrameBounds $frame
+    }
+    Assert ([Math]::Abs($fixedBounds[0].X-$fixedBounds[1].X) -lt 3 -and [Math]::Abs($fixedBounds[0].Y-$fixedBounds[1].Y) -lt 3) 'Fixed logo moved between frames.'
+    Assert ($fixedBounds[0].X -lt 80 -and $fixedBounds[0].Y -lt 100) 'Top-left position was not applied.'
+    Assert ($fixedBounds[0].Width -lt $movingBounds.Width/2) 'Smaller size did not reduce encoded logo dimensions.'
+    Write-Host 'PASS watermark: original/custom PNG; invalid PNG rejection; fade/size/locale; free movement; fixed position and smaller size; preserved source and selected audio.'
 } finally {
     $resolved=[IO.Path]::GetFullPath($work)
     if(-not $resolved.StartsWith($tempBase,[StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($resolved) -notmatch '^kidfby-watermark-test-[0-9a-f]{32}$'){throw 'Unsafe test cleanup path.'}

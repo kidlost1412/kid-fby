@@ -24,7 +24,11 @@ param(
     [switch]$SkipLanguageCheck,
     [string]$DetectLanguageFile,
     [switch]$Watermark,
-    [ValidateRange(50,70)][int]$LogoFade = 60,
+    [ValidateRange(0,95)][int]$LogoFade = 60,
+    [ValidateRange(5,60)][int]$LogoSize = 30,
+    [string]$LogoFile,
+    [ValidateSet('Free','Fixed')][string]$LogoMotion = 'Free',
+    [ValidateSet('TopLeft','TopRight','BottomLeft','BottomRight','Center')][string]$LogoPosition = 'BottomRight',
     [string]$WatermarkVideo,
     [System.Collections.IDictionary]$ProcessRegistry
 )
@@ -968,15 +972,51 @@ function Expand-KidLogo {
     } finally { $zip.Dispose() }
 }
 
+function Test-LogoPng {
+    param([string]$File)
+    if (-not (Test-Path -LiteralPath $File -PathType Leaf) -or [IO.Path]::GetExtension($File) -ine '.png') { throw 'Hay chon file logo PNG co san.' }
+    Add-Type -AssemblyName System.Drawing
+    $image = $null
+    try {
+        $image = [Drawing.Image]::FromFile((Resolve-Path -LiteralPath $File).Path)
+        if ($image.RawFormat.Guid -ne [Drawing.Imaging.ImageFormat]::Png.Guid -or $image.Width -le 0 -or $image.Height -le 0) { throw 'Invalid PNG.' }
+    } catch { throw 'Khong doc duoc logo PNG. Hay chon lai anh PNG da tach nen.' }
+    finally { if ($image) { $image.Dispose() } }
+}
+
+function Resolve-WatermarkLogo {
+    param([string]$WorkDir, [string]$CustomFile)
+    if ([string]::IsNullOrWhiteSpace($CustomFile)) { return Expand-KidLogo -WorkDir $WorkDir }
+    Test-LogoPng -File $CustomFile
+    $target = Join-Path $WorkDir 'custom-logo.png'
+    Copy-Item -LiteralPath $CustomFile -Destination $target -Force -ErrorAction Stop
+    return $target
+}
+
 function Get-MovingLogoMuxArgs {
     param([string]$Video, [string]$Audio, [string]$Logo, [string]$Output,
-          [int]$Width, [int]$Height, [ValidateRange(50,70)][int]$Fade = 60)
+          [int]$Width, [int]$Height, [ValidateRange(0,95)][int]$Fade = 60,
+          [ValidateRange(5,60)][int]$Size = 30,
+          [ValidateSet('Free','Fixed')][string]$Motion = 'Free',
+          [ValidateSet('TopLeft','TopRight','BottomLeft','BottomRight','Center')][string]$Position = 'BottomRight')
     if ($Width -le 0 -or $Height -le 0) { throw 'Kich thuoc video khong hop le de chen logo.' }
-    $logoWidth = [Math]::Max(2, [int]($Width * 0.30))
-    $logoHeight = [Math]::Max(2, [int]($Height * 0.20))
+    $logoWidth = [Math]::Max(2, [int]($Width * $Size / 100.0))
+    $logoHeight = [Math]::Max(2, [int]($Height * 0.60))
     $alpha = ((100 - $Fade) / 100.0).ToString('0.00', [cultureinfo]::InvariantCulture)
     # Smooth independent horizontal/vertical waves; the logo stays inside the frame.
-    $filter = "[2:v]format=rgba,scale=${logoWidth}:${logoHeight}:force_original_aspect_ratio=decrease,colorchannelmixer=aa=${alpha}[logo];[0:v][logo]overlay=x='(W-w)*(0.5+0.46*sin(0.23*t+0.6))':y='(H-h)*(0.5+0.46*sin(0.17*t-1.1))':eval=frame:shortest=1:format=auto[v]"
+    $x = '(W-w)*(0.5+0.46*sin(0.23*t+0.6))'
+    $y = '(H-h)*(0.5+0.46*sin(0.17*t-1.1))'
+    if ($Motion -eq 'Fixed') {
+        $coordinates = @{
+            TopLeft = @('(W-w)*0.04','(H-h)*0.04')
+            TopRight = @('(W-w)*0.96','(H-h)*0.04')
+            BottomLeft = @('(W-w)*0.04','(H-h)*0.96')
+            BottomRight = @('(W-w)*0.96','(H-h)*0.96')
+            Center = @('(W-w)*0.5','(H-h)*0.5')
+        }
+        $x = $coordinates[$Position][0]; $y = $coordinates[$Position][1]
+    }
+    $filter = "[2:v]format=rgba,scale=${logoWidth}:${logoHeight}:force_original_aspect_ratio=decrease,colorchannelmixer=aa=${alpha}[logo];[0:v][logo]overlay=x='${x}':y='${y}':eval=frame:shortest=1:format=auto[v]"
     return @('-hide_banner','-loglevel','error','-y','-i',$Video,'-i',$Audio,
              '-loop','1','-i',$Logo,'-filter_complex',$filter,'-map','[v]','-map','1:a:0',
              '-c:v','libx264','-crf','18','-preset','veryfast','-pix_fmt','yuv420p',
@@ -1293,9 +1333,9 @@ function Invoke-OneLink {
         $muxArgs = @('-hide_banner','-loglevel','error','-y','-i',$vf.FullName,'-i',$cut,
                      '-map','0:v:0','-map','1:a:0') + $vCodecOpt + @('-c:a','copy','-shortest','-movflags','+faststart',$out)
         if ($Watermark) {
-            $logo = Expand-KidLogo -WorkDir $tmp
-            Write-Note "Chen logo Kid di chuyen, do mo $LogoFade% (giu nguyen kich thuoc video)."
-            $muxArgs = Get-MovingLogoMuxArgs -Video $vf.FullName -Audio $cut -Logo $logo -Output $out -Width $sz.W -Height $sz.H -Fade $LogoFade
+            $logo = Resolve-WatermarkLogo -WorkDir $tmp -CustomFile $LogoFile
+            Write-Note "Chen logo: kich thuoc $LogoSize%, do mo $LogoFade%, che do $LogoMotion."
+            $muxArgs = Get-MovingLogoMuxArgs -Video $vf.FullName -Audio $cut -Logo $logo -Output $out -Width $sz.W -Height $sz.H -Fade $LogoFade -Size $LogoSize -Motion $LogoMotion -Position $LogoPosition
         }
         $muxResult = Invoke-Exe $T.ffmpeg $muxArgs -TimeoutMs (Get-ReelProcessTimeoutMs $dur)
         if ($muxResult.Code -ne 0 -or -not (Test-Path -LiteralPath $out -PathType Leaf) -or (Get-Item -LiteralPath $out).Length -le 0) {
@@ -1356,12 +1396,12 @@ if ($WatermarkVideo) {
     $logoTemp = Join-Path ([IO.Path]::GetTempPath()) ('kidfby-logo-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $logoTemp -ErrorAction Stop | Out-Null
     try {
-        $logoFile = Expand-KidLogo -WorkDir $logoTemp
+        $resolvedLogo = Resolve-WatermarkLogo -WorkDir $logoTemp -CustomFile $LogoFile
         $size = Get-VideoSize $logoTools $sourceVideo
         $duration = Get-VideoDuration $logoTools $sourceVideo
         $stagedVideo = Join-Path $logoTemp 'preview.mp4'
-        $logoArgs = Get-MovingLogoMuxArgs -Video $sourceVideo -Audio $sourceVideo -Logo $logoFile -Output $stagedVideo -Width $size.W -Height $size.H -Fade $LogoFade
-        Write-Note "Chen logo Kid di chuyen, do mo $LogoFade%..."
+        $logoArgs = Get-MovingLogoMuxArgs -Video $sourceVideo -Audio $sourceVideo -Logo $resolvedLogo -Output $stagedVideo -Width $size.W -Height $size.H -Fade $LogoFade -Size $LogoSize -Motion $LogoMotion -Position $LogoPosition
+        Write-Note "Chen logo: kich thuoc $LogoSize%, do mo $LogoFade%, che do $LogoMotion..."
         $result = Invoke-Exe $logoTools.ffmpeg $logoArgs -TimeoutMs (Get-ReelProcessTimeoutMs $duration)
         if ($result.Code -ne 0) { throw "Chen logo that bai: $($result.Err)" }
         if (-not (Test-ValidReelOutput $logoTools $stagedVideo)) { throw 'Video chen logo khong qua kiem tra dau ra.' }
@@ -1444,8 +1484,9 @@ if ($links.Count -eq 0) {
 }
 if ($links.Count -eq 0) { Write-Note 'Khong co link nao, thoat.'; return }
 
-if ($Watermark -and -not (Test-Path -LiteralPath (Join-Path $script:Here 'core/kid-logo.zip') -PathType Leaf)) {
-    throw 'Thieu logo Kid: core/kid-logo.zip. Hay cap nhat lai app.'
+if ($Watermark) {
+    if (-not [string]::IsNullOrWhiteSpace($LogoFile)) { Test-LogoPng -File $LogoFile }
+    elseif (-not (Test-Path -LiteralPath (Join-Path $script:Here 'core/kid-logo.zip') -PathType Leaf)) { throw 'Thieu logo Kid: core/kid-logo.zip. Hay cap nhat lai app.' }
 }
 $tools = Test-Ready
 if (-not $tools) { return }

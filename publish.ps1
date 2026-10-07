@@ -81,7 +81,7 @@ if (Test-Path $csc) {
 }
 
 # Kiem tra khoi tao tren thu muc tam, khong ap dung READY trong thu muc dang phat trien.
-foreach ($test in @('startup.ps1','engine-runtime.ps1','gui-runtime.ps1','media-output.ps1','media-metadata.ps1','watermark.ps1','whisper-runtime.ps1','whisper-gui.ps1','whisper-media.ps1','whisper-integration.ps1','facebook-links.ps1')) {
+foreach ($test in @('startup.ps1','engine-runtime.ps1','gui-runtime.ps1','logo-gui.ps1','media-output.ps1','media-metadata.ps1','watermark.ps1','whisper-runtime.ps1','whisper-gui.ps1','whisper-media.ps1','whisper-integration.ps1','facebook-links.ps1')) {
     & (Join-Path $root "tests\$test") -Root $root
 }
 

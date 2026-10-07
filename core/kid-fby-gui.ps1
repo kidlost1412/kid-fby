@@ -16,7 +16,7 @@ param([switch]$SelfTest)
 # SelfTest phai that bai ngay khi co loi khoi tao, khong bao BOOT_OK gia.
 if ($SelfTest) { $ErrorActionPreference = 'Stop' }
 
-Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms, System.Drawing
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 $scriptPath = if ($MyInvocation.MyCommand.Path) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot) { Join-Path $PSScriptRoot 'kid-fby-gui.ps1' } else { (Get-Location).Path }
@@ -410,17 +410,41 @@ try {
           <CheckBox x:Name="ChkLanguage" Content="Nhận diện tiếng Việt bằng tiny" IsChecked="True"
                     ToolTip="Thử tối đa 2 đoạn audio ngắn; kết quả ước tính, vẫn nghe nghiệm thu."
                     Foreground="#CBD5E1" FontSize="11" Margin="0,7,0,0"/>
-          <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,5,0,0">
-            <CheckBox x:Name="ChkWatermark" Content="Chèn logo Kid di chuyển" IsChecked="True"
-                      ToolTip="Dùng logo Kid gỗ nguyên bản làm lớp phủ di chuyển nhẹ trên video."
-                      Foreground="#CBD5E1" FontSize="11" VerticalAlignment="Center"/>
-            <TextBlock Text="Độ mờ:" Foreground="#94A3B8" FontSize="11" VerticalAlignment="Center" Margin="14,0,6,0"/>
-            <ComboBox x:Name="CmbLogoFade" Width="68" Height="26" SelectedIndex="1" VerticalContentAlignment="Center">
-              <ComboBoxItem Content="50%"/>
-              <ComboBoxItem Content="60%"/>
-              <ComboBoxItem Content="70%"/>
+          <WrapPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,4,0,0">
+            <CheckBox x:Name="ChkWatermark" Content="Chèn logo" IsChecked="True"
+                      Foreground="#CBD5E1" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <TextBox x:Name="TxtLogoPath" Width="180" Height="26" IsReadOnly="True" VerticalContentAlignment="Center"
+                     ToolTip="Để trống để dùng logo Kid gỗ nguyên bản có sẵn." Margin="0,0,6,0"/>
+            <Button x:Name="BtnPickLogo" Content="Chọn PNG..." Padding="8,4" Margin="0,0,6,0"/>
+            <Button x:Name="BtnDefaultLogo" Content="Logo Kid" Padding="8,4"/>
+          </WrapPanel>
+          <WrapPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,4,0,0">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0">
+              <TextBlock Text="Kích thước:" Foreground="#94A3B8" FontSize="11" VerticalAlignment="Center" Margin="0,0,5,0"/>
+              <Slider x:Name="SldLogoSize" Minimum="5" Maximum="60" Value="30" TickFrequency="1" IsSnapToTickEnabled="True" Width="100" VerticalAlignment="Center"/>
+              <TextBlock x:Name="TxtLogoSize" Text="30% chiều rộng" Foreground="#CBD5E1" FontSize="11" VerticalAlignment="Center" Margin="5,0,0,0"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+              <TextBlock Text="Độ mờ:" Foreground="#94A3B8" FontSize="11" VerticalAlignment="Center" Margin="0,0,5,0"/>
+              <Slider x:Name="SldLogoFade" Minimum="0" Maximum="95" Value="60" TickFrequency="1" IsSnapToTickEnabled="True" Width="100" VerticalAlignment="Center"/>
+              <TextBlock x:Name="TxtLogoFade" Text="60%" Foreground="#CBD5E1" FontSize="11" VerticalAlignment="Center" Margin="5,0,0,0"/>
+            </StackPanel>
+          </WrapPanel>
+          <WrapPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,4,0,0">
+            <TextBlock Text="Chuyển động:" Foreground="#94A3B8" FontSize="11" VerticalAlignment="Center" Margin="0,0,6,0"/>
+            <ComboBox x:Name="CmbLogoMode" Width="100" Height="26" SelectedIndex="0" VerticalContentAlignment="Center" Margin="0,0,12,0">
+              <ComboBoxItem Content="Tự do"/>
+              <ComboBoxItem Content="Cố định"/>
             </ComboBox>
-          </StackPanel>
+            <TextBlock Text="Vị trí:" Foreground="#94A3B8" FontSize="11" VerticalAlignment="Center" Margin="0,0,6,0"/>
+            <ComboBox x:Name="CmbLogoPosition" Width="125" Height="26" SelectedIndex="3" VerticalContentAlignment="Center" IsEnabled="False" ToolTip="Vị trí chỉ áp dụng khi chọn Cố định.">
+              <ComboBoxItem Content="Trên trái"/>
+              <ComboBoxItem Content="Trên phải"/>
+              <ComboBoxItem Content="Dưới trái"/>
+              <ComboBoxItem Content="Dưới phải"/>
+              <ComboBoxItem Content="Giữa"/>
+            </ComboBox>
+          </WrapPanel>
         </StackPanel>
 
         <!-- Right actions -->
@@ -1015,7 +1039,9 @@ foreach ($n in @('BtnWinMin','BtnWinMax','BtnWinClose',
                  'BtnInstallAdb','BadgeStatusAdb','TxtStatusAdb',
                  'BtnInstallYtdlp','BadgeStatusYtdlp','TxtStatusYtdlp',
                   'BtnInstallFfmpeg','BadgeStatusFfmpeg','TxtStatusFfmpeg',
-                  'BtnInstallWhisper','BadgeStatusWhisper','TxtStatusWhisper','ChkLanguage','ChkWatermark','CmbLogoFade',
+                  'BtnInstallWhisper','BadgeStatusWhisper','TxtStatusWhisper','ChkLanguage',
+                 'ChkWatermark','TxtLogoPath','BtnPickLogo','BtnDefaultLogo','SldLogoSize','TxtLogoSize',
+                 'SldLogoFade','TxtLogoFade','CmbLogoMode','CmbLogoPosition',
                  'BadgeStage1','TxtStage1Status','TxtStage1Info',
                  'BadgeStage2','TxtStage2Status','TxtStage2Info',
                  'BadgeStage3','TxtStage3Status','TxtStage3Info',
@@ -1208,7 +1234,10 @@ function Set-Busy {
     $ui.BtnPick.IsEnabled  = -not $On
     if ($ui.ChkLanguage) { $ui.ChkLanguage.IsEnabled = -not $On }
     if ($ui.ChkWatermark) { $ui.ChkWatermark.IsEnabled = -not $On }
-    if ($ui.CmbLogoFade) { $ui.CmbLogoFade.IsEnabled = -not $On }
+    foreach ($logoControl in @($ui.TxtLogoPath,$ui.BtnPickLogo,$ui.BtnDefaultLogo,$ui.SldLogoSize,$ui.SldLogoFade,$ui.CmbLogoMode,$ui.CmbLogoPosition)) {
+        if ($logoControl) { $logoControl.IsEnabled = -not $On }
+    }
+    if ($ui.CmbLogoPosition) { $ui.CmbLogoPosition.IsEnabled = (-not $On -and $ui.CmbLogoMode.SelectedIndex -eq 1) }
     $ui.Bar.Visibility = $(if ($On) { 'Visible' } else { 'Collapsed' })
 }
 
@@ -1922,7 +1951,7 @@ function Start-Link {
     Add-Log $script:queue[$script:idx] '#94A3B8'
     $ui.TxtStat.Text = "Đang xử lý Video ($n/$($script:queue.Count))..."
     $ui.TxtStat.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#38BDF8')
-    Start-Engine -Links @($script:queue[$script:idx]) -Named @{ OutDir = $ui.TxtOut.Text; SkipLanguageCheck = ([bool](-not $ui.ChkLanguage.IsChecked)); Watermark = [bool]$ui.ChkWatermark.IsChecked; LogoFade = [int](50+10*$ui.CmbLogoFade.SelectedIndex) } -Mode 'run' -XoaLog $false
+    Start-Engine -Links @($script:queue[$script:idx]) -Named @{ OutDir = $ui.TxtOut.Text; SkipLanguageCheck = ([bool](-not $ui.ChkLanguage.IsChecked)); Watermark = [bool]$ui.ChkWatermark.IsChecked; LogoFile = $ui.TxtLogoPath.Text; LogoSize = [int]$ui.SldLogoSize.Value; LogoFade = [int]$ui.SldLogoFade.Value; LogoMotion = $(if ($ui.CmbLogoMode.SelectedIndex -eq 0) { 'Free' } else { 'Fixed' }); LogoPosition = @('TopLeft','TopRight','BottomLeft','BottomRight','Center')[[int]$ui.CmbLogoPosition.SelectedIndex] } -Mode 'run' -XoaLog $false
 }
 
 function Next-Link {
@@ -2352,6 +2381,35 @@ $ui.BtnPick.Add_Click({
             Update-Gallery
         }
     } catch { }
+})
+$ui.SldLogoSize.Add_ValueChanged({
+    $ui.TxtLogoSize.Text = ('{0}% chiều rộng' -f [int][Math]::Round($ui.SldLogoSize.Value))
+})
+$ui.CmbLogoMode.Add_SelectionChanged({ $ui.CmbLogoPosition.IsEnabled = ($ui.CmbLogoMode.IsEnabled -and $ui.CmbLogoMode.SelectedIndex -eq 1) })
+$ui.SldLogoFade.Add_ValueChanged({
+    $ui.TxtLogoFade.Text = ('{0}%' -f [int][Math]::Round($ui.SldLogoFade.Value))
+})
+$ui.BtnDefaultLogo.Add_Click({ $ui.TxtLogoPath.Clear() })
+$ui.BtnPickLogo.Add_Click({
+    $dialog = New-Object Microsoft.Win32.OpenFileDialog
+    $dialog.Filter = 'PNG (*.png)|*.png'
+    $dialog.CheckFileExists = $true
+    if ($dialog.ShowDialog($win) -ne $true) { return }
+    $image = $null
+    $validPath = $null
+    try {
+        $image = [System.Drawing.Image]::FromFile($dialog.FileName)
+        if ($image.RawFormat.Guid -ne [System.Drawing.Imaging.ImageFormat]::Png.Guid) {
+            throw 'Không phải PNG.'
+        }
+        $validPath = $dialog.FileName
+    } catch {
+        Show-Toast 'PNG không hợp lệ hoặc không đọc được.'
+        return
+    } finally {
+        if ($image) { $image.Dispose() }
+    }
+    $ui.TxtLogoPath.Text = $validPath
 })
 function Open-FolderSafe([string]$targetPath) {
     try {

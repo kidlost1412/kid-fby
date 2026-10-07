@@ -1,10 +1,10 @@
 {
-    "version":  "1.0.14",
-    "releasedAt":  "2026-10-07 16:57",
+    "version":  "1.0.15",
+    "releasedAt":  "2026-10-07 17:08",
     "minLauncher":  "1.0.0",
     "mandatory":  false,
     "changelog":  [
-                      "Them logo Kid go moc di chuyen, do mo 50-70%; thu logo tu video co san; dong goi logo cho may moi va cap nhat"
+                      "Chon logo PNG rieng, kich thuoc va do mo; co dinh bon goc/giua hoac di chuyen tu do"
                   ],
     "files":  [
                   {
@@ -24,13 +24,13 @@
                   },
                   {
                       "path":  "core/kid-fby-gui.ps1",
-                      "sha256":  "2161DAFD17D193CD17F1FE701A1F39EBE4C40BA3B546C9CD27894F0D97807DFC",
-                      "size":  145931
+                      "sha256":  "DF706E536F68F42B2694ED981B2199B5F752654392A537605DAAEC6E1CDC5E63",
+                      "size":  150091
                   },
                   {
                       "path":  "core/kid-fby.ps1",
-                      "sha256":  "FE1033F0252CAE7C707FD98F1637F755652FF93AF2104DFAA58B8E476C9DC4A1",
-                      "size":  76412
+                      "sha256":  "8EB07816583E948BA627B0742A512A7C1352919AAF9ED95558785F5E15084A4D",
+                      "size":  78691
                   },
                   {
                       "path":  "core/kid-logo.zip",
@@ -49,7 +49,7 @@
                   },
                   {
                       "path":  "core/version.txt",
-                      "sha256":  "4DA7C078DA68921AFF035847E3C2483C31811BD40124CC8BC029654D58960C29",
+                      "sha256":  "C646138CD87ADCCB736ED6B63FEEFEC3530869669DCA4C1122BA2DDBACBBCAF0",
                       "size":  6
                   },
                   {
@@ -59,8 +59,8 @@
                   },
                   {
                       "path":  "Kid-FB.Y.exe",
-                      "sha256":  "39E4DF63CA0BC2D188CEBFF64268549C4404F9B837BB9CF04522410FA95475E5",
-                      "size":  2168320
+                      "sha256":  "E295C6AA0599107770DABA7EC6EBE5C490D7F2A292D7A5A0CE3215AF31C0F1F3",
+                      "size":  2174976
                   }
               ],
     "tools":  {
