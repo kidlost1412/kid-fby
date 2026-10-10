@@ -29,6 +29,19 @@ param(
     [string]$LogoFile,
     [ValidateSet('Free','Fixed')][string]$LogoMotion = 'Free',
     [ValidateSet('TopLeft','TopRight','BottomLeft','BottomRight','Center')][string]$LogoPosition = 'BottomRight',
+    [switch]$GifWatermark,
+    [switch]$GifFullFrame,
+    [string]$GifFile,
+    [ValidateRange(5,100)][int]$GifSize = 25,
+    [ValidateSet('TopLeft','TopRight','BottomLeft','BottomRight','Center')][string]$GifPosition = 'TopRight',
+    [double]$LogoCustomX = -1,
+    [double]$LogoCustomY = -1,
+    [double]$GifCustomX = -1,
+    [double]$GifCustomY = -1,
+    [double]$LogoCustomWidth = -1,
+    [double]$LogoCustomHeight = -1,
+    [double]$GifCustomWidth = -1,
+    [double]$GifCustomHeight = -1,
     [string]$WatermarkVideo,
     [string]$ReeditVideo,
     [System.Collections.IDictionary]$ProcessRegistry
@@ -225,13 +238,6 @@ function Invoke-Setup {
     Invoke-SetupDirect -Tool $Tool
 }
 
-function Get-GitHubAsset {
-    param([string]$Repo, [string]$Pattern)
-    $rel = Invoke-RestMethod -UseBasicParsing -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{ 'User-Agent' = 'Kid-FB.Y' }
-    $a = $rel.assets | Where-Object { $_.name -match $Pattern } | Select-Object -First 1
-    if (-not $a) { throw "Khong thay ban tai phu hop trong $Repo" }
-    $a.browser_download_url
-}
 
 function Invoke-Download {
     param([string]$Url, [string]$OutFile)
@@ -814,21 +820,124 @@ function Get-MeanVolume {
 # Tim diem bat dau tieng noi (onset t0) bang bo do khoang lang so
 function Get-AudioOnset {
     param($T, [string]$File)
-    $r = Invoke-Exe $T.ffmpeg @('-hide_banner','-i',$File,'-af','silencedetect=noise=-60dB:d=0.25','-f','null','-') -TimeoutMs 300000
-    $m = [regex]::Match($r.Err, 'silence_start:\s*0(\.0+)?[\s\S]*?silence_end:\s*([\d.]+)')
-    if ($m.Success) {
-        $t0 = 0.0
-        if ([double]::TryParse($m.Groups[2].Value, [Globalization.NumberStyles]::Float, [cultureinfo]::InvariantCulture, [ref]$t0)) {
-            return $t0
+    if (-not $T -or -not $T.ffmpeg) { return 0.0 }
+
+    # 1. Kiem tra luong am thanh va lay thoi luong (format + stream fallback an toan)
+    $fileDur = 0.0
+    $hasAudio = $false
+    if ($T.ffprobe) {
+        $probe = Invoke-Exe $T.ffprobe @('-v','error','-select_streams','a:0',
+            '-show_entries','stream=index,duration:format=duration','-of','default=noprint_wrappers=1', $File) -TimeoutMs 10000
+        if ($probe.Code -eq 0 -and $probe.Out) {
+            foreach ($line in ($probe.Out -split "`r?`n")) {
+                $trimmed = $line.Trim()
+                if ($trimmed -match '^index=\d+') { $hasAudio = $true }
+                elseif ($trimmed -match '^duration=(-?[\d.]+(?:[eE][+-]?\d+)?)') {
+                    $d = 0.0
+                    if ([double]::TryParse($Matches[1], [Globalization.NumberStyles]::Float, [cultureinfo]::InvariantCulture, [ref]$d) -and $d -gt 0) {
+                        if ($fileDur -le 0) { $fileDur = $d }
+                    }
+                }
+            }
         }
     }
-    $m2 = [regex]::Match($r.Err, 'silence_end:\s*([\d.]+)')
-    if ($m2.Success) {
-        $t0 = 0.0
-        if ([double]::TryParse($m2.Groups[1].Value, [Globalization.NumberStyles]::Float, [cultureinfo]::InvariantCulture, [ref]$t0)) {
-            return $t0
+    # Neu file khong co audio stream hoac thoi luong <= 50ms -> an toan tra ve 0.0
+    if (-not $hasAudio -or $fileDur -le 0.05) { return 0.0 }
+
+    # Gioi han vung scan onset toi da 10 giay dau de tang toc gap 20x tren file dai
+    $reFloat = '(-?[\d.]+(?:[eE][+-]?\d+)?)'
+
+    # Helper de phan tich output silencedetect
+    $parseSilence = {
+        param([string]$Output, [double]$DurationLimit)
+        $lines = $Output -split "`r?`n"
+        $currentStart = $null
+        $leadingSilence = $null
+        $hitLimit = $false
+
+        foreach ($line in $lines) {
+            if ($line -match "silence_start:\s*$reFloat") {
+                $sVal = 0.0
+                if ([double]::TryParse($Matches[1], [Globalization.NumberStyles]::Float, [cultureinfo]::InvariantCulture, [ref]$sVal)) {
+                    $currentStart = $sVal
+                }
+            }
+            if ($line -match "silence_end:\s*$reFloat") {
+                $eVal = 0.0
+                if ([double]::TryParse($Matches[1], [Globalization.NumberStyles]::Float, [cultureinfo]::InvariantCulture, [ref]$eVal)) {
+                    $hasExplicitStart = ($null -ne $currentStart)
+                    $sVal = if ($hasExplicitStart) { $currentStart } else { 0.0 }
+
+                    # Neu silence bat dau voi timestamp ro rang > 0.01s: kiem tra xem co am thanh thuc su o dau file khong (M2)
+                    $hasAudioBeforeSilence = $false
+                    if ($hasExplicitStart -and $sVal -gt 0.01) {
+                        $sValStr = $sVal.ToString('0.###', [cultureinfo]::InvariantCulture)
+                        $volProbe = Invoke-Exe $T.ffmpeg @('-hide_banner','-t',$sValStr,'-vn','-i',$File,'-af','volumedetect','-f','null','-') -TimeoutMs 15000
+                        if ($volProbe.Code -eq 0 -and $volProbe.Err -match 'max_volume:\s*(-?[\d.]+)\s*dB') {
+                            $maxVol = 0.0
+                            if ([double]::TryParse($Matches[1], [Globalization.NumberStyles]::Float, [cultureinfo]::InvariantCulture, [ref]$maxVol)) {
+                                if ($maxVol -gt -58.0) {
+                                    $hasAudioBeforeSilence = $true
+                                }
+                            }
+                        }
+                    }
+
+                    if ($hasAudioBeforeSilence) {
+                        # Co am thanh that ngay dau file truoc khoang lang -> khong cat, onset = 0.0
+                        return @{ IsSilentAll = $false; Onset = 0.0; HitLimit = $false }
+                    }
+
+                    # Khoang lang phai bat dau tu ngay dau file (dung sai container/buffer delay <= 0.12s)
+                    if ($sVal -le 0.12) {
+                        # Neu silence_end cham toi gioi han scan (EOF cua pham vi quet) -> chua ket thuc silence that
+                        if ($DurationLimit -gt 0 -and [Math]::Abs($eVal - $DurationLimit) -le 0.08) {
+                            $hitLimit = $true
+                            break
+                        }
+                        # Neu khoang lang keo dai toi tan cuoi video (file cam toan bo) -> khong cat den EOF
+                        if ($eVal -ge ($fileDur - 0.15)) {
+                            return @{ IsSilentAll = $true; Onset = 0.0; HitLimit = $false }
+                        }
+                        $leadingSilence = $eVal
+                        break
+                    }
+                    $currentStart = $null
+                }
+            }
+        }
+
+        if ($null -ne $currentStart -and $currentStart -le 0.12 -and $null -eq $leadingSilence) {
+            $hitLimit = $true
+        }
+
+        return @{ IsSilentAll = $false; Onset = $leadingSilence; HitLimit = $hitLimit }
+    }
+
+    # 2. Quet voi nguong chuan -60dB; khong nang nguong -50dB de tranh cat nham am thanh nho o dau file (M1)
+    $noiseTier = '-60dB'
+    $scanLimit = [Math]::Min(10.0, $fileDur)
+    $scanLimitStr = $scanLimit.ToString('0.###', [cultureinfo]::InvariantCulture)
+
+    $r = Invoke-Exe $T.ffmpeg @('-hide_banner','-nostats','-t',$scanLimitStr,'-vn','-i',$File,
+        '-af',"silencedetect=noise=$noiseTier`:d=0.10",'-f','null','-') -TimeoutMs 60000
+    if ($r.Code -eq 0) {
+        $res = & $parseSilence $r.Err $scanLimit
+        if ($res.IsSilentAll) { return 0.0 }
+        if ($null -ne $res.Onset) { return $res.Onset }
+
+        # Neu khoang lang vuot qua 10s scan window va file con dai hon -> scan toan bo file
+        if ($res.HitLimit -and $scanLimit -lt ($fileDur - 0.15)) {
+            $rFull = Invoke-Exe $T.ffmpeg @('-hide_banner','-nostats','-vn','-i',$File,
+                '-af',"silencedetect=noise=$noiseTier`:d=0.10",'-f','null','-') -TimeoutMs 120000
+            if ($rFull.Code -eq 0) {
+                $resFull = & $parseSilence $rFull.Err 0.0
+                if ($resFull.IsSilentAll) { return 0.0 }
+                if ($null -ne $resFull.Onset) { return $resFull.Onset }
+            }
         }
     }
+
     return 0.0
 }
 
@@ -994,40 +1103,276 @@ function Resolve-WatermarkLogo {
     return $target
 }
 
+function Test-GifFile {
+    param([string]$File)
+    if ([string]::IsNullOrWhiteSpace($File)) { throw 'Duong dan file GIF khong duoc de trong.' }
+    if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { throw "Khong tim thay file GIF: $File" }
+    $ext = [IO.Path]::GetExtension($File)
+    if ($ext -notmatch '(?i)^\.gif$') { throw "File phai co duoi dinh dang .gif: $File" }
+    $resolvedPath = (Resolve-Path -LiteralPath $File).Path
+    $bytes = [IO.File]::ReadAllBytes($resolvedPath)
+    if ($bytes.Length -lt 14) { throw "File GIF khong hop le hoac bi hong: $File" }
+    $header = [System.Text.Encoding]::ASCII.GetString($bytes, 0, 6)
+    if ($header -notmatch '^GIF8[79]a$') { throw "Dinh dang file khong phai GIF tieu chuan: $File" }
+
+    # Kiem tra cau truc blocks va sub-blocks de phat hien GIF bi cut/truncated frame (M3)
+    $offset = 13
+    $screenPacked = [int]$bytes[10]
+    if (($screenPacked -band 0x80) -ne 0) { $offset += 3 * (1 -shl (($screenPacked -band 7) + 1)) }
+    while ($offset -lt $bytes.Length) {
+        $tag = [int]$bytes[$offset]; $offset++
+        if ($tag -eq 0x3B) { break } # Trailer hop le
+        if ($tag -eq 0x21) { # Extension block
+            if ($offset -ge $bytes.Length) { throw "File GIF bi cat o extension block: $File" }
+            $offset++ # Label
+            while ($offset -lt $bytes.Length) {
+                $size = [int]$bytes[$offset]; $offset++
+                if ($size -eq 0) { break }
+                $offset += $size
+            }
+            continue
+        }
+        if ($tag -eq 0x2C) { # Image descriptor
+            if (($offset + 9) -gt $bytes.Length) { throw "File GIF bi cat o image descriptor: $File" }
+            $framePacked = [int]$bytes[$offset + 8]
+            $offset += 9
+            if (($framePacked -band 0x80) -ne 0) { $offset += 3 * (1 -shl (($framePacked -band 7) + 1)) }
+            if ($offset -ge $bytes.Length) { throw "File GIF thieu LZW code size: $File" }
+            $offset++ # LZW min code size
+            $terminated = $false
+            while ($offset -lt $bytes.Length) {
+                $size = [int]$bytes[$offset]; $offset++
+                if ($size -eq 0) { $terminated = $true; break }
+                if (($offset + $size) -gt $bytes.Length) { throw "File GIF bi cat o du lieu LZW frame: $File" }
+                $offset += $size
+            }
+            if (-not $terminated) { throw "File GIF chua ket thuc frame hop le: $File" }
+            continue
+        }
+    }
+
+    # Chinh sach tuong thich trailer 0x3B: Neu gap byte trailer 0x3B thi dung quet khoi hop le.
+    # Neu file het ma khong co trailer (nhung framing cac block truoc khong bi cut do dang),
+    # file khong bi reject vi thieu trailer ma tiep tuc sang buoc kiem tra giai ma pixel.
+    Add-Type -AssemblyName System.Drawing
+    $image = $null
+    try {
+        $image = [Drawing.Image]::FromFile($resolvedPath)
+        if ($image.RawFormat.Guid -ne [Drawing.Imaging.ImageFormat]::Gif.Guid -or $image.Width -le 0 -or $image.Height -le 0) {
+            throw 'Invalid GIF format.'
+        }
+        if ($image.Width -gt 4096 -or $image.Height -gt 4096) {
+            throw "Kich thuoc GIF vuot qua gioi han ($($image.Width)x$($image.Height)): $File"
+        }
+    } catch {
+        throw "Khong doc duoc file GIF hoac file bi hong: $File"
+    } finally {
+        if ($image) { $image.Dispose() }
+    }
+
+    # Giai ma toan bo animation bang FFmpeg de kiem tra du lieu pixel/LZW thuc te (fail-fast, timeout guard)
+    $ffmpegExe = $null
+    if (Get-Command 'Find-Tool' -ErrorAction SilentlyContinue) {
+        try { $ffmpegExe = Find-Tool 'ffmpeg' } catch { }
+    }
+    if (-not $ffmpegExe) {
+        $candBases = @(
+            $(if ($PSScriptRoot) { $PSScriptRoot } else { $null }),
+            $(if ($script:Here) { $script:Here } else { $null }),
+            (Get-Location).Path,
+            'D:\reup video fb meta',
+            (Join-Path $env:LOCALAPPDATA 'Kid-FB.Y')
+        )
+        foreach ($base in $candBases) {
+            if (-not $base) { continue }
+            foreach ($sub in @('tools\ffmpeg\ffmpeg.exe', 'tools\ffmpeg\bin\ffmpeg.exe', 'tools\ffmpeg.exe')) {
+                $cand = Join-Path $base $sub
+                if (Test-Path -LiteralPath $cand -PathType Leaf) {
+                    $ffmpegExe = $cand
+                    break
+                }
+            }
+            if ($ffmpegExe) { break }
+        }
+    }
+    if (-not $ffmpegExe) {
+        $cmd = Get-Command 'ffmpeg' -ErrorAction SilentlyContinue
+        if ($cmd) { $ffmpegExe = $cmd.Source }
+    }
+
+    if ($ffmpegExe -and (Test-Path -LiteralPath $ffmpegExe -PathType Leaf)) {
+        $decode = Invoke-Exe $ffmpegExe @('-hide_banner', '-v', 'error', '-i', $resolvedPath, '-f', 'null', '-') -TimeoutMs 15000
+        $errText = [string]$decode.Err
+        if ($decode.Code -ne 0 -or $errText -match '(?i)LZW decode failed|LZW init failed|invalid code|corrupt|error decoding|Invalid GIF|truncated') {
+            throw "Du lieu anh GIF bi loi pixel/LZW khong giai ma duoc: $File"
+        }
+    }
+}
+
+function Get-OptimalVideoEncoder {
+    param($T)
+    if ($script:optimalVideoEncoder) { return $script:optimalVideoEncoder }
+    if (-not $T -or -not $T.ffmpeg) { return 'libx264' }
+    try {
+        $testNvenc = Invoke-Exe $T.ffmpeg @('-hide_banner','-f','lavfi','-i','color=c=black:s=256x256:d=0.04','-c:v','h264_nvenc','-f','null','-') -TimeoutMs 3000
+        if ($testNvenc.Code -eq 0) {
+            $script:optimalVideoEncoder = 'h264_nvenc'
+            return $script:optimalVideoEncoder
+        }
+        $testQsv = Invoke-Exe $T.ffmpeg @('-hide_banner','-f','lavfi','-i','color=c=black:s=256x256:d=0.04','-c:v','h264_qsv','-f','null','-') -TimeoutMs 3000
+        if ($testQsv.Code -eq 0) {
+            $script:optimalVideoEncoder = 'h264_qsv'
+            return $script:optimalVideoEncoder
+        }
+        $testAmf = Invoke-Exe $T.ffmpeg @('-hide_banner','-f','lavfi','-i','color=c=black:s=256x256:d=0.04','-c:v','h264_amf','-f','null','-') -TimeoutMs 3000
+        if ($testAmf.Code -eq 0) {
+            $script:optimalVideoEncoder = 'h264_amf'
+            return $script:optimalVideoEncoder
+        }
+    } catch { }
+    $script:optimalVideoEncoder = 'libx264'
+    return $script:optimalVideoEncoder
+}
+
 function Get-MovingLogoMuxArgs {
     param([string]$Video, [string]$Audio, [string]$Logo, [string]$Output,
           [int]$Width, [int]$Height, [ValidateRange(0,95)][int]$Fade = 60,
           [ValidateRange(5,60)][int]$Size = 30,
           [ValidateSet('Free','Fixed')][string]$Motion = 'Free',
-          [ValidateSet('TopLeft','TopRight','BottomLeft','BottomRight','Center')][string]$Position = 'BottomRight')
+          [ValidateSet('TopLeft','TopRight','BottomLeft','BottomRight','Center')][string]$Position = 'BottomRight',
+          [string]$Gif = '',
+          [ValidateRange(5,100)][int]$GifSize = 25,
+          [ValidateSet('TopLeft','TopRight','BottomLeft','BottomRight','Center')][string]$GifPosition = 'TopRight',
+          [double]$CustomX = -1,
+          [double]$CustomY = -1,
+          [double]$GifCustomX = -1,
+          [double]$GifCustomY = -1,
+          [string]$VideoEncoder = 'libx264',
+          [switch]$GifFullFrame,
+          [double]$CustomWidth = -1,
+          [double]$CustomHeight = -1,
+          [double]$GifCustomWidth = -1,
+          [double]$GifCustomHeight = -1)
     if ($Width -le 0 -or $Height -le 0) { throw 'Kich thuoc video khong hop le de chen logo.' }
-    $logoWidth = [Math]::Max(2, [int]($Width * $Size / 100.0))
-    $logoHeight = [Math]::Max(2, [int]($Height * 0.60))
-    $alpha = ((100 - $Fade) / 100.0).ToString('0.00', [cultureinfo]::InvariantCulture)
-    # Smooth independent horizontal/vertical waves; the logo stays inside the frame.
-    $x = '(W-w)*(0.5+0.46*sin(0.23*t+0.6))'
-    $y = '(H-h)*(0.5+0.46*sin(0.17*t-1.1))'
-    if ($Motion -eq 'Fixed') {
-        $coordinates = @{
-            TopLeft = @('(W-w)*0.04','(H-h)*0.04')
-            TopRight = @('(W-w)*0.96','(H-h)*0.04')
-            BottomLeft = @('(W-w)*0.04','(H-h)*0.96')
-            BottomRight = @('(W-w)*0.96','(H-h)*0.96')
-            Center = @('(W-w)*0.5','(H-h)*0.5')
-        }
-        $x = $coordinates[$Position][0]; $y = $coordinates[$Position][1]
+
+    $coordinates = @{
+        TopLeft     = @('(W-w)*0.04','(H-h)*0.04')
+        TopRight    = @('(W-w)*0.96','(H-h)*0.04')
+        BottomLeft  = @('(W-w)*0.04','(H-h)*0.96')
+        BottomRight = @('(W-w)*0.96','(H-h)*0.96')
+        Center      = @('(W-w)*0.5','(H-h)*0.5')
     }
-    $filter = "[2:v]format=rgba,scale=${logoWidth}:${logoHeight}:force_original_aspect_ratio=decrease,colorchannelmixer=aa=${alpha}[logo];[0:v][logo]overlay=x='${x}':y='${y}':eval=frame:shortest=1:format=auto[v]"
-    return @('-hide_banner','-loglevel','error','-y','-i',$Video,'-i',$Audio,
-             '-loop','1','-i',$Logo,'-filter_complex',$filter,'-map','[v]','-map','1:a:0',
-             '-c:v','libx264','-crf','18','-preset','veryfast','-pix_fmt','yuv420p',
-             '-c:a','copy','-shortest','-movflags','+faststart',$Output)
+
+    $encArgs = switch ($VideoEncoder) {
+        'h264_nvenc' { @('-c:v','h264_nvenc','-preset','p4','-rc:v','vbr','-cq:v','19','-pix_fmt','yuv420p') }
+        'h264_qsv'   { @('-c:v','h264_qsv','-global_quality','20','-pix_fmt','yuv420p') }
+        'h264_amf'   { @('-c:v','h264_amf','-quality','speed','-rc','cqp','-qp_i','19','-qp_p','19','-pix_fmt','yuv420p') }
+        default      { @('-c:v','libx264','-crf','18','-preset','veryfast','-pix_fmt','yuv420p') }
+    }
+    $hasLogo = -not [string]::IsNullOrWhiteSpace($Logo)
+    $hasGif  = -not [string]::IsNullOrWhiteSpace($Gif)
+    $outputWidth = [Math]::Max(2, [int]([Math]::Ceiling($Width / 2.0) * 2))
+    $outputHeight = [Math]::Max(2, [int]([Math]::Ceiling($Height / 2.0) * 2))
+
+    if ($hasLogo) {
+        if ($CustomWidth -gt 0.0 -and $CustomHeight -gt 0.0) {
+            $logoWidthFraction = [Math]::Max(0.0, [Math]::Min(1.0, $CustomWidth))
+            $logoHeightFraction = [Math]::Max(0.0, [Math]::Min(1.0, $CustomHeight))
+            $logoWidth = [Math]::Max(2, [int][Math]::Round($outputWidth * $logoWidthFraction))
+            $logoHeight = [Math]::Max(2, [int][Math]::Round($outputHeight * $logoHeightFraction))
+            $logoScale = "${logoWidth}:${logoHeight}"
+        } else {
+            $logoWidth = [Math]::Max(2, [int]($Width * $Size / 100.0))
+            $logoHeight = [Math]::Max(2, [int]($Height * 0.60))
+            $logoScale = "${logoWidth}:${logoHeight}:force_original_aspect_ratio=decrease"
+        }
+        $alpha = ((100 - $Fade) / 100.0).ToString('0.00', [cultureinfo]::InvariantCulture)
+        if ($CustomX -ge 0 -and $CustomY -ge 0) {
+            $cxStr = [Math]::Max(0.0, [Math]::Min(1.0, $CustomX)).ToString('0.000', [cultureinfo]::InvariantCulture)
+            $cyStr = [Math]::Max(0.0, [Math]::Min(1.0, $CustomY)).ToString('0.000', [cultureinfo]::InvariantCulture)
+            $x = "(W-w)*$cxStr"; $y = "(H-h)*$cyStr"
+        } elseif ($Motion -eq 'Fixed') {
+            $x = $coordinates[$Position][0]; $y = $coordinates[$Position][1]
+        } else {
+            $x = '(W-w)*(0.5+0.46*sin(0.23*t+0.6))'
+            $y = '(H-h)*(0.5+0.46*sin(0.17*t-1.1))'
+        }
+    }
+
+    if ($hasGif) {
+        if ($GifFullFrame) {
+            $gifWidth = $outputWidth
+            $gifHeight = $outputHeight
+            $gx = '0'; $gy = '0'
+            $gifScale = "${gifWidth}:${gifHeight}"
+        } elseif ($GifCustomWidth -gt 0.0 -and $GifCustomHeight -gt 0.0) {
+            $gifWidthFraction = [Math]::Max(0.0, [Math]::Min(1.0, $GifCustomWidth))
+            $gifHeightFraction = [Math]::Max(0.0, [Math]::Min(1.0, $GifCustomHeight))
+            $gifWidth = [Math]::Max(2, [int][Math]::Round($outputWidth * $gifWidthFraction))
+            $gifHeight = [Math]::Max(2, [int][Math]::Round($outputHeight * $gifHeightFraction))
+            $gifScale = "${gifWidth}:${gifHeight}"
+        } else {
+            $gifWidth = [Math]::Max(2, [int]($Width * $GifSize / 100.0))
+            $gifHeight = [Math]::Max(2, [int]($Height * 1.0))
+            $gifScale = "${gifWidth}:${gifHeight}:force_original_aspect_ratio=decrease"
+        }
+        if (-not $GifFullFrame -and $GifCustomX -ge 0 -and $GifCustomY -ge 0) {
+            $gcxStr = [Math]::Max(0.0, [Math]::Min(1.0, $GifCustomX)).ToString('0.000', [cultureinfo]::InvariantCulture)
+            $gcyStr = [Math]::Max(0.0, [Math]::Min(1.0, $GifCustomY)).ToString('0.000', [cultureinfo]::InvariantCulture)
+            $gx = "(W-w)*$gcxStr"; $gy = "(H-h)*$gcyStr"
+        } elseif (-not $GifFullFrame) {
+            $gx = $coordinates[$GifPosition][0]; $gy = $coordinates[$GifPosition][1]
+        }
+    }
+
+    if ($hasLogo -and $hasGif) {
+        $filter = "[0:v]pad=ceil(iw/2)*2:ceil(ih/2)*2[vbase];" +
+                  "[2:v]format=rgba,scale=${logoScale},colorchannelmixer=aa=${alpha}[logo];" +
+                  "[3:v]format=rgba,scale=${gifScale}[gif];" +
+                  "[vbase][logo]overlay=x='${x}':y='${y}':eval=frame:shortest=1:format=auto[vtmp];" +
+                  "[vtmp][gif]overlay=x='${gx}':y='${gy}':shortest=1:format=auto[v]"
+        return @('-hide_banner','-loglevel','error','-y','-i',$Video,'-i',$Audio,
+                 '-loop','1','-i',$Logo,'-stream_loop','-1','-i',$Gif,'-filter_complex',$filter,'-map','[v]','-map','1:a:0?') +
+                 $encArgs +
+                 @('-c:a','copy','-shortest','-movflags','+faststart',$Output)
+    } elseif ($hasGif) {
+        $filter = "[0:v]pad=ceil(iw/2)*2:ceil(ih/2)*2[vbase];" +
+                  "[2:v]format=rgba,scale=${gifScale}[gif];" +
+                  "[vbase][gif]overlay=x='${gx}':y='${gy}':shortest=1:format=auto[v]"
+        return @('-hide_banner','-loglevel','error','-y','-i',$Video,'-i',$Audio,
+                 '-stream_loop','-1','-i',$Gif,'-filter_complex',$filter,'-map','[v]','-map','1:a:0?') +
+                 $encArgs +
+                 @('-c:a','copy','-shortest','-movflags','+faststart',$Output)
+    } elseif ($hasLogo) {
+        $filter = "[0:v]pad=ceil(iw/2)*2:ceil(ih/2)*2[vbase];" +
+                  "[2:v]format=rgba,scale=${logoScale},colorchannelmixer=aa=${alpha}[logo];" +
+                  "[vbase][logo]overlay=x='${x}':y='${y}':eval=frame:shortest=1:format=auto[v]"
+        return @('-hide_banner','-loglevel','error','-y','-i',$Video,'-i',$Audio,
+                 '-loop','1','-i',$Logo,'-filter_complex',$filter,'-map','[v]','-map','1:a:0?') +
+                 $encArgs +
+                 @('-c:a','copy','-shortest','-movflags','+faststart',$Output)
+    } else {
+        $filter = "[0:v]pad=ceil(iw/2)*2:ceil(ih/2)*2[v]"
+        return @('-hide_banner','-loglevel','error','-y','-i',$Video,'-i',$Audio,
+                 '-filter_complex',$filter,'-map','[v]','-map','1:a:0?') +
+                 $encArgs +
+                 @('-c:a','copy','-shortest','-movflags','+faststart',$Output)
+    }
 }
 
 function Invoke-ReeditVideo {
     param($T, [string]$File, [switch]$Enabled,
           [string]$CustomLogo, [int]$Size = 30, [int]$Fade = 60,
-          [string]$Motion = 'Free', [string]$Position = 'BottomRight')
+          [string]$Motion = 'Free', [string]$Position = 'BottomRight',
+          [switch]$GifEnabled, [string]$GifFile, [int]$GifSize = 25,
+          [string]$GifPosition = 'TopRight',
+          [double]$CustomX = -1,
+          [double]$CustomY = -1,
+          [double]$GifCustomX = -1,
+          [double]$GifCustomY = -1,
+          [string]$VideoEncoder = '', [switch]$GifFullFrame,
+          [double]$CustomWidth = -1, [double]$CustomHeight = -1,
+          [double]$GifCustomWidth = -1, [double]$GifCustomHeight = -1)
     if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { throw 'Khong tim thay video can sua.' }
     $final = (Resolve-Path -LiteralPath $File).Path
     $name = [IO.Path]::GetFileName($final)
@@ -1045,14 +1390,45 @@ function Invoke-ReeditVideo {
     New-Item -ItemType Directory -Path $work -ErrorAction Stop | Out-Null
     try {
         $staged = Join-Path $work 'edited.mp4'
+        $resolvedLogo = ''
+        $resolvedGif  = ''
         if ($Enabled) {
-            $logo = Resolve-WatermarkLogo -WorkDir $work -CustomFile $CustomLogo
-            $editArgs = Get-MovingLogoMuxArgs -Video $source -Audio $audio -Logo $logo -Output $staged -Width $sizeInfo.W -Height $sizeInfo.H -Fade $Fade -Size $Size -Motion $Motion -Position $Position
+            $resolvedLogo = Resolve-WatermarkLogo -WorkDir $work -CustomFile $CustomLogo
+        }
+        if ($GifEnabled) {
+            if ([string]::IsNullOrWhiteSpace($GifFile)) {
+                Show-Fail -Message 'Bat tuy chon GIF (-GifWatermark hoac -GifEnabled) nhung chua cung cap duong dan file GIF (-GifFile).'
+                exit 1
+            }
+            Test-GifFile -File $GifFile
+            $resolvedGif = (Resolve-Path -LiteralPath $GifFile).Path
+        }
+
+        $activeEncoder = if ([string]::IsNullOrWhiteSpace($VideoEncoder)) {
+            if (Get-Command 'Get-OptimalVideoEncoder' -ErrorAction SilentlyContinue) { Get-OptimalVideoEncoder -T $T } else { 'libx264' }
+        } else { $VideoEncoder }
+
+        if ($resolvedLogo -or $resolvedGif) {
+            $editArgs = Get-MovingLogoMuxArgs -Video $source -Audio $audio -Logo $resolvedLogo -Output $staged `
+                -Width $sizeInfo.W -Height $sizeInfo.H -Fade $Fade -Size $Size -Motion $Motion -Position $Position `
+                -Gif $resolvedGif -GifSize $GifSize -GifFullFrame:$GifFullFrame -GifPosition $GifPosition `
+                -CustomWidth $CustomWidth -CustomHeight $CustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight `
+                -CustomX $CustomX -CustomY $CustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY -VideoEncoder $activeEncoder
         } else {
-            $editArgs = @('-hide_banner','-loglevel','error','-y','-i',$source,'-i',$audio,'-map','0:v:0','-map','1:a:0','-c','copy','-shortest','-movflags','+faststart',$staged)
+            $editArgs = @('-hide_banner','-loglevel','error','-y','-i',$source,'-i',$audio,'-map','0:v:0','-map','1:a:0?','-c','copy','-shortest','-movflags','+faststart',$staged)
         }
         Write-Note 'Sua tu video goc va audio da luu; khong tai video, khong thu am lai.'
         $result = Invoke-Exe $T.ffmpeg $editArgs -TimeoutMs (Get-ReelProcessTimeoutMs $duration)
+        if ($result.Code -ne 0 -and $activeEncoder -ne 'libx264' -and ($resolvedLogo -or $resolvedGif)) {
+            Write-Warn2 "Hardware encoder ($activeEncoder) that bai, tu dong chuyen sang CPU libx264..."
+            $script:optimalVideoEncoder = 'libx264'
+            $editArgs = Get-MovingLogoMuxArgs -Video $source -Audio $audio -Logo $resolvedLogo -Output $staged `
+                -Width $sizeInfo.W -Height $sizeInfo.H -Fade $Fade -Size $Size -Motion $Motion -Position $Position `
+                -Gif $resolvedGif -GifSize $GifSize -GifFullFrame:$GifFullFrame -GifPosition $GifPosition `
+                -CustomWidth $CustomWidth -CustomHeight $CustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight `
+                -CustomX $CustomX -CustomY $CustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY -VideoEncoder 'libx264'
+            $result = Invoke-Exe $T.ffmpeg $editArgs -TimeoutMs (Get-ReelProcessTimeoutMs $duration)
+        }
         if ($result.Code -ne 0) { throw "Sua video that bai: $($result.Err)" }
         if (-not (Test-ValidReelOutput $T $staged)) { throw 'Video sua khong qua kiem tra. Giu nguyen ban cu.' }
         Publish-ReelFiles -Dest $dest -Pairs @(@{Source=$staged;Destination=$final})
@@ -1067,7 +1443,7 @@ function Invoke-ReeditVideo {
 }
 
 function Test-ValidReelOutput {
-    param($T, [string]$File)
+    param($T, [string]$File, [switch]$AllowSilent)
     if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { return $false }
     if ((Get-Item -LiteralPath $File).Length -le 0) { return $false }
     try {
@@ -1075,10 +1451,23 @@ function Test-ValidReelOutput {
         if ($probe.Code -ne 0) { return $false }
         $data = ConvertFrom-Json -InputObject $probe.Out -ErrorAction Stop
         $types = @($data.streams | ForEach-Object { [string]$_.codec_type })
-        if ($types -notcontains 'video' -or $types -notcontains 'audio') { return $false }
+        if ($types -notcontains 'video') { return $false }
+        if (-not $AllowSilent -and $types -notcontains 'audio') { return $false }
         $duration = 0.0
         $value = [string]$data.format.duration
-        return [double]::TryParse($value, [Globalization.NumberStyles]::Float, [cultureinfo]::InvariantCulture, [ref]$duration) -and -not [double]::IsNaN($duration) -and -not [double]::IsInfinity($duration) -and $duration -gt 0.5
+        $hasValidDuration = [double]::TryParse($value, [Globalization.NumberStyles]::Float, [cultureinfo]::InvariantCulture, [ref]$duration) -and -not [double]::IsNaN($duration) -and -not [double]::IsInfinity($duration) -and $duration -gt 0.5
+        if (-not $hasValidDuration) { return $false }
+
+        # Kiem tra giai ma toan bo stream de loai bo file bi cat / thieu frame (M4)
+        if ($T -and $T.ffmpeg) {
+            $decode = Invoke-Exe $T.ffmpeg @('-hide_banner','-v','error','-i',$File,'-f','null','-') -TimeoutMs 30000
+            if ($decode.Code -ne 0) { return $false }
+            if ($decode.Err -match 'partial file|Invalid data found|Input buffer exhausted|Error submitting packet|corrupt') {
+                return $false
+            }
+        }
+
+        return $true
     } catch {
         $exception = $_.Exception
         while ($null -ne $exception) {
@@ -1155,7 +1544,9 @@ function Publish-ReelFiles {
 
 # ---------------------------------------------------------- xu ly 1 link ----
 function Invoke-OneLink {
-    param($T, [string]$Url, [string]$Dest, [switch]$KeepFiles)
+    param($T, [string]$Url, [string]$Dest, [switch]$KeepFiles, [switch]$GifFullFrame,
+          [double]$LogoCustomWidth = -1, [double]$LogoCustomHeight = -1,
+          [double]$GifCustomWidth = -1, [double]$GifCustomHeight = -1)
 
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ("kidfby-" + [Guid]::NewGuid().ToString('N').Substring(0,8))
     New-Item -ItemType Directory -Path $tmp -Force | Out-Null
@@ -1375,12 +1766,40 @@ function Invoke-OneLink {
         # Ghep video goc + audio long tieng
         $muxArgs = @('-hide_banner','-loglevel','error','-y','-i',$vf.FullName,'-i',$cut,
                      '-map','0:v:0','-map','1:a:0') + $vCodecOpt + @('-c:a','copy','-shortest','-movflags','+faststart',$out)
+
+        $resolvedLogo = ''
+        $resolvedGif  = ''
         if ($Watermark) {
-            $logo = Resolve-WatermarkLogo -WorkDir $tmp -CustomFile $LogoFile
+            $resolvedLogo = Resolve-WatermarkLogo -WorkDir $tmp -CustomFile $LogoFile
             Write-Note "Chen logo: kich thuoc $LogoSize%, do mo $LogoFade%, che do $LogoMotion."
-            $muxArgs = Get-MovingLogoMuxArgs -Video $vf.FullName -Audio $cut -Logo $logo -Output $out -Width $sz.W -Height $sz.H -Fade $LogoFade -Size $LogoSize -Motion $LogoMotion -Position $LogoPosition
+        }
+        if ($GifWatermark) {
+            if ([string]::IsNullOrWhiteSpace($GifFile)) {
+                throw 'Bat tuy chon GIF (-GifWatermark hoac -GifEnabled) nhung chua cung cap duong dan file GIF (-GifFile).'
+            }
+            Test-GifFile -File $GifFile
+            $resolvedGif = (Resolve-Path -LiteralPath $GifFile).Path
+            Write-Note "Chen GIF: kich thuoc $GifSize%, vi tri $GifPosition."
+        }
+        $chosenEncoder = if (Get-Command "Get-OptimalVideoEncoder" -ErrorAction SilentlyContinue) { Get-OptimalVideoEncoder -T $T } else { "libx264" }
+        if ($resolvedLogo -or $resolvedGif) {
+            $muxArgs = Get-MovingLogoMuxArgs -Video $vf.FullName -Audio $cut -Logo $resolvedLogo -Output $out `
+                -Width $sz.W -Height $sz.H -Fade $LogoFade -Size $LogoSize -Motion $LogoMotion -Position $LogoPosition `
+                -Gif $resolvedGif -GifSize $GifSize -GifFullFrame:$GifFullFrame -GifPosition $GifPosition `
+                -CustomWidth $LogoCustomWidth -CustomHeight $LogoCustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight `
+                -CustomX $LogoCustomX -CustomY $LogoCustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY -VideoEncoder $chosenEncoder
         }
         $muxResult = Invoke-Exe $T.ffmpeg $muxArgs -TimeoutMs (Get-ReelProcessTimeoutMs $dur)
+        if ($muxResult.Code -ne 0 -and $chosenEncoder -ne 'libx264' -and ($resolvedLogo -or $resolvedGif)) {
+            Write-Warn2 "Hardware encoder ($chosenEncoder) that bai, tu dong chuyen sang CPU libx264..."
+            $script:optimalVideoEncoder = 'libx264'
+            $muxArgs = Get-MovingLogoMuxArgs -Video $vf.FullName -Audio $cut -Logo $resolvedLogo -Output $out `
+                -Width $sz.W -Height $sz.H -Fade $LogoFade -Size $LogoSize -Motion $LogoMotion -Position $LogoPosition `
+                -Gif $resolvedGif -GifSize $GifSize -GifFullFrame:$GifFullFrame -GifPosition $GifPosition `
+                -CustomWidth $LogoCustomWidth -CustomHeight $LogoCustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight `
+                -CustomX $LogoCustomX -CustomY $LogoCustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY -VideoEncoder 'libx264'
+            $muxResult = Invoke-Exe $T.ffmpeg $muxArgs -TimeoutMs (Get-ReelProcessTimeoutMs $dur)
+        }
         if ($muxResult.Code -ne 0 -or -not (Test-Path -LiteralPath $out -PathType Leaf) -or (Get-Item -LiteralPath $out).Length -le 0) {
             Show-Fail -Message 'Ghep video that bai.' -Fix @('Chay lai thu.', $muxResult.Err)
             return $null
@@ -1431,7 +1850,11 @@ Write-Host '  Kid FB.Y - tai video Facebook kem long tieng Meta AI  ' -Foregroun
 if ($ReeditVideo) {
     $editTools = Get-Toolset
     if (-not $editTools.ffmpeg -or -not $editTools.ffprobe) { throw 'Can FFmpeg va ffprobe de sua video.' }
-    Invoke-ReeditVideo -T $editTools -File $ReeditVideo -Enabled:$Watermark -CustomLogo $LogoFile -Size $LogoSize -Fade $LogoFade -Motion $LogoMotion -Position $LogoPosition
+    Invoke-ReeditVideo -T $editTools -File $ReeditVideo -Enabled:$Watermark -CustomLogo $LogoFile -Size $LogoSize -Fade $LogoFade -Motion $LogoMotion -Position $LogoPosition `
+        -GifEnabled:$GifWatermark -GifFullFrame:$GifFullFrame -GifFile $GifFile -GifSize $GifSize -GifPosition $GifPosition `
+        -CustomX $LogoCustomX -CustomY $LogoCustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY `
+        -CustomWidth $LogoCustomWidth -CustomHeight $LogoCustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight `
+        -VideoEncoder $(if (Get-Command "Get-OptimalVideoEncoder" -ErrorAction SilentlyContinue) { Get-OptimalVideoEncoder -T $editTools } else { "libx264" })
     return
 }
 
@@ -1446,15 +1869,44 @@ if ($WatermarkVideo) {
     $logoTemp = Join-Path ([IO.Path]::GetTempPath()) ('kidfby-logo-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $logoTemp -ErrorAction Stop | Out-Null
     try {
-        $resolvedLogo = Resolve-WatermarkLogo -WorkDir $logoTemp -CustomFile $LogoFile
+        $resolvedLogo = ''
+        $resolvedGif  = ''
+        if ($Watermark -or -not [string]::IsNullOrWhiteSpace($LogoFile) -or -not $GifWatermark) {
+            $resolvedLogo = Resolve-WatermarkLogo -WorkDir $logoTemp -CustomFile $LogoFile
+            Write-Note "Chen logo: kich thuoc $LogoSize%, do mo $LogoFade%, che do $LogoMotion."
+        }
+        if ($GifWatermark) {
+            if ([string]::IsNullOrWhiteSpace($GifFile)) {
+                Show-Fail -Message 'Bat tuy chon GIF (-GifWatermark hoac -GifEnabled) nhung chua cung cap duong dan file GIF (-GifFile).'
+                exit 1
+            }
+            Test-GifFile -File $GifFile
+            $resolvedGif = (Resolve-Path -LiteralPath $GifFile).Path
+            Write-Note "Chen GIF: kich thuoc $GifSize%, vi tri $GifPosition."
+        }
         $size = Get-VideoSize $logoTools $sourceVideo
         $duration = Get-VideoDuration $logoTools $sourceVideo
+        $hasAudio = (Invoke-Exe $logoTools.ffprobe @('-v','error','-select_streams','a:0','-show_entries','stream=codec_type','-of','json',$sourceVideo)).Out -match 'audio'
         $stagedVideo = Join-Path $logoTemp 'preview.mp4'
-        $logoArgs = Get-MovingLogoMuxArgs -Video $sourceVideo -Audio $sourceVideo -Logo $resolvedLogo -Output $stagedVideo -Width $size.W -Height $size.H -Fade $LogoFade -Size $LogoSize -Motion $LogoMotion -Position $LogoPosition
-        Write-Note "Chen logo: kich thuoc $LogoSize%, do mo $LogoFade%, che do $LogoMotion..."
+        $chosenEncoder = if (Get-Command "Get-OptimalVideoEncoder" -ErrorAction SilentlyContinue) { Get-OptimalVideoEncoder -T $logoTools } else { "libx264" }
+        $logoArgs = Get-MovingLogoMuxArgs -Video $sourceVideo -Audio $sourceVideo -Logo $resolvedLogo -Output $stagedVideo `
+            -Width $size.W -Height $size.H -Fade $LogoFade -Size $LogoSize -Motion $LogoMotion -Position $LogoPosition `
+            -Gif $resolvedGif -GifSize $GifSize -GifFullFrame:$GifFullFrame -GifPosition $GifPosition `
+            -CustomX $LogoCustomX -CustomY $LogoCustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY `
+            -CustomWidth $LogoCustomWidth -CustomHeight $LogoCustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight -VideoEncoder $chosenEncoder
         $result = Invoke-Exe $logoTools.ffmpeg $logoArgs -TimeoutMs (Get-ReelProcessTimeoutMs $duration)
+        if ($result.Code -ne 0 -and $chosenEncoder -ne 'libx264') {
+            Write-Warn2 "Hardware encoder ($chosenEncoder) that bai, tu dong chuyen sang CPU libx264..."
+            $script:optimalVideoEncoder = 'libx264'
+            $logoArgs = Get-MovingLogoMuxArgs -Video $sourceVideo -Audio $sourceVideo -Logo $resolvedLogo -Output $stagedVideo `
+                -Width $size.W -Height $size.H -Fade $LogoFade -Size $LogoSize -Motion $LogoMotion -Position $LogoPosition `
+                -Gif $resolvedGif -GifSize $GifSize -GifFullFrame:$GifFullFrame -GifPosition $GifPosition `
+                -CustomX $LogoCustomX -CustomY $LogoCustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY `
+                -CustomWidth $LogoCustomWidth -CustomHeight $LogoCustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight -VideoEncoder 'libx264'
+            $result = Invoke-Exe $logoTools.ffmpeg $logoArgs -TimeoutMs (Get-ReelProcessTimeoutMs $duration)
+        }
         if ($result.Code -ne 0) { throw "Chen logo that bai: $($result.Err)" }
-        if (-not (Test-ValidReelOutput $logoTools $stagedVideo)) { throw 'Video chen logo khong qua kiem tra dau ra.' }
+        if (-not (Test-ValidReelOutput $logoTools $stagedVideo -AllowSilent:(-not $hasAudio))) { throw 'Video chen logo khong qua kiem tra dau ra.' }
         [IO.File]::Copy($stagedVideo, $previewOutput, $false)
         Write-Ok "Video thu: $previewOutput"
         $previewOutput
@@ -1555,7 +2007,8 @@ foreach ($raw in $links) {
         Write-Host "  $u" -ForegroundColor DarkGray
     }
     $kq = $null
-    try { $kq = Invoke-OneLink -T $tools -Url $u -Dest $OutDir -KeepFiles:$Keep }
+    try { $kq = Invoke-OneLink -T $tools -Url $u -Dest $OutDir -KeepFiles:$Keep -GifFullFrame:$GifFullFrame `
+        -LogoCustomWidth $LogoCustomWidth -LogoCustomHeight $LogoCustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight }
     catch { Show-Fail -Message "Loi: $($_.Exception.Message)" -Fix @('Chay lai thu.') }
     if ($kq) { $xong++ } else { $loi++ }
 }

@@ -1,80 +1,80 @@
 {
-    "version":  "1.0.17",
-    "releasedAt":  "2026-10-07 17:39",
-    "minLauncher":  "1.0.0",
-    "mandatory":  false,
-    "changelog":  [
-                      "Sua logo tu video goc/audio da luu khong tai lai; giu ban cu khi loi/dung; giao dien dieu khien trai va video phai"
-                  ],
-    "files":  [
-                  {
-                      "path":  "core/facebook-links.ps1",
-                      "sha256":  "B97F5C411162C407FF5156EF9B6DD8030DBD58363936B2C4DB33E9D2B9566214",
-                      "size":  6755
-                  },
-                  {
-                      "path":  "core/fix-ket-noi.ps1",
-                      "sha256":  "67105CCB1E7E44BF98D48F6E57108F16F2B3F64624D547C26B182BC9F42C9555",
-                      "size":  5796
-                  },
-                  {
-                      "path":  "core/Kid-FB.Y.ico",
-                      "sha256":  "40EEC8AD60D232AF4ED5436D3B3F005A460E622A2C21C589D2BF561713C5F1A7",
-                      "size":  2686
-                  },
-                  {
-                      "path":  "core/kid-fby-gui.ps1",
-                      "sha256":  "177F02AB9DA53F625CDB9FC964CF9BF1DFACABB0B4B5F8FC288C6952A96E8B89",
-                      "size":  159341
-                  },
-                  {
-                      "path":  "core/kid-fby.ps1",
-                      "sha256":  "84A3C918A25C6DB46070EE082B4D33D704AC4B4EA9E3987D4E065E2133833ECC",
-                      "size":  81874
-                  },
-                  {
-                      "path":  "core/kid-logo.zip",
-                      "sha256":  "04CC321E27BD14418AAEB2AFEA9E6E9D04D76C9E67C71B3668004FDB4D5611FD",
-                      "size":  1897044
-                  },
-                  {
-                      "path":  "core/update.json",
-                      "sha256":  "F32DCCFF34D3183A8ED519F0269421D7DC8B2F095A3DB1F10F00E5BE68137F55",
-                      "size":  56
-                  },
-                  {
-                      "path":  "core/updater.ps1",
-                      "sha256":  "4FE6BDB475ECE704151FEF34A93782F99802EA52EC7A696D9BBB8D33A4894A43",
-                      "size":  7901
-                  },
-                  {
-                      "path":  "core/version.txt",
-                      "sha256":  "A6CF790673D40EE17757491258B07008858379109C2FE2357358B8EAEB7F1C7D",
-                      "size":  6
-                  },
-                  {
-                      "path":  "core/whisper-language.ps1",
-                      "sha256":  "EF929A5A5B66E86211A63468025927D0B6100092AA90D8F331752B291FD5A175",
-                      "size":  21197
-                  },
-                  {
-                      "path":  "Kid-FB.Y.exe",
-                      "sha256":  "3AB25B6EF4F19E53DD55CFF60FD02F66BA334F64D1C98B57F7F3F599120FB7D0",
-                      "size":  2187264
-                  }
-              ],
-    "tools":  {
-                  "yt-dlp":  {
-                                 "version":  "latest",
-                                 "exe":  "yt-dlp.exe"
-                             },
-                  "scrcpy":  {
-                                 "version":  "3.1",
-                                 "exe":  "scrcpy.exe"
-                             },
-                  "ffmpeg":  {
-                                 "version":  "release",
-                                 "exe":  "ffmpeg.exe"
-                             }
-              }
+  "version": "1.0.17",
+  "releasedAt": "2026-10-07 17:39",
+  "minLauncher": "1.0.0",
+  "mandatory": false,
+  "changelog": [
+    "Sua logo tu video goc/audio da luu khong tai lai; giu ban cu khi loi/dung; giao dien dieu khien trai va video phai"
+  ],
+  "files": [
+    {
+      "path": "core/facebook-links.ps1",
+      "sha256": "21075A787EC2191657A086646083C710A7E9F902027047087DD6791CB40F2894",
+      "size": 10131
+    },
+    {
+      "path": "core/fix-ket-noi.ps1",
+      "sha256": "67105CCB1E7E44BF98D48F6E57108F16F2B3F64624D547C26B182BC9F42C9555",
+      "size": 5796
+    },
+    {
+      "path": "core/Kid-FB.Y.ico",
+      "sha256": "40EEC8AD60D232AF4ED5436D3B3F005A460E622A2C21C589D2BF561713C5F1A7",
+      "size": 2686
+    },
+    {
+      "path": "core/kid-fby-gui.ps1",
+      "sha256": "7819EAF70ADB913A3157BB147EDBE4C5C22D80422B7847A6E034A30DCDFC38A4",
+      "size": 324236
+    },
+    {
+      "path": "core/kid-fby.ps1",
+      "sha256": "06C2B62BC68421C1079607B50C9678F1136D4E67732BA1696588F4C3E4CB5C80",
+      "size": 107853
+    },
+    {
+      "path": "core/kid-logo.zip",
+      "sha256": "04CC321E27BD14418AAEB2AFEA9E6E9D04D76C9E67C71B3668004FDB4D5611FD",
+      "size": 1897044
+    },
+    {
+      "path": "core/update.json",
+      "sha256": "F32DCCFF34D3183A8ED519F0269421D7DC8B2F095A3DB1F10F00E5BE68137F55",
+      "size": 56
+    },
+    {
+      "path": "core/updater.ps1",
+      "sha256": "4FE6BDB475ECE704151FEF34A93782F99802EA52EC7A696D9BBB8D33A4894A43",
+      "size": 7901
+    },
+    {
+      "path": "core/version.txt",
+      "sha256": "A6CF790673D40EE17757491258B07008858379109C2FE2357358B8EAEB7F1C7D",
+      "size": 6
+    },
+    {
+      "path": "core/whisper-language.ps1",
+      "sha256": "EF929A5A5B66E86211A63468025927D0B6100092AA90D8F331752B291FD5A175",
+      "size": 21197
+    },
+    {
+      "path": "Kid-FB.Y.exe",
+      "sha256": "D5033E3B2EA3082FE4811EC41CC57D7E2A829A8D29505306530F6B02B795E382",
+      "size": 2380800
+    }
+  ],
+  "tools": {
+    "yt-dlp": {
+      "version": "latest",
+      "exe": "yt-dlp.exe"
+    },
+    "scrcpy": {
+      "version": "3.1",
+      "exe": "scrcpy.exe"
+    },
+    "ffmpeg": {
+      "version": "release",
+      "exe": "ffmpeg.exe"
+    }
+  }
 }

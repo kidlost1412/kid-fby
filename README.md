@@ -16,7 +16,7 @@ Bộ tiny dùng CPU Windows x64, không cần cài Python/CUDA. Model đa ngôn 
 
 Tiny lấy tối đa hai đoạn audio ngắn, chỉ ước tính ngôn ngữ. Thiếu tool/model, audio quá ngắn hoặc kết quả chưa rõ không chặn xuất video. Với nguồn Khmer và một số ngôn ngữ Ấn Độ, tiny còn yếu trong bộ mẫu đã thử; điểm model cao cũng có thể sai. Luôn nghe nghiệm thu.
 
-Xem [WHISPER.md](WHISPER.md) để biết cách thử audio có sẵn, số đo tốc độ, bộ mẫu và giới hạn. Các sửa lỗi khởi tạo/hủy tác vụ/giữ bản cũ được ghi trong [AUDIT.md](AUDIT.md). Bản này đã qua kiểm tra khởi tạo WPF trong thư mục trống và model thật trên máy phát triển; lần thử của anh trên máy mới vẫn cần kiểm tra cả Facebook/LDPlayer.
+Nhận diện chạy cục bộ trên CPU, không tự tải model giữa lúc xử lý và không thay đổi audio xuất. Kết quả vẫn cần nghe nghiệm thu trên video thực tế.
 
 Nếu gặp lỗi, giữ nội dung tab **Terminal Logs** và thông báo lỗi, kèm phiên bản Windows/LDPlayer để đối chiếu. Không cần cung cấp thông tin đăng nhập Facebook.
 
@@ -40,3 +40,19 @@ Có thể tạo bản thử từ một video đã có mà không mở Facebook/A
 ```
 
 Xuất file `video-hoan-chinh-logo-preview.mp4` cạnh file đầu vào, không ghi đè video gốc hoặc bản thử đã có. Logo được đóng gói trong `core/kid-logo.zip` và nhúng vào EXE để máy mới/cập nhật nhận đủ file.
+
+## Chỉnh logo, GIF và kiểm tra link
+
+Logo và GIF có tám tay kéo: kéo cạnh đổi riêng chiều rộng hoặc chiều cao, kéo góc đổi cả hai mà không khóa tỉ lệ ảnh. Nút **Phủ đầy khung video** giãn GIF kín khung. Thanh kích thước/lăn chuột trở lại chế độ giữ tỉ lệ nguồn. GIF trong suốt giữ alpha trong preview và video xuất.
+
+Thanh tua có một hàng riêng; bấm/kéo hoặc dùng phím trái/phải để tua ba giây khi xem video, kể cả ở Kho video.
+
+ID lặp trong danh sách chỉ được xử lý một lần. Với link chứa ID Reel/video trực tiếp, ứng dụng kiểm tra file video gốc hoặc hoàn tất có cùng ID trong thư mục xuất hiện tại và cảnh báo đã tải; khi bắt đầu có thể tải lại, bỏ qua hoặc hủy. Link chia sẻ/rút gọn chưa có ID không được suy đoán từ token.
+
+## Build và phát hành
+
+Trên Windows x64, chạy `powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\build-local.ps1`. Script đồng bộ nguồn GIF nhúng, kiểm tra cú pháp, biên dịch EXE và chạy SelfTest trong thư mục tạm, đối chiếu bảy tài nguyên nhúng. Lệnh này không đổi phiên bản, commit, tag hoặc push.
+
+`publish.ps1` dùng cùng luồng build trước khi tạo manifest và phát hành. Chỉ chạy khi chủ động phát hành phiên bản mới; dùng `-NoPush` nếu chỉ muốn chuẩn bị bản phát hành cục bộ.
+
+`tools/` chứa công cụ/model và `output/` chứa video người dùng; cả hai được Git bỏ qua. Báo cáo và fixture kiểm thử không nằm trong cây dự án phát hành.

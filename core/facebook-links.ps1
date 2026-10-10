@@ -1,5 +1,5 @@
 ﻿function Get-FacebookInputLinks {
-    param([string]$Text)
+    param([string]$Text, [switch]$KeepDuplicates)
 
     if ([string]::IsNullOrEmpty($Text)) { return }
 
@@ -40,12 +40,88 @@
         $trusted = ($hostName -eq 'facebook.com' -or $hostName.EndsWith('.facebook.com', [StringComparison]::Ordinal))
         if ($hostName -eq 'fb.watch' -or $hostName -eq 'www.fb.watch') { $trusted = $true }
         if (-not $trusted) { continue }
-        if ($seen.Add($url)) { $found.Add($url) }
+        if ($KeepDuplicates -or $seen.Add($url)) { $found.Add($url) }
     }
 
     foreach ($url in $found) { Write-Output $url }
 }
 
+function Get-FacebookVideoId {
+    param([string]$Url)
+
+    if ([string]::IsNullOrWhiteSpace($Url)) { return $null }
+    $uri = $null
+    if (-not [Uri]::TryCreate($Url.Trim(), [UriKind]::Absolute, [ref]$uri)) { return $null }
+    if ($uri.Scheme -ne 'http' -and $uri.Scheme -ne 'https') { return $null }
+    $hostName = $uri.Host.ToLowerInvariant()
+    if (-not ($hostName -eq 'facebook.com' -or $hostName.EndsWith('.facebook.com', [StringComparison]::Ordinal))) { return $null }
+
+    $path = [Uri]::UnescapeDataString($uri.AbsolutePath)
+    if ($path -match '^/(?:reel|reels|videos)/(\d+)(?:/|$)' -or $path -match '^/[^/]+/videos/(\d+)(?:/|$)') {
+        return $matches[1]
+    }
+    if ($path -match '^/watch/?$' -or $path -match '^/video\.php/?$') {
+        foreach ($pair in ($uri.Query.TrimStart('?') -split '&')) {
+            $parts = $pair -split '=', 2
+            if ($parts.Count -eq 2 -and [Uri]::UnescapeDataString($parts[0]) -eq 'v') {
+                $value = [Uri]::UnescapeDataString($parts[1])
+                if ($value -match '^\d+$') { return $value }
+            }
+        }
+    }
+    return $null
+}
+
+function Get-FacebookLinkDuplicateReport {
+    param([string]$Text, [string]$OutDir)
+
+    $inputLinks = @(Get-FacebookInputLinks -Text $Text -KeepDuplicates)
+    $uniqueLinks = New-Object 'System.Collections.Generic.List[string]'
+    $seenKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    $allIds = New-Object 'System.Collections.Generic.List[string]'
+    $allIdSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    $duplicateIds = New-Object 'System.Collections.Generic.List[string]'
+    $duplicateIdSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+
+    foreach ($url in $inputLinks) {
+        $videoId = Get-FacebookVideoId -Url $url
+        if ($videoId) {
+            if (-not $allIdSet.Add($videoId)) {
+                if ($duplicateIdSet.Add($videoId)) { $duplicateIds.Add($videoId) }
+                continue
+            }
+            $allIds.Add($videoId)
+            $uniqueLinks.Add($url)
+            continue
+        }
+
+        $uri = $null
+        $key = if ([Uri]::TryCreate($url, [UriKind]::Absolute, [ref]$uri)) { $uri.AbsoluteUri } else { $url }
+        if ($seenKeys.Add($key)) { $uniqueLinks.Add($url) }
+    }
+
+    $downloadedIds = New-Object 'System.Collections.Generic.List[string]'
+    if (-not [string]::IsNullOrWhiteSpace($OutDir)) {
+        foreach ($videoId in $allIds) {
+            foreach ($suffix in @('-1-video-goc.mp4', '-3-hoan-chinh.mp4')) {
+                $candidate = Join-Path $OutDir ($videoId + $suffix)
+                if (Test-Path -LiteralPath $candidate -PathType Leaf -ErrorAction Stop) {
+                    $file = Get-Item -LiteralPath $candidate -ErrorAction Stop
+                    if ($file -and $file.Length -gt 0) {
+                        $downloadedIds.Add($videoId)
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Links = @($uniqueLinks.ToArray())
+        DuplicateIds = @($duplicateIds.ToArray())
+        DownloadedIds = @($downloadedIds.ToArray())
+    }
+}
 function Get-FacebookCanonicalVideoUrl {
     param([string]$Url, [string]$VideoId)
 

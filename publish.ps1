@@ -61,29 +61,8 @@ Write-Host "[3/6] Da ghi version $Version vao core\version.txt" -ForegroundColor
 
 # 4. Build lai Kid-FB.Y.exe de nhung code moi nhat
 Write-Host "[4/6] Dang bien dich Kid-FB.Y.exe moi..." -ForegroundColor Yellow
-$csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-if (-not (Test-Path -LiteralPath $csc)) { throw 'Khong tim thay C# compiler. Dung phat hanh de tranh dung EXE cu.' }
-if (Test-Path $csc) {
-    & $csc /nologo /target:winexe /out:Kid-FB.Y.exe /win32icon:core\Kid-FB.Y.ico `
-        /r:System.Windows.Forms.dll `
-        /res:core\kid-fby-gui.ps1,kid-fby-gui.ps1 `
-        /res:core\kid-fby.ps1,kid-fby.ps1 `
-        /res:core\whisper-language.ps1,whisper-language.ps1 `
-        /res:core\facebook-links.ps1,facebook-links.ps1 `
-        /res:core\fix-ket-noi.ps1,fix-ket-noi.ps1 `
-        /res:core\kid-logo.zip,kid-logo.zip `
-        /res:core\Kid-FB.Y.ico,Kid-FB.Y.ico Program.cs
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "    -> Bien dich Kid-FB.Y.exe thanh cong." -ForegroundColor Green
-    } else {
-        throw "Bien dich Kid-FB.Y.exe that bai (ma $LASTEXITCODE). Dung phat hanh."
-    }
-}
-
-# Kiem tra khoi tao tren thu muc tam, khong ap dung READY trong thu muc dang phat trien.
-foreach ($test in @('startup.ps1','engine-runtime.ps1','gui-runtime.ps1','logo-gui.ps1','media-output.ps1','media-metadata.ps1','watermark.ps1','whisper-runtime.ps1','whisper-gui.ps1','whisper-media.ps1','whisper-integration.ps1','facebook-links.ps1')) {
-    & (Join-Path $root "tests\$test") -Root $root
-}
+& powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File (Join-Path $root 'build-local.ps1') -Root $root
+if ($LASTEXITCODE -ne 0) { throw 'Local build or launcher verification failed. Publishing stopped.' }
 
 # 5. Tao manifest version.json hoan chinh
 Write-Host "[5/6] Dang tao manifest version.json..." -ForegroundColor Yellow

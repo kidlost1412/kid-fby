@@ -6,3 +6,12 @@ core/_backup/
 *.log
 *.bak
 *.old
+/tests/
+/assets/logo-concepts/
+/AUDIT*.md
+/FIX-*.md
+/PROMPT-*.md
+/RECHECK*.md
+/RETEST*.md
+/NUT-*.md
+/UI-LOAD-*.md
