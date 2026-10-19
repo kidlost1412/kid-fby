@@ -56,10 +56,10 @@ $languageHelper = Join-Path $scriptDir 'whisper-language.ps1'
 if (Test-Path -LiteralPath $languageHelper) { . $languageHelper }
 $linkHelper = Join-Path $scriptDir 'facebook-links.ps1'
 if (Test-Path -LiteralPath $linkHelper) { . $linkHelper }
-if (-not (Test-Path (Join-Path $script:Here 'tools'))) {
-    if (Test-Path (Join-Path (Get-Location).Path 'tools')) {
+if (-not (Test-Path -LiteralPath (Join-Path $script:Here 'tools'))) {
+    if (Test-Path -LiteralPath (Join-Path (Get-Location).Path 'tools')) {
         $script:Here = (Get-Location).Path
-    } elseif (Test-Path (Join-Path (Split-Path $scriptDir -Parent) 'tools')) {
+    } elseif (Test-Path -LiteralPath (Join-Path (Split-Path $scriptDir -Parent) 'tools')) {
         $script:Here = Split-Path $scriptDir -Parent
     }
 }
@@ -206,7 +206,7 @@ function Find-Tool {
     foreach ($r in $roots) {
         try {
             if ($r -and (Test-Path -LiteralPath $r -ErrorAction SilentlyContinue)) {
-                $hit = Get-ChildItem -Path $r -Recurse -Filter "$Name.exe" -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 10000 } | Select-Object -First 1
+                $hit = Get-ChildItem -LiteralPath $r -Recurse -Filter "$Name.exe" -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 10000 } | Select-Object -First 1
                 if ($hit) { return $hit.FullName }
             }
         } catch { }
@@ -297,7 +297,7 @@ function Invoke-Download {
     # 2. Thu bang curl.exe vao file .tmp (Doc stream bat dong bo tranh loi ma 23)
     if (-not $dlSuccess) {
         $curlExe = (Get-Command 'curl.exe' -ErrorAction SilentlyContinue)
-        $curlPath = if ($curlExe) { $curlExe.Source } elseif (Test-Path 'C:\Windows\System32\curl.exe') { 'C:\Windows\System32\curl.exe' } else { $null }
+        $curlPath = if ($curlExe) { $curlExe.Source } elseif (Test-Path -LiteralPath 'C:\Windows\System32\curl.exe') { 'C:\Windows\System32\curl.exe' } else { $null }
         if ($curlPath -and (Test-Path -LiteralPath $curlPath)) {
             try {
                 Write-Note "Dang tai bang curl..."
@@ -596,7 +596,7 @@ function Invoke-SetupDirect {
                         try { New-Item -ItemType Directory -Path $destDir -Force -ErrorAction SilentlyContinue | Out-Null } catch { }
                     }
                     Expand-Archive -Path $file -DestinationPath $destDir -Force
-                    Get-ChildItem -Path $destDir -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+                    Get-ChildItem -LiteralPath $destDir -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
                         Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $destDir $_.Name) -Force -ErrorAction SilentlyContinue
                     }
                     if ($v.SubExe) {
@@ -945,46 +945,220 @@ function Get-AudioOnset {
 function Open-Reel {
     param($T, [string]$Url)
     $r = Invoke-Adb $T @('shell','am','start','-a','android.intent.action.VIEW','-d', (Quote-Arg $Url),'-n',"$($script:Fb)/.IntentUriHandler")
-    if ("$($r.Out)$($r.Err)" -match 'Error|does not exist') {
+    if ($r.Code -ne 0 -or "$($r.Out)$($r.Err)" -match 'Error|does not exist') {
         $r = Invoke-Adb $T @('shell','am','start','-a','android.intent.action.VIEW','-d', (Quote-Arg $Url),$script:Fb)
     }
+    if ($r.Code -ne 0 -or "$($r.Out)$($r.Err)" -match 'Error|does not exist') { throw 'Khong mo duoc Reel tren Facebook; khong xac nhan ngon ngu.' }
     return $r
+}
+
+function Get-VisibleUiBounds {
+    param([System.Xml.XmlNode]$Node)
+    $rect = $null
+    for ($current = $Node; $current -and $current -is [System.Xml.XmlElement]; $current = $current.ParentNode) {
+        $bounds = $current.GetAttribute('bounds')
+        if (-not $bounds) { continue }
+        $match = [regex]::Match($bounds, '^\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]$')
+        if (-not $match.Success) { return $null }
+        $b = @([int]$match.Groups[1].Value,[int]$match.Groups[2].Value,[int]$match.Groups[3].Value,[int]$match.Groups[4].Value)
+        if ($b[2] -le $b[0] -or $b[3] -le $b[1]) { return $null }
+        if (-not $rect) { $rect = $b }
+        else { $rect = @([Math]::Max($rect[0],$b[0]),[Math]::Max($rect[1],$b[1]),[Math]::Min($rect[2],$b[2]),[Math]::Min($rect[3],$b[3])) }
+    }
+    if (-not $rect -or $rect[2]-$rect[0] -lt 16 -or $rect[3]-$rect[1] -lt 16) { return $null }
+    return [pscustomobject]@{X=[int](($rect[0]+$rect[2])/2);Y=[int](($rect[1]+$rect[3])/2);Left=$rect[0];Top=$rect[1];Right=$rect[2];Bottom=$rect[3]}
+}
+
+function Get-DubbingVietnameseChoice {
+    param([string]$Xml)
+    try {
+        [xml]$document = $Xml
+        $nodes = @($document.SelectNodes('//node[@package="com.facebook.katana"]'))
+        if (-not @($nodes | Where-Object { ($_.GetAttribute('text')+' '+$_.GetAttribute('content-desc')).Trim() -match '^(Âm thanh và ngôn ngữ|Audio and languages?)(?:\s|$)' }).Count) { return $null }
+        $rows = @($nodes | Where-Object { $_.GetAttribute('checkable') -eq 'true' -and ($_.GetAttribute('text')+$_.GetAttribute('content-desc')).Trim() })
+        $vietnamese = '^(Tiếng Việt|Vietnamese)(?:$|[\s·,:(])'
+        $otherSelected = @($rows | Where-Object { $_.GetAttribute('checked') -eq 'true' -and ($_.GetAttribute('text')+' '+$_.GetAttribute('content-desc')).Trim() -notmatch $vietnamese })
+        foreach ($row in $rows) {
+            $label = ($row.GetAttribute('text')+' '+$row.GetAttribute('content-desc')).Trim()
+            if ($label -notmatch $vietnamese -or $label -match 'không.*(hỗ trợ|khả dụng)|not available|unavailable|not supported' -or $row.GetAttribute('enabled') -eq 'false') { continue }
+            $bounds = Get-VisibleUiBounds -Node $row
+            if (-not $bounds) { continue }
+            return [pscustomobject]@{X=$bounds.X;Y=$bounds.Y;Label=$label;Selected=($row.GetAttribute('checked') -eq 'true' -and $otherSelected.Count -eq 0);Clickable=($row.GetAttribute('clickable') -eq 'true')}
+        }
+    } catch { }
+    return $null
 }
 
 # Tim phan tu giao dien dong dua tren content-desc hoac text
 function Get-UiNodeBounds {
-    param($T, [string[]]$Patterns)
+    param($T, [string[]]$Patterns, [switch]$SnapshotOnly)
     $xmlLocal = Join-Path ([IO.Path]::GetTempPath()) ("kidfby-ui-" + [Guid]::NewGuid().ToString('N').Substring(0,6) + ".xml")
-    $null = Invoke-Adb $T @('shell','uiautomator','dump','/sdcard/ui_find.xml')
-    $null = Invoke-Adb $T @('pull','/sdcard/ui_find.xml',$xmlLocal)
-    if (-not (Test-Path $xmlLocal)) { return $null }
-    
+    $remoteXml = '/sdcard/kidfby-ui-'+[guid]::NewGuid().ToString('N')+'.xml'
     $found = $null
     try {
-        [xml]$xml = Get-Content $xmlLocal -Encoding UTF8 -ErrorAction SilentlyContinue
+        $dump = Invoke-Adb $T @('shell','uiautomator','dump',$remoteXml)
+        if ($dump.Code -ne 0) { return $null }
+        $pull = Invoke-Adb $T @('pull',$remoteXml,$xmlLocal)
+        if ($pull.Code -ne 0 -or -not (Test-Path -LiteralPath $xmlLocal)) { return $null }
+        [xml]$xml = Get-Content -LiteralPath $xmlLocal -Encoding UTF8 -ErrorAction SilentlyContinue
+        if ($SnapshotOnly) { return $xml.OuterXml }
         $nodes = $xml.SelectNodes("//node")
         foreach ($n in $nodes) {
             $desc = "$($n.GetAttribute('content-desc'))"
             $text = "$($n.GetAttribute('text'))"
-            $combined = "$desc $text"
+            $combined = "$desc $text".Trim()
             foreach ($pat in $Patterns) {
                 if ($combined -match $pat) {
-                    $b = $n.GetAttribute('bounds')
-                    if ($b -match '\[(\d+),(\d+)\]\[(\d+),(\d+)\]') {
-                        $x = [int](([int]$Matches[1] + [int]$Matches[3]) / 2)
-                        $y = [int](([int]$Matches[2] + [int]$Matches[4]) / 2)
-                        $found = [pscustomobject]@{ X = $x; Y = $y; Text = $text; Desc = $desc; Bounds = $b }
-                        break
-                    }
+                    if ($n.GetAttribute('package') -ne $script:Fb -or $n.GetAttribute('enabled') -eq 'false') { continue }
+                    $visible = Get-VisibleUiBounds -Node $n
+                    if (-not $visible) { continue }
+                    $found = [pscustomobject]@{ X=$visible.X; Y=$visible.Y; Text=$text; Desc=$desc; Bounds=$n.GetAttribute('bounds') }
+                    break
                 }
             }
             if ($found) { break }
         }
     } catch { }
     finally {
-        Remove-Item $xmlLocal -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $xmlLocal -Force -ErrorAction SilentlyContinue
+        $null = Invoke-Adb $T @('shell','rm','-f',$remoteXml)
     }
     return $found
+}
+
+function Get-DubbingMenuState {
+    param([string]$Xml)
+    if ([string]::IsNullOrWhiteSpace($Xml)) { return 'unknown' }
+    try {
+        [xml]$document = $Xml
+        $nodes = @($document.SelectNodes('//node[@package="com.facebook.katana"]'))
+        if (-not $nodes.Count) { return 'unknown' }
+        $labels = @($nodes | ForEach-Object {
+            if ($_.GetAttribute('text')) { $_.GetAttribute('text').Trim() } else { $_.GetAttribute('content-desc').Trim() }
+        })
+        if (-not @($labels | Where-Object { $_ -match '^(Âm thanh và ngôn ngữ|Audio and languages?)$' }).Count) { return 'unknown' }
+        $allChoices = @($nodes | Where-Object { $_.GetAttribute('checkable') -eq 'true' })
+        $choices = @($allChoices | Where-Object { -not [string]::IsNullOrWhiteSpace(($_.GetAttribute('text')+$_.GetAttribute('content-desc'))) })
+        if (@($choices | Where-Object { ($_.GetAttribute('text')+' '+$_.GetAttribute('content-desc')).Trim() -match '^(Tiếng Việt|Vietnamese)(?:[\s·:(]|$)' }).Count) { return 'vietnamese-visible' }
+        # Absence is only conclusive for a complete, non-scrolling menu with a
+        # selected original-only track and the translation availability footer.
+        if (@($nodes | Where-Object { $_.GetAttribute('scrollable') -eq 'true' }).Count) { return 'unknown' }
+        $footer = @($labels | Where-Object { $_ -match '^Tính năng dịch giọng nói hiện chưa hỗ trợ tất cả các ngôn ngữ\.|^Voice translations.*(support|available)' })
+        if ($choices.Count -eq 1 -and $choices[0].GetAttribute('checked') -eq 'true' -and $footer.Count -gt 0) {
+            $label = if ($choices[0].GetAttribute('text')) { $choices[0].GetAttribute('text').Trim() } else { $choices[0].GetAttribute('content-desc').Trim() }
+            if ($label -match '(^|[·:]\s*)(Âm thanh gốc|Original audio)$') {
+                foreach ($choice in $allChoices) {
+                    $parent = $choice
+                    while ($parent -and -not [object]::ReferenceEquals($parent,$choices[0])) { $parent = $parent.ParentNode }
+                    if (-not $parent) { return 'unknown' }
+                }
+                return 'original-only'
+            }
+        }
+    } catch { return 'unknown' }
+    return 'unknown'
+}
+
+function Get-ReelOptionsMenuState {
+    param([string]$Xml)
+    try {
+        [xml]$document = $Xml
+        $windowRoot = $document.SelectSingleNode('/hierarchy/node')
+        if (-not $windowRoot -or $windowRoot.GetAttribute('package') -ne 'com.facebook.katana') { return $null }
+        $nodes = @($document.SelectNodes('//node[@package="com.facebook.katana"]'))
+        if (-not $nodes.Count) { return $null }
+        $close = $false; $anchors = 0; $selector = $null; $hiddenSelector = $false; $hasSpeed = $false; $hasQuality = $false
+        $rows = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($node in $nodes) {
+            $label = if ($node.GetAttribute('content-desc')) { $node.GetAttribute('content-desc').Trim() } else { $node.GetAttribute('text').Trim() }
+            $isSelector = $label -match '^(Âm thanh và ngôn ngữ|Audio and languages?)(?:$|\s)'
+            if ($isSelector) { $hiddenSelector = $true }
+            $visible = Get-VisibleUiBounds -Node $node
+            if (-not $visible) { continue }
+            if ($node.GetAttribute('class') -match 'ProgressBar' -or $label -match '^(Đang tải|Loading)(?:\s|[.….]|$)') { return $null }
+            if ($node.GetAttribute('clickable') -ne 'true' -or $node.GetAttribute('enabled') -eq 'false') { continue }
+            if ($label -match '^(Đóng|Close)$') { $close = $true }
+            if ($label -match '^(Tốc độ phát lại|Playback speed)$') { $hasSpeed = $true }
+            if ($label -match '^(Cài đặt chất lượng|Quality settings?)$') { $hasQuality = $true }
+            if ($label -match '^(Tốc độ phát lại|Playback speed|Cài đặt chất lượng|Quality settings?|Phụ đề|Captions|Chế độ rõ ràng|Clear mode|Tự động cuộn|Auto.?scroll|Bản chép lời|Transcript)(?:$|\s)') { $anchors++ }
+            if ($label -match '^(Âm thanh và ngôn ngữ|Audio and languages?)(?:$|\s)') { $selector = [pscustomobject]@{X=$visible.X;Y=$visible.Y} }
+            if ($label) { $rows.Add($label+'@'+$node.GetAttribute('bounds')) }
+        }
+        if (-not $close -or $anchors -lt 1) { return $null }
+        $scroll = $null
+        foreach ($node in $nodes | Where-Object { $_.GetAttribute('scrollable') -eq 'true' }) {
+            $scroll = Get-VisibleUiBounds -Node $node
+            if ($scroll) { break }
+        }
+        return [pscustomobject]@{Selector=$selector;HasSelectorNode=$hiddenSelector;StartVisible=($hasSpeed -and $hasQuality);Anchors=$anchors;Signature=($rows -join '|');Scroll=$scroll}
+    } catch { return $null }
+}
+
+function Find-ReelLanguageSelector {
+    param($T)
+    $previous = $null; $recognizedStart = $false; $hasScrolled = $false
+    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        $state = Get-ReelOptionsMenuState -Xml (Get-UiNodeBounds -T $T -SnapshotOnly)
+        if (-not $state) { $previous = $null; Start-Sleep -Milliseconds 700; continue }
+        if ($state.Selector) { return [pscustomobject]@{Status='available';Node=$state.Selector} }
+        if (-not $hasScrolled -and $state.StartVisible) { $recognizedStart = $true }
+        # Stable visible rows after a scroll (or two reads of a non-scrolling sheet)
+        # establish the end. Missing/damaged/loading snapshots never prove absence.
+        if ($recognizedStart -and $previous -and -not $state.HasSelectorNode -and -not $previous.HasSelectorNode -and $previous.Signature -eq $state.Signature) {
+            Write-Note 'DUB_NO_SELECTOR: Hai lan doc menu ba cham day du on dinh khong co bo chon am thanh/ngon ngu.'
+            return [pscustomobject]@{Status='unavailable';Node=$null}
+        }
+        $previous = $state
+        if ($state.Scroll) {
+            $from = [int]($state.Scroll.Top+($state.Scroll.Bottom-$state.Scroll.Top)*0.8)
+            $to = [int]($state.Scroll.Top+($state.Scroll.Bottom-$state.Scroll.Top)*0.2)
+            $swipe = Invoke-Adb $T @('shell','input','swipe',"$($state.Scroll.X)","$from","$($state.Scroll.X)","$to",'400')
+            if ($swipe.Code -ne 0) { return [pscustomobject]@{Status='unverified';Node=$null} }
+            $hasScrolled = $true
+        }
+        Start-Sleep -Milliseconds 700
+    }
+    return [pscustomobject]@{Status='unverified';Node=$null}
+}
+
+function Open-DubbingLanguageMenu {
+    param($T)
+    $snapshot = Get-UiNodeBounds -T $T -SnapshotOnly
+    try {
+        [xml]$document = $snapshot
+        if (@($document.SelectNodes('//node[@package="com.facebook.katana"]') | Where-Object { ($_.GetAttribute('text')+' '+$_.GetAttribute('content-desc')).Trim() -match '^(Âm thanh và ngôn ngữ|Audio and languages?)(?:\s|$)' }).Count) { return $true }
+    } catch { }
+    $more = Get-UiNodeBounds -T $T -Patterns @('^Khác(?:\s+Khác)?$','^More(?: options)?(?:\s+More(?: options)?)?$','^Options$')
+    if (-not $more) { return $false }
+    $tap = Invoke-Adb $T @('shell','input','tap',"$($more.X)","$($more.Y)")
+    if ($tap.Code -ne 0) { return $false }
+    Start-Sleep -Milliseconds 1200
+    $selector = Find-ReelLanguageSelector -T $T
+    if ($selector.Status -ne 'available') { return $false }
+    $audio = $selector.Node
+    $tap = Invoke-Adb $T @('shell','input','tap',"$($audio.X)","$($audio.Y)")
+    if ($tap.Code -ne 0) { return $false }
+    Start-Sleep -Milliseconds 1200
+    return $true
+}
+
+# Meta closes the language sheet after applying a language. A successful tap alone
+# is insufficient: require two fresh, recognizable Reel screens after that tap.
+function Test-DubbingReturnedToReel {
+    param([string]$Xml)
+    try {
+        [xml]$document = $Xml
+        $nodes = @($document.SelectNodes('//node[@package="com.facebook.katana"]'))
+        if (@($nodes | Where-Object { ($_.GetAttribute('text')+' '+$_.GetAttribute('content-desc')).Trim() -match '^(Âm thanh và ngôn ngữ|Audio and languages?)(?:\s|$)' }).Count) { return $false }
+        $hasMore = $false; $hasReel = $false
+        foreach ($node in $nodes) {
+            if ($node.GetAttribute('enabled') -eq 'false' -or -not (Get-VisibleUiBounds -Node $node)) { continue }
+            $label = ($node.GetAttribute('text')+' '+$node.GetAttribute('content-desc')).Trim()
+            if ($node.GetAttribute('clickable') -eq 'true' -and $label -match '^(Khác(?:\s+Khác)?|More(?: options)?(?:\s+More(?: options)?)?|Options)$') { $hasMore = $true }
+            if ($label -match '^(Reels(?:\s+Reels)?|Chi tiết về thước phim|Reel details)$') { $hasReel = $true }
+        }
+        return ($hasMore -and $hasReel)
+    } catch { return $false }
 }
 
 function Ensure-VietnameseDubbing {
@@ -1003,56 +1177,105 @@ function Ensure-VietnameseDubbing {
     $null = Open-Reel $T $Url
     Start-Sleep -Seconds 3
 
-    # Tim nut 3 cham ("Khac", "more", "option")
-    $moreNode = Get-UiNodeBounds -T $T -Patterns @('^Kh[a\u00e1]c$', 'Kh[a\u00e1]c', 'more', 'option')
+    # Wait for the Reel button, not a feed post's "more options for ..." action.
+    $moreNode = $null
+    for ($wait = 0; $wait -lt 4 -and -not $moreNode; $wait++) {
+        $moreNode = Get-UiNodeBounds -T $T -Patterns @('^Khác(?:\s+Khác)?$','^More(?: options)?(?:\s+More(?: options)?)?$','^Options$')
+        if (-not $moreNode) { Start-Sleep -Milliseconds 700 }
+    }
     if ($moreNode) {
         Write-Ok "Tim thay nut tuy chon tai ($($moreNode.X), $($moreNode.Y))"
-        $null = Invoke-Adb $T @('shell','input','tap', "$($moreNode.X)", "$($moreNode.Y)")
+        $tap = Invoke-Adb $T @('shell','input','tap', "$($moreNode.X)", "$($moreNode.Y)")
+        if ($tap.Code -ne 0) { return 'unverified' }
     } else {
-        Write-Warn2 'Khong tim thay nut 3 cham bang ten, cham toa do chuan (672, 1110)'
-        $null = Invoke-Adb $T @('shell','input','tap','672','1110')
+        Write-Warn2 'DUB_UNVERIFIED: Khong tim thay nut tuy chon; dung truoc thu/tai, khong cham toa do doan.'
+        $null = Invoke-Adb $T @('shell','am','force-stop',$script:Fb)
+        return 'unverified'
     }
     Start-Sleep -Milliseconds 1500
 
     # Tim muc "Am thanh va ngon ngu" trong menu vua mo
-    $audioMenuNode = Get-UiNodeBounds -T $T -Patterns @('[\u00c2\u00e2Aa]m thanh.*ng[o\u00f4\u00f2\u00f3]n ng[\u1eefu]', 'ng[o\u00f4]n ng[\u1eefu]', 'audio.*language')
-    if ($audioMenuNode) {
+    $selector = Find-ReelLanguageSelector -T $T
+    $audioMenuNode = $selector.Node
+    if ($selector.Status -eq 'available' -and $audioMenuNode) {
         Write-Ok "Tim thay muc Am thanh va ngon ngu tai ($($audioMenuNode.X), $($audioMenuNode.Y))"
-        $null = Invoke-Adb $T @('shell','input','tap', "$($audioMenuNode.X)", "$($audioMenuNode.Y)")
+        $tap = Invoke-Adb $T @('shell','input','tap', "$($audioMenuNode.X)", "$($audioMenuNode.Y)")
+        if ($tap.Code -ne 0) { return 'unverified' }
     } else {
-        Write-Warn2 'Cham toa do chuan Am thanh va ngon ngu (360, 1214)'
-        $null = Invoke-Adb $T @('shell','input','tap','360','1214')
+        $null = Invoke-Adb $T @('shell','am','force-stop',$script:Fb)
+        if ($selector.Status -eq 'unavailable') { return 'unavailable' }
+        Write-Warn2 'DUB_UNVERIFIED: Chua doc duoc menu ba cham day du; dung truoc thu/tai, chua loai vinh vien.'
+        return 'unverified'
     }
     Start-Sleep -Milliseconds 1500
 
-    # Kiem tra danh sach ngon ngu: neu chua thay Tieng Viet thi vuot len
-    $langNode = Get-UiNodeBounds -T $T -Patterns @('Ti[e\u00ea\u1ebf]ng Vi[e\u00ea\u1ec7]t', 'Vietnamese')
-    if (-not $langNode) {
-        Write-Note 'Cuon danh sach ngon ngu de tim Tieng Viet...'
-        $null = Invoke-Adb $T @('shell','input','swipe','360','800','360','300','400')
-        Start-Sleep -Milliseconds 1200
-        $langNode = Get-UiNodeBounds -T $T -Patterns @('Ti[e\u00ea\u1ebf]ng Vi[e\u00ea\u1ec7]t', 'Vietnamese')
+    $menuSnapshot = Get-UiNodeBounds -T $T -SnapshotOnly
+    if ((Get-DubbingMenuState -Xml $menuSnapshot) -eq 'original-only') {
+        Start-Sleep -Milliseconds 1000
+        $confirmedSnapshot = Get-UiNodeBounds -T $T -SnapshotOnly
+        if ((Get-DubbingMenuState -Xml $confirmedSnapshot) -eq 'original-only') {
+            Write-Note 'DUB_UNAVAILABLE: Hai lan doc menu hoan chinh chi co Am thanh goc; khong co ban dich.'
+            $null = Invoke-Adb $T @('shell','am','force-stop',$script:Fb)
+            return 'unavailable'
+        }
+    }
+    $unavailable = Get-UiNodeBounds -T $T -Patterns @('Ti[e\u00ea\u1ebf]ng Vi[e\u00ea\u1ec7]t.*kh[o\u00f4]ng (kh[a\u1ea3] d[u\u1ee5]ng|[d\u0111][u\u01b0][o\u1ee3]c h[o\u1ed7] tr[o\u1ee3])', 'Vietnamese.*(not available|unavailable|not supported)')
+    if ($unavailable) {
+        $null = Invoke-Adb $T @('shell','am','force-stop',$script:Fb)
+        return 'unavailable'
     }
 
-    if ($langNode) {
-        if ($langNode.Desc -match 'ng[o\u00f4]n ng[\u1eefu] \u01b0u ti[e\u00ea]n') {
-            $dubbingUiStatus = 'selected'
-            Write-Ok 'Tieng Viet da la ngon ngu duoc chon san (Uu tien)'
-            Write-Note 'DUB_SELECTED: Giao dien bao Tieng Viet uu tien; can nghe nghiem thu.'
-        } else {
-            Write-Ok "Tim thay Tieng Viet tai ($($langNode.X), $($langNode.Y)), dang chon..."
-            $tapResult = Invoke-Adb $T @('shell','input','tap', "$($langNode.X)", "$($langNode.Y)")
-            Start-Sleep -Milliseconds 1200
-            if ($tapResult.Code -eq 0) {
+    # Nodes outside a scrolling viewport may still exist in accessibility XML.
+    # Confirm checked choices, or the post-tap transition back to the Reel.
+    $selectionTapped = $false
+    $returnedReelReads = 0
+    for ($attempt = 0; $attempt -lt 8; $attempt++) {
+        $snapshot = Get-UiNodeBounds -T $T -SnapshotOnly
+        $choice = Get-DubbingVietnameseChoice -Xml $snapshot
+        if ($choice -and $choice.Selected) {
+            Start-Sleep -Milliseconds 500
+            $confirmation = Get-DubbingVietnameseChoice -Xml (Get-UiNodeBounds -T $T -SnapshotOnly)
+            if ($confirmation -and $confirmation.Selected) {
                 $dubbingUiStatus = 'selected'
-                Write-Note 'DUB_SELECTED: Da gui thao tac chon Tieng Viet; can nghe nghiem thu.'
-            } else {
-                Write-Warn2 'DUB_UNVERIFIED: Khong gui duoc thao tac chon Tieng Viet; can nghe nghiem thu.'
+                Write-Note 'DUB_SELECTED: Hai anh chup giao dien moi xac nhan muc Tieng Viet dang duoc chon va nam trong vung hien thi.'
+                break
             }
+            continue
         }
-    } else {
-        Write-Warn2 'DUB_UNVERIFIED: Chua xac nhan duoc Tieng Viet tu giao dien; can nghe nghiem thu.'
+        # Do not reopen the selector or tap the language a second time.
+        if ($selectionTapped) {
+            if (Test-DubbingReturnedToReel -Xml $snapshot) { $returnedReelReads++ } else { $returnedReelReads = 0 }
+            if ($returnedReelReads -ge 2) {
+                $dubbingUiStatus = 'selected'
+                Write-Note 'DUB_SELECTED: Da cham dung muc Tieng Viet; Meta dong menu va tro ve Reel, xac nhan qua hai lan doc moi.'
+                break
+            }
+            Start-Sleep -Milliseconds 500
+            continue
+        }
+        if ($choice -and $choice.Clickable) {
+            $selectionTapped = $true
+            $tap = Invoke-Adb $T @('shell','input','tap',"$($choice.X)","$($choice.Y)")
+            if ($tap.Code -ne 0) { break }
+            Start-Sleep -Milliseconds 1000
+            continue
+        }
+        $scroll = $null
+        try {
+            [xml]$document = $snapshot
+            foreach ($node in $document.SelectNodes('//node[@package="com.facebook.katana" and @scrollable="true"]')) {
+                $scroll = Get-VisibleUiBounds -Node $node
+                if ($scroll) { break }
+            }
+        } catch { }
+        if (-not $scroll) { break }
+        $fromY = [int]($scroll.Top + ($scroll.Bottom-$scroll.Top)*0.8)
+        $toY = [int]($scroll.Top + ($scroll.Bottom-$scroll.Top)*0.2)
+        $swipe = Invoke-Adb $T @('shell','input','swipe',"$($scroll.X)","$fromY","$($scroll.X)","$toY",'400')
+        if ($swipe.Code -ne 0) { break }
+        Start-Sleep -Milliseconds 700
     }
+    if ($dubbingUiStatus -ne 'selected') { Write-Warn2 'DUB_UNVERIFIED: Chua xac nhan duoc muc Tieng Viet dang chon; khong duoc tai phan hinh.' }
 
     # Dung Facebook de san sang cho buoc thu am
     $null = Invoke-Adb $T @('shell','am','force-stop',$script:Fb)
@@ -1543,6 +1766,27 @@ function Publish-ReelFiles {
 }
 
 # ---------------------------------------------------------- xu ly 1 link ----
+function Stop-ReelForLanguage {
+    param([string]$VideoId, [string[]]$Urls, [string]$Dest, [string]$Reason, $AudioLanguage)
+    $language = if ($AudioLanguage) { [string]$AudioLanguage.Language } else { '' }
+    $probability = if ($AudioLanguage) { [double]$AudioLanguage.Probability } else { 0.0 }
+    # Persist first: a locked output must never cause this video to be downloaded again.
+    $null = Save-RejectedReel -Root $script:Here -VideoId $VideoId -Urls $Urls -Reason $Reason -Language $language -Probability $probability
+    $cleanup = Remove-RejectedReelMedia -OutDir $Dest -VideoId $VideoId
+    if (-not $cleanup.Success) { Write-Warn2 ('REEL_CLEANUP_PENDING: '+($cleanup.Errors -join '; ')) }
+    Write-Note ('REEL_REJECTED: id='+$VideoId+' reason='+$Reason)
+}
+
+function Stop-KnownRejectedReel {
+    param($Entry, [string]$Dest)
+    $id = [string]$Entry.VideoId
+    if ($id -notmatch '^\d+$') { throw 'Lich su loai co ID khong hop le.' }
+    # Older outputs can predate the rejection. Retry exact-ID cleanup even on a cache hit.
+    $cleanup = Remove-RejectedReelMedia -OutDir $Dest -VideoId $id
+    if (-not $cleanup.Success) { Write-Warn2 ('REEL_CLEANUP_PENDING: '+($cleanup.Errors -join '; ')) }
+    Write-Note ('REEL_REJECTED: id='+$id+' reason=already-rejected')
+}
+
 function Invoke-OneLink {
     param($T, [string]$Url, [string]$Dest, [switch]$KeepFiles, [switch]$GifFullFrame,
           [double]$LogoCustomWidth = -1, [double]$LogoCustomHeight = -1,
@@ -1550,9 +1794,18 @@ function Invoke-OneLink {
 
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ("kidfby-" + [Guid]::NewGuid().ToString('N').Substring(0,8))
     New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    $rejectedForLanguage = $false
     try {
         # ---------- 3. tai video goc va do thoi luong ----------
-        Write-Step 3 'Tai video HD va doc thoi luong chuan'
+        Write-Step 3 'Doc ID va thoi luong; chua tai video'
+        $originalUrl = $Url
+        $knownId = Get-FacebookVideoId -Url $Url
+        $knownRejection = Find-RejectedReel -Root $script:Here -VideoId $knownId -Url $Url
+        if ($knownRejection) {
+            $rejectedForLanguage = $true
+            Stop-KnownRejectedReel -Entry $knownRejection -Dest $Dest
+            return $null
+        }
         if (Get-Command Get-FacebookInputLinks -CommandType Function -ErrorAction SilentlyContinue) {
             $cleanLinks = @(Get-FacebookInputLinks -Text $Url)
             if ($cleanLinks.Count -ne 1) {
@@ -1563,7 +1816,7 @@ function Invoke-OneLink {
             $resolvedUrl = Resolve-FacebookShareUrl -Url $Url
             if ($resolvedUrl -ne $Url) { Write-Note "Link chia se -> $resolvedUrl"; $Url = $resolvedUrl }
         }
-        $idr = Invoke-Exe $T.ytdlp @('--ignore-config','--no-playlist','--no-warnings','--print','%(id)s',$Url) -TimeoutMs 120000
+        $idr = Invoke-Exe $T.ytdlp @('--ignore-config','--no-playlist','--no-warnings','--skip-download','--print','%(id)s',$Url) -TimeoutMs 120000
         $vid = ($idr.Out -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -First 1)
         if ($vid) { $vid = $vid.Trim() }
         if ($idr.Code -ne 0 -or -not $vid) {
@@ -1574,27 +1827,27 @@ function Invoke-OneLink {
             $Url = Get-FacebookCanonicalVideoUrl -Url $Url -VideoId $vid
         }
 
-        # Tai ban chat luong cao nhat tuyet doi (4K / 2K / 1080p, uu tien do phan giai va bitrate cao nhat)
-        $dlr = Invoke-Exe $T.ytdlp @('--ignore-config','--no-playlist','-S','res,fps,br','-f','bestvideo/best','--no-warnings','-o',"$tmp\v.%(ext)s",$Url) -TimeoutMs 600000
-        $vf = Get-ChildItem -LiteralPath $tmp -File -ErrorAction SilentlyContinue | Where-Object {
-            $_.Name -like 'v.*' -and $_.Name -notmatch '\.(part|ytdl|tmp)$' -and $_.Extension.ToLowerInvariant() -notin @('.part','.ytdl','.tmp')
-        } | Select-Object -First 1
-        if ($dlr.Code -ne 0 -or -not $vf) {
-            Show-Fail -Message 'Tai video that bai.' -Fix @('Kiem tra mang.','Video co the da bi xoa hoac rieng tu.', $dlr.Err)
+        $knownRejection = Find-RejectedReel -Root $script:Here -VideoId $vid -Url $originalUrl
+        if ($knownRejection) {
+            $rejectedForLanguage = $true
+            Stop-KnownRejectedReel -Entry $knownRejection -Dest $Dest
             return $null
         }
-
-        $dur = Get-VideoDuration $T $vf.FullName
-        if ($dur -le 0.5) {
-            Show-Fail -Message "Do dai video bat thuong ($dur giay)." -Fix @('Chay lai thu.')
-            return $null
-        }
-        $sz = Get-VideoSize $T $vf.FullName
-        $cv = Get-VideoCodec -T $T -File $vf.FullName
-        Write-Ok "$($sz.W)x$($sz.H)  $cv  |  $([Math]::Round($dur, 2)) giay  |  $([Math]::Round($vf.Length/1MB, 1)) MB"
+        if ($vid -notmatch '^\d+$') { throw 'Facebook returned an invalid video ID.' }
+        $durationMetadata = Invoke-Exe $T.ytdlp @('--ignore-config','--no-playlist','--no-warnings','--skip-download','--print','%(duration)s',$Url) -TimeoutMs 120000
+        $dur = 0.0
+        if ($durationMetadata.Code -ne 0 -or -not [double]::TryParse(([string]$durationMetadata.Out).Trim(),[Globalization.NumberStyles]::Float,[cultureinfo]::InvariantCulture,[ref]$dur) -or [double]::IsNaN($dur) -or [double]::IsInfinity($dur) -or $dur -le 0.5 -or $dur -gt 3600) { throw 'Khong doc duoc thoi luong Reel hop le; chua tai video.' }
 
         # ---------- 4. dam bao Facebook da bat tieng Viet ----------
         $dubbingUiStatus = Ensure-VietnameseDubbing -T $T -Url $Url
+        if ($dubbingUiStatus -eq 'unavailable') {
+            $rejectedForLanguage = $true
+            Stop-ReelForLanguage -VideoId $vid -Urls @($originalUrl,$Url) -Dest $Dest -Reason 'vietnamese-unavailable'
+            return $null
+        }
+        if ((Get-ReelLanguageDecision -DubbingStatus $dubbingUiStatus) -ne 'accept') { throw 'Chua xac minh duoc Tieng Viet dang duoc chon tren Reel. Dung truoc khi thu/tai; khong loai vinh vien khi giao dien chua ro.' }
+
+        Write-Note 'DUB_UI_ACCEPTED: Meta da xac nhan Tieng Viet dang chon; khong chay nhan dien ngon ngu audio.'
 
         # ---------- 5. thu am sach tu Giay 0 ----------
         # Tinh thoi luong thu am: buffer 10 giay dam bao video phat tron ven 100% truoc khi tat
@@ -1683,7 +1936,7 @@ function Invoke-OneLink {
             Show-Fail -Message 'Thu am that bai.' -Fix @('scrcpy bi qua thoi gian hoac ket thuc voi loi.', $captureErr, $captureOut)
             return $null
         }
-        if (-not (Test-Path $rec) -or (Get-Item $rec).Length -lt 1000) {
+        if (-not (Test-Path -LiteralPath $rec) -or (Get-Item -LiteralPath $rec).Length -lt 1000) {
             Show-Fail -Message 'Thu am that bai.' -Fix @('Kiem tra ket noi thiet bi.', $captureErr, $captureOut)
             return $null
         }
@@ -1735,16 +1988,28 @@ function Invoke-OneLink {
         $cutMean = Get-MeanVolume -T $T -File $cut
         Write-Ok ("Am thanh da cat va chuan hoa xong ({0:0.0}s, muc am {1} dB)" -f $dur, $cutMean)
 
-        $audioLanguage = [pscustomobject]@{ Status='skipped'; Language=''; Probability=0; Samples=0; ElapsedMs=0; Reason='disabled' }
-        if (-not $script:SkipLanguageCheck) {
-            if (Get-Command Get-ReelAudioLanguage -CommandType Function -ErrorAction SilentlyContinue) {
-                $audioLanguage = Get-ReelAudioLanguage -T $T -File $cut -Root $script:Here -WorkDir $tmp
-                Write-ReelLanguageResult $audioLanguage
-            } else {
-                $audioLanguage.Status = 'unavailable'; $audioLanguage.Reason = 'missing-helper'
-                Write-Warn2 'AUDIO_LANG_UNKNOWN: Thieu bo nhan dien tiny; can nghe nghiem thu.'
-            }
+        Write-Ok 'Da xac nhan tieng Viet; bat dau tai phan hinh HD.'
+
+        # Tai ban chat luong cao nhat tuyet doi (4K / 2K / 1080p, uu tien do phan giai va bitrate cao nhat)
+        $dlr = Invoke-Exe $T.ytdlp @('--ignore-config','--no-playlist','-S','res,fps,br','-f','bestvideo/best','--no-warnings','-o',"$tmp\v.%(ext)s",$Url) -TimeoutMs 600000
+        $vf = Get-ChildItem -LiteralPath $tmp -File -ErrorAction SilentlyContinue | Where-Object {
+            $_.Name -like 'v.*' -and $_.Name -notmatch '\.(part|ytdl|tmp)$' -and $_.Extension.ToLowerInvariant() -notin @('.part','.ytdl','.tmp')
+        } | Select-Object -First 1
+        if ($dlr.Code -ne 0 -or -not $vf) {
+            Show-Fail -Message 'Tai video that bai.' -Fix @('Kiem tra mang.','Video co the da bi xoa hoac rieng tu.', $dlr.Err)
+            return $null
         }
+
+        $actualDuration = Get-VideoDuration $T $vf.FullName
+        if ($actualDuration -le 0.5) {
+            Show-Fail -Message "Do dai video bat thuong ($actualDuration giay)." -Fix @('Chay lai thu.')
+            return $null
+        }
+        if ([Math]::Abs($actualDuration - $dur) -gt 0.5) { throw 'Video duration changed after language capture; no output was published.' }
+        $dur = $actualDuration
+        $sz = Get-VideoSize $T $vf.FullName
+        $cv = Get-VideoCodec -T $T -File $vf.FullName
+        Write-Ok "$($sz.W)x$($sz.H)  $cv  |  $([Math]::Round($dur, 2)) giay  |  $([Math]::Round($vf.Length/1MB, 1)) MB"
 
         # ---------- 7. ghep video HD va xuat file ----------
         Write-Step 7 'Ghep video HD va xuat file'
@@ -1831,14 +2096,20 @@ function Invoke-OneLink {
         Write-Host '  XONG  ' -ForegroundColor White -BackgroundColor DarkGreen
         Write-Host ''
         Write-Host "  Video : $finalOut" -ForegroundColor Green
-        Write-Host "          $($sz.W)x$($sz.H)  |  $([Math]::Round($dur,1)) giay  |  $([Math]::Round((Get-Item $finalOut).Length/1MB,1)) MB"
+        Write-Host "          $($sz.W)x$($sz.H)  |  $([Math]::Round($dur,1)) giay  |  $([Math]::Round((Get-Item -LiteralPath $finalOut).Length/1MB,1)) MB"
         Write-Host "  Goc   : $finalGoc" -ForegroundColor DarkGray
         Write-Host "  Tieng : $finalAm" -ForegroundColor DarkGray
         Write-Host ''
-        return [pscustomobject]@{ File = $finalOut; Duration = $dur; DubbingUiStatus = $dubbingUiStatus; AudioLanguage = $audioLanguage }
+        return [pscustomobject]@{ File = $finalOut; Duration = $dur; DubbingUiStatus = $dubbingUiStatus; AudioLanguage = $null }
     }
     finally {
-        if (-not $KeepFiles) { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+        if ($rejectedForLanguage -or -not $KeepFiles) {
+            $fullTmp = [IO.Path]::GetFullPath($tmp)
+            $tempBoundary = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'
+            if (-not $fullTmp.StartsWith($tempBoundary,[StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($fullTmp) -notmatch '^kidfby-[0-9a-f]{8}$') { throw 'Unsafe reel temporary cleanup path.' }
+            try { Remove-Item -LiteralPath $fullTmp -Recurse -Force -ErrorAction Stop }
+            catch { Write-Warn2 ('REEL_CLEANUP_PENDING: temporary files at '+$fullTmp+'; '+$_.Exception.Message) }
+        }
         else { Write-Note "File tam luu tai: $tmp" }
     }
 }

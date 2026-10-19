@@ -72,6 +72,97 @@ function Get-FacebookVideoId {
     return $null
 }
 
+function Get-RejectedReelPath {
+    param([Parameter(Mandatory=$true)][string]$Root)
+    return (Join-Path ([IO.Path]::GetFullPath($Root)) 'data/rejected-videos.json')
+}
+
+function Get-RejectedReels {
+    param([Parameter(Mandatory=$true)][string]$Root)
+    $path = Get-RejectedReelPath -Root $Root
+    if (-not [IO.File]::Exists($path)) { return }
+    $data = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($path)) -ErrorAction Stop
+    if ($null -eq $data -or $data.Schema -ne 1 -or $null -eq $data.Entries) { throw 'Invalid rejected-video history; refusing to ignore it.' }
+    foreach ($entry in @($data.Entries)) {
+        if ([string]$entry.VideoId -notmatch '^\d+$' -or [string]::IsNullOrWhiteSpace([string]$entry.Reason)) { throw 'Invalid rejected-video entry.' }
+        $entry
+    }
+}
+
+function Find-RejectedReel {
+    param([string]$Root, [string]$VideoId, [string]$Url)
+    foreach ($entry in @(Get-RejectedReels -Root $Root)) {
+        if (($VideoId -and [string]$entry.VideoId -eq $VideoId) -or ($Url -and $Url -cin @($entry.Urls))) { return $entry }
+    }
+}
+
+function Save-RejectedReel {
+    param([string]$Root, [string]$VideoId, [string[]]$Urls, [string]$Reason, [string]$Language, [double]$Probability = 0)
+    if ($VideoId -notmatch '^\d+$') { throw 'Rejected video requires an exact numeric ID.' }
+    if ($Reason -notin @('vietnamese-unavailable','audio-not-vietnamese')) { throw 'Only confirmed language rejections can be saved.' }
+    $path = Get-RejectedReelPath -Root $Root
+    [void][IO.Directory]::CreateDirectory((Split-Path $path -Parent))
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try { $key = ([BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($path.ToLowerInvariant())))).Replace('-','') } finally { $hash.Dispose() }
+    $mutex = New-Object Threading.Mutex($false, ('Local\KidFbyRejected'+$key))
+    $locked = $false; $stage = $path+'.writing.'+[guid]::NewGuid().ToString('N')
+    $backup = $path+'.previous.'+[guid]::NewGuid().ToString('N')
+    try {
+        try { $locked = $mutex.WaitOne(10000) } catch [Threading.AbandonedMutexException] { $locked = $true }
+        if (-not $locked) { throw 'Rejected-video history is busy; retry later.' }
+        $entries = @(Get-RejectedReels -Root $Root)
+        $previous = @($entries | Where-Object { [string]$_.VideoId -eq $VideoId })
+        $allUrls = @(@($Urls) + @($previous | ForEach-Object { $_.Urls }) | Where-Object { $_ } | Select-Object -Unique)
+        $record = [pscustomobject]@{ VideoId=$VideoId; Urls=$allUrls; Reason=$Reason; Language=$Language; Probability=$Probability; RejectedAt=[DateTime]::UtcNow.ToString('o') }
+        $entries = @($entries | Where-Object { [string]$_.VideoId -ne $VideoId }) + @($record)
+        $json = [pscustomobject]@{ Schema=1; Entries=@($entries) } | ConvertTo-Json -Depth 8
+        [IO.File]::WriteAllText($stage,$json,[Text.UTF8Encoding]::new($false))
+        if ([IO.File]::Exists($path)) { [IO.File]::Replace($stage,$path,$backup) } else { [IO.File]::Move($stage,$path) }
+        if ([IO.File]::Exists($backup)) { [IO.File]::Delete($backup) }
+        return $record
+    } finally {
+        if ([IO.File]::Exists($stage)) { [IO.File]::Delete($stage) }
+        if ($locked) { $mutex.ReleaseMutex() }
+        $mutex.Dispose()
+    }
+}
+
+function Remove-RejectedReelMedia {
+    param([string]$OutDir, [string]$VideoId)
+    if ($VideoId -notmatch '^\d+$' -or [string]::IsNullOrWhiteSpace($OutDir)) { throw 'Unsafe rejected-video cleanup arguments.' }
+    $boundary = [IO.Path]::GetFullPath($OutDir).TrimEnd('\')+'\'
+    $moved = New-Object Collections.Generic.List[object]
+    $errors = New-Object Collections.Generic.List[string]
+    $token = [guid]::NewGuid().ToString('N')
+    try {
+        foreach ($suffix in @('-1-video-goc.mp4','-2-am-thanh-tho.m4a','-3-hoan-chinh.mp4','-3-hoan-chinh-logo-preview.mp4')) {
+            $source = [IO.Path]::GetFullPath((Join-Path $OutDir ($VideoId+$suffix)))
+            if (-not $source.StartsWith($boundary,[StringComparison]::OrdinalIgnoreCase)) { throw 'Cleanup escaped the output directory.' }
+            if ([IO.File]::Exists($source)) {
+                $stage = $source+'.rejected.'+$token
+                [IO.File]::Move($source,$stage)
+                $moved.Add([pscustomobject]@{Source=$source;Stage=$stage})
+            }
+        }
+    } catch {
+        $errors.Add($_.Exception.Message)
+        foreach ($item in @($moved.ToArray()) | Sort-Object Source -Descending) {
+            try { [IO.File]::Move($item.Stage,$item.Source) } catch { $errors.Add('Recovery file: '+$item.Stage+'; '+$_.Exception.Message) }
+        }
+        return [pscustomobject]@{Success=$false;Errors=@($errors.ToArray())}
+    }
+    foreach ($item in $moved) { try { [IO.File]::Delete($item.Stage) } catch { $errors.Add('Cleanup pending: '+$item.Stage+'; '+$_.Exception.Message) } }
+    return [pscustomobject]@{Success=($errors.Count -eq 0);Errors=@($errors.ToArray())}
+}
+
+function Get-ReelLanguageDecision {
+    param([string]$DubbingStatus, $AudioLanguage)
+    if ($DubbingStatus -eq 'unavailable') { return 'reject-ui' }
+    # Meta's checked language selection is the download policy; audio analysis is optional.
+    if ($DubbingStatus -eq 'selected') { return 'accept' }
+    return 'defer'
+}
+
 function Get-FacebookLinkDuplicateReport {
     param([string]$Text, [string]$OutDir)
 

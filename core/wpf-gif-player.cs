@@ -430,3 +430,109 @@ public class WpfGifPlayer : IDisposable {
         _logicalBackgroundArgb = _logicalBackgroundIndex = 0; _hasLogicalBackground = false;
     }
 }
+
+/// <summary>One dedicated STA renderer, one pending timestamp and one completed frozen preview.
+/// UI callers never decode, decompress checkpoints, or wait for the renderer.</summary>
+public sealed class WpfGifPlaybackWorker : IDisposable {
+    private readonly object _gate = new object();
+    private readonly System.Threading.AutoResetEvent _wake = new System.Threading.AutoResetEvent(false);
+    private System.Threading.Thread _thread;
+    private bool _closed, _pending;
+    private double _seconds;
+    private long _version;
+    private BitmapSource _completed;
+    private int _completedIndex;
+    private long _completedVersion;
+    private double[] _timestamps;
+    private int _requestedIndex = -1;
+    public bool IsLoaded { get; private set; }
+    public BitmapSource BitmapSource { get; private set; }
+    public int CurrentFrameIndex { get; private set; }
+    public string LoadError { get; private set; }
+    public int CanvasWidth { get; private set; }
+    public int CanvasHeight { get; private set; }
+    public int FrameCount { get; private set; }
+    public double TotalDurationSeconds { get; private set; }
+    public bool IsWorkerAlive { get { return _thread != null && _thread.IsAlive; } }
+
+    public bool AdoptOnCurrentThread(GifPlayerPreparedState state) {
+        if (state == null || state.Frames == null || state.Canvas == null) return false;
+        lock (_gate) {
+            if (_thread != null || _closed) return false;
+            CanvasWidth=state.CanvasWidth; CanvasHeight=state.CanvasHeight; FrameCount=state.FrameCount; TotalDurationSeconds=state.TotalDurationSeconds;
+            _timestamps = new double[state.Frames.Length];
+            for (int i=0;i<_timestamps.Length;i++) _timestamps[i]=(double)((object[])state.Frames[i])[8];
+            IsLoaded = true;
+            _thread = new System.Threading.Thread(delegate() { Run(state); });
+            _thread.IsBackground = true;
+            _thread.Name = "GIF preview renderer";
+            _thread.SetApartmentState(System.Threading.ApartmentState.STA);
+            _thread.Start();
+        }
+        return true;
+    }
+    public void SeekToSeconds(double seconds) {
+        if (Double.IsNaN(seconds) || Double.IsInfinity(seconds)) return;
+        lock (_gate) {
+            if (_closed || !IsLoaded) return;
+            double normalized=seconds%TotalDurationSeconds;
+            if(normalized<0)normalized+=TotalDurationSeconds;
+            int lo=0,hi=_timestamps.Length-1;
+            while(lo<hi){int mid=(lo+hi+1)/2;if(_timestamps[mid]<=normalized)lo=mid;else hi=mid-1;}
+            if(lo==_requestedIndex)return;
+            _requestedIndex=lo;
+            _seconds = seconds; _pending = true; _version++; _completed = null;
+            _wake.Set();
+        }
+    }
+    // Call on the UI dispatcher. Only immutable frozen images cross threads.
+    public bool PollFrame() {
+        lock (_gate) {
+            if (_closed || _completed == null || _completedVersion != _version) return false;
+            BitmapSource = _completed; CurrentFrameIndex = _completedIndex; _completed = null;
+            return true;
+        }
+    }
+    private void Run(GifPlayerPreparedState state) {
+        try {
+            using (var player = new WpfGifPlayer()) {
+                if (!player.AdoptOnCurrentThread(state)) throw new InvalidOperationException(player.LoadError);
+                bool first = true;
+                while (true) {
+                    double seconds; long version; bool haveRequest;
+                    lock (_gate) {
+                        if (_closed) return;
+                        haveRequest = first || _pending; seconds = _seconds; version = _version; _pending = false; first = false;
+                    }
+                    if (!haveRequest) { _wake.WaitOne(); continue; }
+                    player.SeekToSeconds(seconds);
+                    {
+                        var snapshot = player.BitmapSource.Clone(); snapshot.Freeze();
+                        lock (_gate) {
+                            if (_closed) return;
+                            // A replaced seek must never publish its obsolete image.
+                            if (version == _version) { _completed = snapshot; _completedIndex = player.CurrentFrameIndex; _completedVersion = version; }
+                        }
+                    }
+                    lock (_gate) { if (_closed) return; if (_pending) continue; }
+                    _wake.WaitOne();
+                }
+            }
+        } catch (Exception ex) {
+            lock (_gate) { if (!_closed) { LoadError = ex.Message; IsLoaded = false; } }
+        } finally { _wake.Dispose(); }
+    }
+    public void Close() {
+        lock (_gate) {
+            if (_closed) return;
+            _closed = true; IsLoaded = false; _pending = false; _completed = null; BitmapSource = null;
+            // The worker owns event disposal after it has released decoder resources.
+            if (_thread != null && _thread.IsAlive) { try { _wake.Set(); } catch (ObjectDisposedException) { } }
+            else if (_thread == null) _wake.Dispose();
+        }
+        // Never wait while holding the publication lock. A slow in-flight seek may
+        // finish after this bound; the background worker still owns its cleanup.
+        if (_thread != null && _thread != System.Threading.Thread.CurrentThread && _thread.IsAlive) _thread.Join(100);
+    }
+    public void Dispose() { Close(); }
+}

@@ -189,7 +189,7 @@ function Get-ReelAudioLanguage {
     param($T, [string]$File, [string]$Root, [string]$WorkDir)
 
     $clock = [Diagnostics.Stopwatch]::StartNew()
-    $result = [ordered]@{ Status='unknown'; Language=$null; Probability=$null; Samples=0; ElapsedMs=0; Reason='no-usable-sample' }
+    $result = [ordered]@{ Status='unknown'; Language=$null; Probability=$null; Samples=0; ElapsedMs=0; Reason='no-usable-sample'; PlannedSamples=0; CompletedSamples=0; Evidence=@() }
     $tempFiles = New-Object 'System.Collections.Generic.List[string]'
     try {
         $paths = Get-WhisperPaths -Root $Root
@@ -215,20 +215,35 @@ function Get-ReelAudioLanguage {
             $result.Status='error'; $result.Reason='invalid-duration'; $result.ElapsedMs = [int]$clock.ElapsedMilliseconds
             return [pscustomobject]$result
         }
-        if ($duration -lt 2.0) { $result.Status='unknown'; $result.Reason='too-short'; $result.ElapsedMs = [int]$clock.ElapsedMilliseconds
+        # One language score is not enough evidence to publish or permanently reject.
+        if ($duration -lt 4.0) { $result.Status='unknown'; $result.Reason='too-short-for-consensus'; $result.ElapsedMs = [int]$clock.ElapsedMilliseconds
             return [pscustomobject]$result }
 
         if (-not (Test-Path -LiteralPath $WorkDir -PathType Container)) { [void][IO.Directory]::CreateDirectory($WorkDir) }
         $sampleOffsets = New-Object 'System.Collections.Generic.List[double]'
         $sampleOffsets.Add(0.0)
-        if ($duration -ge 8.0) { $sampleOffsets.Add([Math]::Max(6.0, $duration / 2.0)) }
+        $windowDuration = [Math]::Min(6.0,$duration)
+        if ($duration -ge 12.0) {
+            $windowDuration = [Math]::Min(6.0,$duration / 3.0)
+            $sampleOffsets.Add(($duration - $windowDuration) / 2.0)
+            $sampleOffsets.Add($duration - $windowDuration)
+        } else {
+            $windowDuration = $duration / 2.0
+            $sampleOffsets.Add($duration / 2.0)
+        }
+        $result.PlannedSamples = $sampleOffsets.Count
         $lastReason = 'no-usable-sample'
         $whisperInvoked = 0
+        $strongOther = @()
+        $strongVietnamese = @()
+        $parsedWindows = @()
         foreach ($offset in $sampleOffsets) {
             $remaining = 20000 - [int]$clock.ElapsedMilliseconds
             if ($remaining -lt 2000) { $lastReason='budget-exhausted'; break }
-            $sampleDuration = [Math]::Min(6.0, $duration - $offset)
+            $sampleDuration = [Math]::Min($windowDuration, $duration - $offset)
             if ($sampleDuration -lt 2.0) { continue }
+            $evidence = [pscustomobject]@{ OffsetSeconds=$offset; DurationSeconds=$sampleDuration; Language=$null; Probability=$null; Reason='not-completed'; MeanVolumeDb=$null }
+            $result.Evidence += $evidence
             $sample = Join-Path $WorkDir ('whisper-sample-' + [Guid]::NewGuid().ToString('N') + '.wav')
             $tempFiles.Add($sample)
             $result.Samples++
@@ -236,7 +251,9 @@ function Get-ReelAudioLanguage {
             $durationText = $sampleDuration.ToString('0.###', [Globalization.CultureInfo]::InvariantCulture)
             $remaining = 20000 - [int]$clock.ElapsedMilliseconds
             if ($remaining -le 0) { $lastReason='budget-exhausted'; break }
-            $extract = Invoke-Exe $T.ffmpeg @('-hide_banner','-loglevel','error','-y','-ss',$offsetText,'-t',$durationText,'-i',$File,'-vn','-af','silenceremove=start_periods=1:start_duration=0.15:start_threshold=-40dB','-ar','16000','-ac','1','-c:a','pcm_s16le',$sample) -TimeoutMs ([Math]::Min(5000,$remaining))
+            # Keep each window intact: trimming quiet syllables at its start can
+            # change language detection. Silent windows are checked by volume below.
+            $extract = Invoke-Exe $T.ffmpeg @('-hide_banner','-loglevel','error','-y','-ss',$offsetText,'-t',$durationText,'-i',$File,'-vn','-ar','16000','-ac','1','-c:a','pcm_s16le',$sample) -TimeoutMs ([Math]::Min(5000,$remaining))
             if ($extract.Code -ne 0 -or -not (Test-Path -LiteralPath $sample -PathType Leaf)) { $lastReason='sample-extract-failed'; continue }
 
             $remaining = 20000 - [int]$clock.ElapsedMilliseconds
@@ -256,24 +273,54 @@ function Get-ReelAudioLanguage {
             if (-not $volumeMatch.Success) { $lastReason='invalid-volume'; continue }
             if ($volumeMatch.Groups[1].Value -eq '-inf') { $mean = -[double]::MaxValue }
             elseif (-not [double]::TryParse($volumeMatch.Groups[1].Value, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$mean) -or [double]::IsNaN($mean) -or [double]::IsInfinity($mean)) { $lastReason='invalid-volume'; continue }
-            if ($mean -lt -50.0) { $lastReason='silent-sample'; continue }
+            $evidence.MeanVolumeDb = $mean
+            if ($mean -lt -50.0) { $evidence.Reason='silent-sample'; $lastReason='silent-sample'; continue }
 
             $remaining = 20000 - [int]$clock.ElapsedMilliseconds
-            if ($remaining -le 0 -or $whisperInvoked -ge 2) { $lastReason='budget-exhausted'; break }
+            if ($remaining -le 0 -or $whisperInvoked -ge 3) { $lastReason='budget-exhausted'; break }
             $whisperInvoked++
             $recognition = Invoke-Exe $paths.Cli @('-m',$paths.Model,'-f',$sample,'-dl','-ng','-t','4') -TimeoutMs ([Math]::Min(10000,$remaining))
             if ($recognition.Code -ne 0) { $lastReason='whisper-run-failed'; continue }
             $parsed = ConvertFrom-WhisperLanguage -Text ([string]$recognition.Err)
             if (-not $parsed) { $lastReason='language-parse-failed'; continue }
+            $result.CompletedSamples++
+            $parsedWindows += $parsed
+            $evidence.Language = $parsed.Language
+            $evidence.Probability = $parsed.Probability
+            $evidence.Reason = if ($parsed.Probability -ge 0.85) { 'strong-language-score' } else { 'low-confidence' }
             $result.Language = $parsed.Language
             $result.Probability = $parsed.Probability
             if ($parsed.Probability -ge 0.85) {
-                $result.Status='detected'; $result.Reason='high-confidence'; break
+                if ($parsed.Language -eq 'vi') {
+                    $strongVietnamese += $parsed
+                    $lastReason='unconfirmed-vietnamese'
+                    continue
+                }
+                $strongOther += $parsed
+                $lastReason='unconfirmed-non-vi'
+                continue
             }
             $lastReason='low-confidence'
         }
-        $result.Reason = if ($result.Status -eq 'detected') { 'high-confidence' } else { $lastReason }
-        if ($result.Status -ne 'detected') { $result.Status = if ($lastReason -in @('low-confidence','silent-sample','sample-too-short','no-usable-sample','budget-exhausted')) { 'unknown' } else { 'error' } }
+        # Never decide on an early majority: a later window may contradict it.
+        # 0.85 is an existing heuristic score gate, not calibrated correctness.
+        $complete = $result.CompletedSamples -eq $result.PlannedSamples
+        if ($strongVietnamese.Count -gt 0 -and $strongOther.Count -gt 0) {
+            $result.Language = $null; $result.Probability = $null
+            $lastReason = 'mixed-language-evidence'
+        } elseif ($complete -and $result.PlannedSamples -ge 2 -and $strongVietnamese.Count -eq $result.PlannedSamples) {
+            $result.Status='detected'; $result.Reason='confirmed-vi'; $result.Language='vi'
+            $result.Probability = ($strongVietnamese | Measure-Object Probability -Minimum).Minimum
+        } elseif ($complete -and $strongOther.Count -eq $result.PlannedSamples -and
+                  @($parsedWindows | Where-Object { $_.Language -eq 'vi' }).Count -eq 0 -and
+                  @($strongOther | Group-Object Language).Count -eq 1) {
+            $result.Status='detected'; $result.Reason='confirmed-non-vi'; $result.Language=$strongOther[0].Language
+            $result.Probability = ($strongOther | Measure-Object Probability -Minimum).Minimum
+        } elseif (-not $complete -and $lastReason -in @('unconfirmed-vietnamese','unconfirmed-non-vi','low-confidence')) {
+            $lastReason='incomplete-sample-evidence'
+        }
+        $result.Reason = if ($result.Status -eq 'detected') { $result.Reason } else { $lastReason }
+        if ($result.Status -ne 'detected') { $result.Status = if ($lastReason -in @('low-confidence','silent-sample','sample-too-short','no-usable-sample','budget-exhausted','unconfirmed-non-vi','unconfirmed-vietnamese','mixed-language-evidence','incomplete-sample-evidence')) { 'unknown' } else { 'error' } }
         $result.ElapsedMs = [int]$clock.ElapsedMilliseconds
             return [pscustomobject]$result
     } catch [System.Management.Automation.PipelineStoppedException] {

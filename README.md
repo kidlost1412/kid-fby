@@ -1,22 +1,36 @@
-# Kid FB.Y — v1.0.17
+﻿# Kid FB.Y — v2.0.0
 
-Tải video Facebook và ghép audio lồng tiếng Meta AI thu từ Facebook trên Android/LDPlayer. Video hoàn tất vẫn cần nghe nghiệm thu trước khi dùng.
+Tải video Facebook và ghép audio lồng tiếng Meta AI thu từ Facebook trên Android/LDPlayer. Ứng dụng tự lưu và chạy hết danh sách; có thể xem lại bản xuất trong kho video.
 
 ## Thử trên máy Windows mới
 
-1. Tải toàn bộ dự án bằng **Code → Download ZIP**, hoặc tải [ZIP bản v1.0.17](https://github.com/kidlost1412/kid-fby/archive/refs/tags/v1.0.17.zip).
+1. Tải toàn bộ dự án bằng **Code → Download ZIP** trên kho GitHub. Phiên bản trong thư mục dự án hiện tại là **2.0.0**.
 2. Giải nén ra một thư mục có quyền ghi. Giữ `Kid-FB.Y.exe` cùng thư mục `core`; chạy EXE sau khi giải nén, không chạy bên trong ZIP.
 3. Trong tab **Bộ Thư Viện**, bấm **Tải & Cài Đặt Tất Cả**. Lần đầu cần Internet để tải công cụ và model. Các file nằm trong thư mục `tools` và không đi kèm ZIP GitHub.
 4. Mở LDPlayer/Android đã có Facebook, đăng nhập và bật kết nối ADB. Quy trình thu audio cần Android hỗ trợ audio capture; cấu hình đang dùng của dự án là LDPlayer Android 14.
-5. Bấm **Kiểm tra máy**, dán một link video công khai để thử. Có thể dán link `share/r`, `share/v`, `fb.watch` hoặc link kèm văn bản/Markdown; app tách URL và thử chuyển link chia sẻ sang link video trực tiếp. Đợi thu xong rồi nghe nghiệm thu. File xuất mặc định ở `output`.
+5. Bấm **Kiểm tra máy**, dán một link video công khai để thử. Có thể dán link `share/r`, `share/v`, `fb.watch` hoặc link kèm văn bản/Markdown; app tách URL và thử chuyển link chia sẻ sang link video trực tiếp. Ứng dụng tự xử lý hết danh sách, không chờ duyệt từng video. File xuất mặc định ở `output`.
 
-Bộ tiny dùng CPU Windows x64, không cần cài Python/CUDA. Model đa ngôn ngữ khoảng 78 MB tải một lần. Có thể cài riêng bằng nút **Whisper tiny** trong tab công cụ. Bỏ chọn **Nhận diện tiếng Việt bằng tiny** trước khi chạy nếu muốn bỏ bước nhận diện.
+## Tự động tải hết danh sách
 
-## Nhận diện ngôn ngữ thử nghiệm
+Dán danh sách link rồi bấm **Tự động tải hết danh sách**. Mỗi video xuất thành công được lưu và tự chuyển sang video kế tiếp, không chờ duyệt hoặc bấm giữ. App không phát xem trước giữa các video; khi hết danh sách, hiển thị tổng số đã lưu, bỏ qua và lỗi, rồi mở bản thành công gần nhất để xem lại. Các video đã xuất nằm trong **Kho Video Đã Xuất**.
 
-Tiny lấy tối đa hai đoạn audio ngắn, chỉ ước tính ngôn ngữ. Thiếu tool/model, audio quá ngắn hoặc kết quả chưa rõ không chặn xuất video. Với nguồn Khmer và một số ngôn ngữ Ấn Độ, tiny còn yếu trong bộ mẫu đã thử; điểm model cao cũng có thể sai. Luôn nghe nghiệm thu.
+Video được xác nhận không có bản dịch bị loại theo chính sách bên dưới. Lỗi tải/thu âm/xuất được ghi trong log cùng link để thử lại sau; hàng đợi tiếp tục và không tự tải lại vô hạn hoặc loại vĩnh viễn vì lỗi tạm thời. Bấm **Dừng** sẽ hủy tác vụ hiện tại và dừng cả hàng đợi; các video đã lưu được giữ nguyên.
 
-Nhận diện chạy cục bộ trên CPU, không tự tải model giữa lúc xử lý và không thay đổi audio xuất. Kết quả vẫn cần nghe nghiệm thu trên video thực tế.
+Trong Kho Video, mở video rồi bấm **Ghi âm lại** để xử lý riêng đúng ID đó và lưu vào thư mục chứa bản đã chọn. Lượt tải cũ không được khởi động lại. Các file hiện có được giữ khi xử lý lỗi tạm thời hoặc bị dừng; chỉ thay bản mới khi xuất thành công. Chính sách loại video không có bản dịch vẫn áp dụng.
+
+Thư mục xuất và đường dẫn video/logo/GIF có dấu ngoặc vuông được xử lý theo tên thật. Nếu không khởi động được tác vụ, app giải phóng hàng đợi, bật lại các nút và ghi các link chưa chạy vào Logs; có thể sửa nguyên nhân rồi bắt đầu lại.
+
+## Chọn tiếng Việt trên Meta
+
+Ứng dụng đọc ID/thời lượng rồi mở dấu ba chấm của Reel trên LDPlayer. Nếu menu đầy đủ đã được đọc ổn định và quét hết nhưng không có **Âm thanh và ngôn ngữ**, hoặc menu ngôn ngữ xác nhận chỉ có âm thanh gốc, video được loại trước khi thu âm/tải HD. App lưu lịch sử loại, dọn file cũ đúng ID và bỏ qua ID đó ở các lần sau. Menu đang tải, XML lỗi hoặc mục nằm ngoài vùng cuộn không được coi là không có bản dịch; trường hợp chưa rõ sẽ dừng mà không loại vĩnh viễn.
+
+Khi Tiếng Việt đã được chọn sẵn, app đọc hai ảnh chụp UI mới để xác nhận. Nếu chưa chọn, app chạm dòng Tiếng Việt đang hiển thị đúng một lần. Sau đó chỉ đọc UI: xác nhận dấu chọn nếu menu còn mở, hoặc xác nhận Meta tự đóng menu và trở về màn hình Reel qua hai lần đọc mới. App không mở lại bộ chọn để kiểm tra lần hai. Lệnh chạm thành công nhưng UI không phản hồi đúng sẽ dừng, không tải hình.
+
+Sau khi xác nhận lựa chọn trên Meta, app thu audio tiếng Việt, cắt/chuẩn hóa và ghép với phần hình HD. **Không chạy Whisper để kiểm tra lại ngôn ngữ trong luồng tải**, không chặn video vì điểm nhận diện thấp, không yêu cầu cài model tiny để tải video. Thu âm vẫn cần để lấy bản lồng tiếng; đây là bước riêng với nhận diện ngôn ngữ.
+
+Mở **Kho Video Đã Xuất → Video đã loại · không tải lại** để xem ID, lý do và thời điểm. Lịch sử ở `data/rejected-videos.json`, dùng chung khi đổi thư mục xuất, được giữ khi khởi động lại và không đưa lên Git. Link có ID đã loại bị bỏ qua ngay; link chia sẻ mới được kiểm tra sau khi giải ID. Khi gặp lại ID đã loại, app thử dọn file cũ đúng ID trong thư mục xuất; file khóa sẽ được báo, không thông báo xóa thành công. `-SkipLanguageCheck` được giữ để tương thích lệnh cũ, không bỏ qua bước chọn Tiếng Việt trên Meta.
+
+Whisper tiny vẫn có thể được cài riêng để kiểm tra audio theo yêu cầu; chức năng này chạy cục bộ trên CPU Windows x64, không cần Python/CUDA, không thay đổi audio xuất. Model đa ngôn ngữ khoảng 78 MB; không tự tải giữa lúc xử lý video.
 
 Nếu gặp lỗi, giữ nội dung tab **Terminal Logs** và thông báo lỗi, kèm phiên bản Windows/LDPlayer để đối chiếu. Không cần cung cấp thông tin đăng nhập Facebook.
 
@@ -47,6 +61,14 @@ Logo và GIF có tám tay kéo: kéo cạnh đổi riêng chiều rộng hoặc 
 
 Thanh tua có một hàng riêng; bấm/kéo hoặc dùng phím trái/phải để tua ba giây khi xem video, kể cả ở Kho video.
 
+Tùy chọn Logo/GIF mặc định thu gọn. Khi mở rộng ở cửa sổ thấp, vùng nhập có thanh cuộn riêng để các tab tiến trình và kho video vẫn hiện. Chữ phụ dùng màu sáng hơn; cửa sổ khởi tạo theo vùng làm việc của màn hình.
+
+GUI bật nhận biết DPI theo màn hình ngay trong tiến trình PowerShell trước khi tạo cửa sổ, chọn vùng làm việc của màn hình chứa cửa sổ và điều chỉnh lại khi di chuyển/đổi DPI. Ở cửa sổ hẹp, các tab và nút nghiệm thu xuống dòng, hàng thông số trang trí được ẩn. Phép thử DPI mô phỏng không thay thế kiểm tra trên hai màn hình vật lý khác DPI.
+
+GIF được giải mã trên một worker STA riêng, có một yêu cầu thời gian mới nhất và một khung hoàn tất; giao diện chỉ nhận bitmap đã đóng băng. Tua mới thay yêu cầu cũ để tránh hàng đợi kéo dài. App bỏ giải mã khi lớp phủ đang ẩn hoặc cửa sổ thu nhỏ, rồi đồng bộ theo vị trí video khi hiện lại. Các số đo độ trễ UI không đồng nghĩa số FPS phát hình thực tế.
+
+Lịch sử đánh dấu đã đăng được ghi nguyên tử và khóa khi nhiều tiến trình cùng lưu. File lịch sử lỗi hoặc bị khóa sẽ báo lỗi, giữ dữ liệu cũ và không báo lưu thành công. Kho video hiển thị lỗi đọc lịch sử thay vì suy đoán trạng thái chưa đăng.
+
 ID lặp trong danh sách chỉ được xử lý một lần. Với link chứa ID Reel/video trực tiếp, ứng dụng kiểm tra file video gốc hoặc hoàn tất có cùng ID trong thư mục xuất hiện tại và cảnh báo đã tải; khi bắt đầu có thể tải lại, bỏ qua hoặc hủy. Link chia sẻ/rút gọn chưa có ID không được suy đoán từ token.
 
 ## Build và phát hành
@@ -54,5 +76,9 @@ ID lặp trong danh sách chỉ được xử lý một lần. Với link chứa
 Trên Windows x64, chạy `powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\build-local.ps1`. Script đồng bộ nguồn GIF nhúng, kiểm tra cú pháp, biên dịch EXE và chạy SelfTest trong thư mục tạm, đối chiếu bảy tài nguyên nhúng. Lệnh này không đổi phiên bản, commit, tag hoặc push.
 
 `publish.ps1` dùng cùng luồng build trước khi tạo manifest và phát hành. Chỉ chạy khi chủ động phát hành phiên bản mới; dùng `-NoPush` nếu chỉ muốn chuẩn bị bản phát hành cục bộ.
+
+Bộ cập nhật sao lưu toàn bộ file cần thay trước khi cài, ghi nhật ký phục hồi và thay số phiên bản sau cùng. Nếu bị ngắt, lần mở tiếp theo xử lý phục hồi trước khi kiểm tra phiên bản. Chỉ xác nhận cập nhật sau khi giao diện trả đúng mã khởi động của giao dịch; lỗi khôi phục giữ lại dữ liệu phục hồi và dừng khởi chạy để tránh dùng bộ file lẫn phiên bản.
+
+Journal có checksum để chặn phục hồi thiếu khi file bị cắt/hỏng. Payload staging được flush trước khi công bố READY qua đổi tên file tạm nguyên tử; file READY ghi dở không được dùng để cài. Launcher kiểm tra dung lượng trống dự kiến trước khi sao lưu/thay file trên ổ cục bộ. Kiểm tra này không bảo đảm tránh mọi lỗi ổ đĩa hay việc tiến trình khác sử dụng dung lượng sau đó; lỗi ghi thực tế vẫn phải dừng hoặc phục hồi.
 
 `tools/` chứa công cụ/model và `output/` chứa video người dùng; cả hai được Git bỏ qua. Báo cáo và fixture kiểm thử không nằm trong cây dự án phát hành.

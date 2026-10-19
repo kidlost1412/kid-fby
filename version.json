@@ -1,16 +1,20 @@
 {
-  "version": "1.0.17",
-  "releasedAt": "2026-10-07 17:39",
+  "version": "2.0.0",
+  "releasedAt": "2026-10-19 15:33",
   "minLauncher": "1.0.0",
   "mandatory": false,
   "changelog": [
-    "Sua logo tu video goc/audio da luu khong tai lai; giu ban cu khi loi/dung; giao dien dieu khien trai va video phai"
+    "Tu dong xu ly het danh sach, khong cho duyet tung video; tong ket da luu/bo qua/loi.",
+    "Xac nhan ngon ngu tren Meta, khong chay Whisper chan tai; chi chon Tieng Viet mot lan.",
+    "Ghi am lai truc tiep tu Kho Video theo dung ID va thu muc; giu ban cu khi loi/dung.",
+    "Sua duong dan co ngoac vuong va phuc hoi GUI khi khoi tao tac vu that bai.",
+    "Cai thien logo/GIF, tuong tac/tua video, lich su va do an toan cap nhat."
   ],
   "files": [
     {
       "path": "core/facebook-links.ps1",
-      "sha256": "21075A787EC2191657A086646083C710A7E9F902027047087DD6791CB40F2894",
-      "size": 10131
+      "sha256": "46F21640A927DC0FA6C18EA71DEDBCA7D88DD557A1326E9CDD0845FFFFD75545",
+      "size": 15515
     },
     {
       "path": "core/fix-ket-noi.ps1",
@@ -24,13 +28,13 @@
     },
     {
       "path": "core/kid-fby-gui.ps1",
-      "sha256": "7819EAF70ADB913A3157BB147EDBE4C5C22D80422B7847A6E034A30DCDFC38A4",
-      "size": 324236
+      "sha256": "AE252015C9B83C414ACBD6A044304B1FFDC3A49164FD690CDBAC6624D549496D",
+      "size": 351924
     },
     {
       "path": "core/kid-fby.ps1",
-      "sha256": "06C2B62BC68421C1079607B50C9678F1136D4E67732BA1696588F4C3E4CB5C80",
-      "size": 107853
+      "sha256": "60A5FC93594B9376C2D55A882C36CC4BE2420911AC4BF898A972887C1029A6C7",
+      "size": 125702
     },
     {
       "path": "core/kid-logo.zip",
@@ -44,23 +48,23 @@
     },
     {
       "path": "core/updater.ps1",
-      "sha256": "4FE6BDB475ECE704151FEF34A93782F99802EA52EC7A696D9BBB8D33A4894A43",
-      "size": 7901
+      "sha256": "D754769F181293CC9834A8CCAEC76C5A1CBD66577CBECB4C80EFC80EA79C53F7",
+      "size": 10272
     },
     {
       "path": "core/version.txt",
-      "sha256": "A6CF790673D40EE17757491258B07008858379109C2FE2357358B8EAEB7F1C7D",
-      "size": 6
+      "sha256": "C28FCCA53637BC88E124AF1725DF13CB98C69DEDEFD62FB3CDBE1CDB6B760624",
+      "size": 7
     },
     {
       "path": "core/whisper-language.ps1",
-      "sha256": "EF929A5A5B66E86211A63468025927D0B6100092AA90D8F331752B291FD5A175",
-      "size": 21197
+      "sha256": "B3875E5A13FFE4925CE4B88CDE49EA4E962B588FB514709A33E153DEE6CE93BC",
+      "size": 24261
     },
     {
       "path": "Kid-FB.Y.exe",
-      "sha256": "D5033E3B2EA3082FE4811EC41CC57D7E2A829A8D29505306530F6B02B795E382",
-      "size": 2380800
+      "sha256": "01D07E02B105A54C432AAAF4469BAAD40FA67A202B6CA9D203A3514230067922",
+      "size": 2442240
     }
   ],
   "tools": {

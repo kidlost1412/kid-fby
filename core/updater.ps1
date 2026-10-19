@@ -92,15 +92,33 @@ function Get-FileSha([string]$p) {
     return Get-Sha $normBytes
 }
 
+function Write-DurableBytes([string]$dst, [byte[]]$bytes) {
+    $file = [IO.File]::Open($dst, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $file.Write($bytes, 0, $bytes.Length); $file.Flush($true) }
+    finally { $file.Dispose() }
+}
+
+function Publish-Ready([string]$directory, [string[]]$paths) {
+    $temporary = Join-Path $directory ('READY.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        $body = ($paths -join "`r`n") + "`r`n"
+        Write-DurableBytes $temporary ([Text.Encoding]::UTF8.GetBytes($body))
+        [IO.File]::Move($temporary, (Join-Path $directory 'READY'))
+    } finally {
+        if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
+    }
+}
+
 function Save-FileWithBom([string]$dst, [byte[]]$bytes) {
     $ext = [System.IO.Path]::GetExtension($dst).ToLower()
     if ($ext -in '.ico','.exe','.dll','.zip') {
-        [System.IO.File]::WriteAllBytes($dst, $bytes)
+        Write-DurableBytes $dst $bytes
         return
     }
     $txt = [System.Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xFEFF)
     $crlfTxt = ($txt -replace "`r?`n", "`r`n")
-    [System.IO.File]::WriteAllText($dst, $crlfTxt, (New-Object System.Text.UTF8Encoding($true)))
+    $encoding = New-Object System.Text.UTF8Encoding($true)
+    Write-DurableBytes $dst ([byte[]]($encoding.GetPreamble() + $encoding.GetBytes($crlfTxt)))
 }
 
 function Get-LocalVersion {
@@ -109,13 +127,22 @@ function Get-LocalVersion {
 }
 
 function Test-SafePath([string]$rel) {
-    # Chi cho phep ghi trong thu muc du an, cam '..' va duong dan tuyet doi
-    if ($rel -match '\.\.' -or $rel -match '^[a-zA-Z]:' -or $rel.StartsWith('/') -or $rel.StartsWith('\')) { return $false }
-    $norm = ($rel -replace '\\', '/').ToLower()
+    if ([string]::IsNullOrWhiteSpace($rel) -or $rel -match '[\x00-\x1f:]' -or [IO.Path]::IsPathRooted($rel)) { return $false }
+    $norm = ($rel -replace '\\', '/').ToLowerInvariant()
+    foreach ($part in $norm.Split('/')) {
+        if (-not $part -or $part -eq '.' -or $part -eq '..' -or $part.TrimEnd(' ','.') -ne $part -or $part.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or $part -match '^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)') { return $false }
+    }
+    if ($norm -match '^core/_(update|backup)(/|$)') { return $false }
     return ($norm.StartsWith('core/') -or $norm.StartsWith('tools/') -or $norm -eq 'kid-fb.y.exe')
 }
 
 try {
+    if ($Mode -eq 'download') {
+        $updateLease = [IO.File]::Open((Join-Path $updDir 'transaction.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        if ((Test-Path -LiteralPath (Join-Path $coreDir '_backup\JOURNAL')) -or (Test-Path -LiteralPath (Join-Path $updDir 'READY'))) {
+            throw 'Dang co ban cap nhat cho khoi dong/phuc hoi. Hay khoi dong lai ung dung truoc khi tai tiep.'
+        }
+    }
     $cfg  = Get-Config
     $ref  = if ($cfg.branch) { $cfg.branch } else { 'main' }
     try {
@@ -158,7 +185,14 @@ try {
     }
 
     # ---- download ----
-    if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+    $stageFull = [IO.Path]::GetFullPath($stage)
+    $updateBoundary = [IO.Path]::GetFullPath($updDir).TrimEnd('\') + '\'
+    if (-not $stageFull.StartsWith($updateBoundary, [StringComparison]::OrdinalIgnoreCase) -or
+        [IO.Path]::GetFileName($stageFull) -ne 'files') { throw 'Duong dan staging khong an toan.' }
+    if (Test-Path -LiteralPath $stageFull) {
+        if ((Get-Item -LiteralPath $stageFull).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Staging khong duoc la lien ket.' }
+        Remove-Item -LiteralPath $stageFull -Recurse -Force
+    }
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
     Remove-Item (Join-Path $updDir 'READY') -Force -ErrorAction SilentlyContinue
     $list = @()
@@ -173,14 +207,16 @@ try {
     }
     # version.txt di kem
     New-Item -ItemType Directory -Path (Join-Path $stage 'core') -Force | Out-Null
-    [System.IO.File]::WriteAllText((Join-Path $stage 'core\version.txt'), [string]$man.version)
-    $list += 'core\version.txt'
+    Write-DurableBytes (Join-Path $stage 'core\version.txt') ([Text.Encoding]::UTF8.GetBytes([string]$man.version))
+    $list = @($list | Where-Object { $_ -ine 'core\version.txt' } | Select-Object -Unique) + 'core\version.txt'
 
     # Co READY: danh sach file can thay (exe se doc)
-    [System.IO.File]::WriteAllLines((Join-Path $updDir 'READY'), [string[]]$list)
+    Publish-Ready $updDir ([string[]]$list)
     Save-Status @{ ok = $true; ready = $true; remote = $man.version; files = $list }
     exit 0
 } catch {
     Save-Status @{ ok = $false; error = $_.Exception.Message }
     exit 1
+} finally {
+    if ($updateLease) { $updateLease.Dispose() }
 }
