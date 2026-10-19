@@ -21,7 +21,6 @@ param(
     [switch]$Setup,
     [string]$SetupTool,
     [switch]$Keep,
-    [switch]$SkipLanguageCheck,
     [string]$DetectLanguageFile,
     [switch]$Watermark,
     [ValidateRange(0,95)][int]$LogoFade = 60,
@@ -261,10 +260,12 @@ function Invoke-Download {
 
     $dlSuccess = $false
 
-    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls -bor 12288
+    # Keep Windows certificate validation; enable TLS 1.2 on older .NET defaults.
+    if ([Net.ServicePointManager]::SecurityProtocol -ne [Net.SecurityProtocolType]::SystemDefault) {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    }
 
-    # 1. Thu bang .NET HttpWebRequest Stream (Sieu toc, tu dong redirect, khong phu thuoc curl)
+    # 1. Thu bang .NET HttpWebRequest Stream, tu dong redirect
     try {
         Write-Note "Dang tai truc tiep (.NET Engine)..."
         $req = [System.Net.HttpWebRequest]::Create($Url)
@@ -294,32 +295,21 @@ function Invoke-Download {
         try { if (Test-Path -LiteralPath $partFile) { [System.IO.File]::Delete($partFile) } } catch { }
     }
 
-    # 2. Thu bang curl.exe vao file .tmp (Doc stream bat dong bo tranh loi ma 23)
+    # 2. Thu bang curl.exe, dung chung timeout va registry tien trinh voi engine
     if (-not $dlSuccess) {
         $curlExe = (Get-Command 'curl.exe' -ErrorAction SilentlyContinue)
         $curlPath = if ($curlExe) { $curlExe.Source } elseif (Test-Path -LiteralPath 'C:\Windows\System32\curl.exe') { 'C:\Windows\System32\curl.exe' } else { $null }
         if ($curlPath -and (Test-Path -LiteralPath $curlPath)) {
             try {
                 Write-Note "Dang tai bang curl..."
-                $psi = New-Object System.Diagnostics.ProcessStartInfo
-                $psi.FileName = $curlPath
-                $psi.Arguments = "-s -S -L -k --retry 2 --connect-timeout 20 -A `"Mozilla/5.0`" -o `"$partFile`" `"$Url`""
-                $psi.UseShellExecute = $false
-                $psi.CreateNoWindow = $true
-                $psi.RedirectStandardError = $true
-                $psi.RedirectStandardOutput = $true
-                $p = [System.Diagnostics.Process]::Start($psi)
-                $tO = $p.StandardOutput.ReadToEndAsync()
-                $tE = $p.StandardError.ReadToEndAsync()
-                $finished = $p.WaitForExit(120000)
-                if ($finished -and $p.ExitCode -eq 0 -and (Test-Path -LiteralPath $partFile) -and ((Get-Item -LiteralPath $partFile).Length -gt 10000)) {
+                $curlResult = Invoke-Exe $curlPath @('-s','-S','-L','--retry','2','--connect-timeout','20','-A','Mozilla/5.0','-o',$partFile,$Url) -TimeoutMs 120000
+                if ($curlResult.Code -eq 0 -and (Test-Path -LiteralPath $partFile) -and ((Get-Item -LiteralPath $partFile).Length -gt 10000)) {
                     $dlSuccess = $true
                 } else {
-                    $errText = if ($tE.IsCompleted) { $tE.Result } else { '' }
-                    Write-Note "curl tra ve ma $($p.ExitCode)$(if ($errText) { ": $errText" })"
+                    $errText = [string]$curlResult.Err
+                    Write-Note "curl tra ve ma $($curlResult.Code)$(if ($errText) { ": $errText" })"
                     try { if (Test-Path -LiteralPath $partFile) { [System.IO.File]::Delete($partFile) } } catch { }
                 }
-                $p.Dispose()
             } catch {
                 Write-Note "Loi curl: $($_.Exception.Message)"
             }
@@ -407,7 +397,9 @@ function Invoke-Download {
 function Invoke-SetupDirect {
     param([string]$Tool = 'all')
     Write-Note 'Dang tai cong cu truc tiep vao thu muc tools (chay doc lap, khong can cai vao he thong)...'
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls
+    if ([Net.ServicePointManager]::SecurityProtocol -ne [Net.SecurityProtocolType]::SystemDefault) {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    }
     $ProgressPreference = 'SilentlyContinue'
     
     $dir = [System.IO.Path]::GetFullPath((Join-Path $script:Here 'tools'))
@@ -454,7 +446,7 @@ function Invoke-SetupDirect {
             $localExe = (Find-Tool $v.Exe)
             $localSub = if ($v.SubExe) { Find-Tool $v.SubExe } else { $true }
             $inTools = (Test-Path -LiteralPath (Join-Path $dir "$($v.Exe).exe")) -or (Test-Path -LiteralPath (Join-Path $dir "$($v.Exe)\$($v.Exe).exe"))
-            if ($inTools -and ($Tool -eq 'all' -or -not $Tool)) {
+            if ($inTools -and $localExe -and $localSub -and ($Tool -eq 'all' -or -not $Tool)) {
                 Write-Ok "$($v.Exe) da san sang trong thu muc tools"
                 continue
             }
@@ -488,7 +480,8 @@ function Invoke-SetupDirect {
                         Copy-Item -LiteralPath $srcFile -Destination (Join-Path $dir "$($v.Exe).exe") -Force -ErrorAction SilentlyContinue
                     }
                     $inToolsNow = (Test-Path -LiteralPath (Join-Path $dir "$($v.Exe).exe")) -or (Test-Path -LiteralPath (Join-Path $dir "$($v.Exe)\$($v.Exe).exe"))
-                    if ($inToolsNow) {
+                    $companionReady = -not $v.SubExe -or [bool](Find-Tool $v.SubExe)
+                    if ($inToolsNow -and $companionReady) {
                         Write-Ok "Da sao chep vao tools thanh cong: $($v.Exe)"
                         continue
                     }
@@ -540,7 +533,7 @@ function Invoke-SetupDirect {
                     try {
                         Start-Process -FilePath $wg -ArgumentList @('install','--id',$pk,'-e','--silent','--accept-source-agreements','--accept-package-agreements') -NoNewWindow -Wait | Out-Null
                     } catch { Write-Note "Loi WinGet: $($_.Exception.Message)" }
-                    if (Find-Tool $v.Exe) { Write-Ok "Cai thanh cong qua WinGet: $($v.Exe)"; continue }
+                    if ((Find-Tool $v.Exe) -and (-not $v.SubExe -or (Find-Tool $v.SubExe))) { Write-Ok "Cai thanh cong qua WinGet: $($v.Exe)"; continue }
                     Write-Note "WinGet chua cai duoc, chuyen sang tai truc tiep..."
                 } elseif (-not $wg) {
                     Write-Note "Khong tim thay winget tren may."
@@ -576,8 +569,8 @@ function Invoke-SetupDirect {
                     if ($pkgId) {
                         Write-Note "Dang thu cai qua Windows WinGet: $pkgId..."
                         try {
-                            $wp = Start-Process -FilePath $wingetPath -ArgumentList @('install', '--id', $pkgId, '--silent', '--accept-source-agreements', '--accept-package-agreements') -NoNewWindow -Wait -PassThru
-                            if (Find-Tool $v.Exe) {
+                            Start-Process -FilePath $wingetPath -ArgumentList @('install', '--id', $pkgId, '--silent', '--accept-source-agreements', '--accept-package-agreements') -NoNewWindow -Wait
+                            if ((Find-Tool $v.Exe) -and (-not $v.SubExe -or (Find-Tool $v.SubExe))) {
                                 Write-Ok "Cai dat thanh cong qua WinGet: $($v.Exe)"
                                 continue
                             }
@@ -608,8 +601,8 @@ function Invoke-SetupDirect {
                 } else {
                     Copy-Item -LiteralPath $file -Destination (Join-Path $dir "$($v.Exe).exe") -Force -ErrorAction SilentlyContinue
                 }
-                if (Find-Tool $v.Exe) { Write-Ok "Cai dat thanh cong: $($v.Exe)" }
-                else { Write-Warn2 "Tai xong nhung chua thay file chay $($v.Exe)" }
+                if ((Find-Tool $v.Exe) -and (-not $v.SubExe -or (Find-Tool $v.SubExe))) { Write-Ok "Cai dat thanh cong: $($v.Exe)" }
+                else { Write-Warn2 "Tai xong nhung chua du file chay $($v.Exe) va cong cu di kem" }
             } catch {
                 Write-Bad "Loi giai nen $($v.Ten): $($_.Exception.Message)"
                 Write-Bad "Chi tiet: $($_.Exception.ToString())"
@@ -844,7 +837,7 @@ function Get-AudioOnset {
     # Neu file khong co audio stream hoac thoi luong <= 50ms -> an toan tra ve 0.0
     if (-not $hasAudio -or $fileDur -le 0.05) { return 0.0 }
 
-    # Gioi han vung scan onset toi da 10 giay dau de tang toc gap 20x tren file dai
+    # Quet 10 giay dau truoc; quet ca file neu khoang lang chua ket thuc
     $reFloat = '(-?[\d.]+(?:[eE][+-]?\d+)?)'
 
     # Helper de phan tich output silencedetect
@@ -1121,27 +1114,6 @@ function Find-ReelLanguageSelector {
     return [pscustomobject]@{Status='unverified';Node=$null}
 }
 
-function Open-DubbingLanguageMenu {
-    param($T)
-    $snapshot = Get-UiNodeBounds -T $T -SnapshotOnly
-    try {
-        [xml]$document = $snapshot
-        if (@($document.SelectNodes('//node[@package="com.facebook.katana"]') | Where-Object { ($_.GetAttribute('text')+' '+$_.GetAttribute('content-desc')).Trim() -match '^(Âm thanh và ngôn ngữ|Audio and languages?)(?:\s|$)' }).Count) { return $true }
-    } catch { }
-    $more = Get-UiNodeBounds -T $T -Patterns @('^Khác(?:\s+Khác)?$','^More(?: options)?(?:\s+More(?: options)?)?$','^Options$')
-    if (-not $more) { return $false }
-    $tap = Invoke-Adb $T @('shell','input','tap',"$($more.X)","$($more.Y)")
-    if ($tap.Code -ne 0) { return $false }
-    Start-Sleep -Milliseconds 1200
-    $selector = Find-ReelLanguageSelector -T $T
-    if ($selector.Status -ne 'available') { return $false }
-    $audio = $selector.Node
-    $tap = Invoke-Adb $T @('shell','input','tap',"$($audio.X)","$($audio.Y)")
-    if ($tap.Code -ne 0) { return $false }
-    Start-Sleep -Milliseconds 1200
-    return $true
-}
-
 # Meta closes the language sheet after applying a language. A successful tap alone
 # is insufficient: require two fresh, recognizable Reel screens after that tap.
 function Test-DubbingReturnedToReel {
@@ -1403,7 +1375,6 @@ function Test-GifFile {
             $(if ($PSScriptRoot) { $PSScriptRoot } else { $null }),
             $(if ($script:Here) { $script:Here } else { $null }),
             (Get-Location).Path,
-            'D:\reup video fb meta',
             (Join-Path $env:LOCALAPPDATA 'Kid-FB.Y')
         )
         foreach ($base in $candBases) {
@@ -1683,7 +1654,7 @@ function Test-ValidReelOutput {
 
         # Kiem tra giai ma toan bo stream de loai bo file bi cat / thieu frame (M4)
         if ($T -and $T.ffmpeg) {
-            $decode = Invoke-Exe $T.ffmpeg @('-hide_banner','-v','error','-i',$File,'-f','null','-') -TimeoutMs 30000
+            $decode = Invoke-Exe $T.ffmpeg @('-hide_banner','-v','error','-i',$File,'-f','null','-') -TimeoutMs (Get-ReelProcessTimeoutMs $duration)
             if ($decode.Code -ne 0) { return $false }
             if ($decode.Err -match 'partial file|Invalid data found|Input buffer exhausted|Error submitting packet|corrupt') {
                 return $false
@@ -1767,11 +1738,9 @@ function Publish-ReelFiles {
 
 # ---------------------------------------------------------- xu ly 1 link ----
 function Stop-ReelForLanguage {
-    param([string]$VideoId, [string[]]$Urls, [string]$Dest, [string]$Reason, $AudioLanguage)
-    $language = if ($AudioLanguage) { [string]$AudioLanguage.Language } else { '' }
-    $probability = if ($AudioLanguage) { [double]$AudioLanguage.Probability } else { 0.0 }
+    param([string]$VideoId, [string[]]$Urls, [string]$Dest, [string]$Reason)
     # Persist first: a locked output must never cause this video to be downloaded again.
-    $null = Save-RejectedReel -Root $script:Here -VideoId $VideoId -Urls $Urls -Reason $Reason -Language $language -Probability $probability
+    $null = Save-RejectedReel -Root $script:Here -VideoId $VideoId -Urls $Urls -Reason $Reason -Language '' -Probability 0
     $cleanup = Remove-RejectedReelMedia -OutDir $Dest -VideoId $VideoId
     if (-not $cleanup.Success) { Write-Warn2 ('REEL_CLEANUP_PENDING: '+($cleanup.Errors -join '; ')) }
     Write-Note ('REEL_REJECTED: id='+$VideoId+' reason='+$Reason)
@@ -1850,7 +1819,7 @@ function Invoke-OneLink {
         Write-Note 'DUB_UI_ACCEPTED: Meta da xac nhan Tieng Viet dang chon; khong chay nhan dien ngon ngu audio.'
 
         # ---------- 5. thu am sach tu Giay 0 ----------
-        # Tinh thoi luong thu am: buffer 10 giay dam bao video phat tron ven 100% truoc khi tat
+        # Thu them 10 giay de du phong thoi gian ket noi va nap Reel
         $recLen = [int][Math]::Ceiling($dur + 10)
         Write-Step 5 "Thu am thanh tu Giay 0 (thoi luong video $([Math]::Round($dur, 2))s, ghi buffer ${recLen}s)"
         Write-Host '       DUNG THAO TAC TREN MAN HINH KHI DANG THU' -ForegroundColor Yellow
@@ -1899,7 +1868,7 @@ function Invoke-OneLink {
             # Cho 1.8 giay de scrcpy ket noi am thanh Android HAL
             Start-Sleep -Milliseconds 1800
 
-            # Ban intent mo Reel: video bat dau phat sach tu 00:00:000
+            # Mo lai Reel sau khi recorder san sang; onset am thanh duoc uoc tinh o buoc sau
             $null = Open-Reel $T $Url
 
             # Cho scrcpy thu am dung thoi han va tu dong dong file hoan chinh.
@@ -1988,9 +1957,9 @@ function Invoke-OneLink {
         $cutMean = Get-MeanVolume -T $T -File $cut
         Write-Ok ("Am thanh da cat va chuan hoa xong ({0:0.0}s, muc am {1} dB)" -f $dur, $cutMean)
 
-        Write-Ok 'Da xac nhan tieng Viet; bat dau tai phan hinh HD.'
+        Write-Ok 'Da chap nhan lua chon Tieng Viet tu UI Meta; bat dau tai phan hinh HD.'
 
-        # Tai ban chat luong cao nhat tuyet doi (4K / 2K / 1080p, uu tien do phan giai va bitrate cao nhat)
+        # Uu tien do phan giai, fps, bitrate trong cac dinh dang yt-dlp doc duoc
         $dlr = Invoke-Exe $T.ytdlp @('--ignore-config','--no-playlist','-S','res,fps,br','-f','bestvideo/best','--no-warnings','-o',"$tmp\v.%(ext)s",$Url) -TimeoutMs 600000
         $vf = Get-ChildItem -LiteralPath $tmp -File -ErrorAction SilentlyContinue | Where-Object {
             $_.Name -like 'v.*' -and $_.Name -notmatch '\.(part|ytdl|tmp)$' -and $_.Extension.ToLowerInvariant() -notin @('.part','.ytdl','.tmp')
@@ -2020,7 +1989,7 @@ function Invoke-OneLink {
         $finalAm  = Join-Path $Dest "$vid-2-am-thanh-tho.m4a"
         $finalOut = Join-Path $Dest "$vid-3-hoan-chinh.mp4"
 
-        # Kiem tra codec video de dam bao tuong thich 100% tren Windows DirectShow / Media Foundation, CapCut, Premiere
+        # Chuyen AV1/VP9 sang H.264 yuv420p de tang kha nang tuong thich trinh phat
         $vCodecOpt = if ($cv -match 'av1|av01|vp9|vp09') {
             Write-Note "Phat hien codec $cv (chuyen ma H.264 tuong thich Player/CapCut/Premiere, giu nguyen do phan giai $($sz.W)x$($sz.H))..."
             @('-c:v', 'libx264', '-crf', '18', '-preset', 'veryfast', '-pix_fmt', 'yuv420p')
@@ -2100,7 +2069,7 @@ function Invoke-OneLink {
         Write-Host "  Goc   : $finalGoc" -ForegroundColor DarkGray
         Write-Host "  Tieng : $finalAm" -ForegroundColor DarkGray
         Write-Host ''
-        return [pscustomobject]@{ File = $finalOut; Duration = $dur; DubbingUiStatus = $dubbingUiStatus; AudioLanguage = $null }
+        return [pscustomobject]@{ File = $finalOut; Duration = $dur; DubbingUiStatus = $dubbingUiStatus }
     }
     finally {
         if ($rejectedForLanguage -or -not $KeepFiles) {

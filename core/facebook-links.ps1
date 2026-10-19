@@ -156,9 +156,9 @@ function Remove-RejectedReelMedia {
 }
 
 function Get-ReelLanguageDecision {
-    param([string]$DubbingStatus, $AudioLanguage)
+    param([string]$DubbingStatus)
     if ($DubbingStatus -eq 'unavailable') { return 'reject-ui' }
-    # Meta's checked language selection is the download policy; audio analysis is optional.
+    # Download policy consumes Meta UI selection, not audio-language inference.
     if ($DubbingStatus -eq 'selected') { return 'accept' }
     return 'defer'
 }

@@ -1,20 +1,19 @@
 {
-  "version": "2.0.0",
-  "releasedAt": "2026-10-19 15:33",
+  "version": "2.0.1",
+  "releasedAt": "2026-10-19 19:19",
   "minLauncher": "1.0.0",
   "mandatory": false,
   "changelog": [
-    "Tu dong xu ly het danh sach, khong cho duyet tung video; tong ket da luu/bo qua/loi.",
-    "Xac nhan ngon ngu tren Meta, khong chay Whisper chan tai; chi chon Tieng Viet mot lan.",
-    "Ghi am lai truc tiep tu Kho Video theo dung ID va thu muc; giu ban cu khi loi/dung.",
-    "Sua duong dan co ngoac vuong va phuc hoi GUI khi khoi tao tac vu that bai.",
-    "Cai thien logo/GIF, tuong tac/tua video, lich su va do an toan cap nhat."
+    "Don luong duyet tung video va GIF MediaElement cu; giao dien mo ta audio/video theo hanh vi dang co.",
+    "Bo co lang khong tac dung va duong dan may phat trien; su dung phan hoi UI Meta lam dieu kien tai.",
+    "Downloader giu kiem tra chung chi TLS; curl co timeout; bo cai xet ca cong cu phu.",
+    "Metadata EXE lay tu core/version.txt; them ban do ma nguon va tai lieu ban giao."
   ],
   "files": [
     {
       "path": "core/facebook-links.ps1",
-      "sha256": "46F21640A927DC0FA6C18EA71DEDBCA7D88DD557A1326E9CDD0845FFFFD75545",
-      "size": 15515
+      "sha256": "EBCF686A158906B3B0BB181C986423343D4D1F9D07C19D6AC7D08201D4492644",
+      "size": 15487
     },
     {
       "path": "core/fix-ket-noi.ps1",
@@ -28,13 +27,13 @@
     },
     {
       "path": "core/kid-fby-gui.ps1",
-      "sha256": "AE252015C9B83C414ACBD6A044304B1FFDC3A49164FD690CDBAC6624D549496D",
-      "size": 351924
+      "sha256": "0997F865C64442E9AC1470217B1AE4442ADCD2D0C6982059C6EC41EFFC155577",
+      "size": 345393
     },
     {
       "path": "core/kid-fby.ps1",
-      "sha256": "60A5FC93594B9376C2D55A882C36CC4BE2420911AC4BF898A972887C1029A6C7",
-      "size": 125702
+      "sha256": "A06F338FF7316B7D053737EE7B823ECF0E0110E78EBD48AEE53FF952D6D9D44A",
+      "size": 124046
     },
     {
       "path": "core/kid-logo.zip",
@@ -53,7 +52,7 @@
     },
     {
       "path": "core/version.txt",
-      "sha256": "C28FCCA53637BC88E124AF1725DF13CB98C69DEDEFD62FB3CDBE1CDB6B760624",
+      "sha256": "FE840F52FB5578D3F77EB497115EB02C6036601C3A53E60DF7995C7276BAA77A",
       "size": 7
     },
     {
@@ -63,22 +62,8 @@
     },
     {
       "path": "Kid-FB.Y.exe",
-      "sha256": "01D07E02B105A54C432AAAF4469BAAD40FA67A202B6CA9D203A3514230067922",
-      "size": 2442240
+      "sha256": "2E7357DEFE5D01BCAFE72C324CA9BF1B66D0A2ACDBE844DC40304E766B0C2D5B",
+      "size": 2433536
     }
-  ],
-  "tools": {
-    "yt-dlp": {
-      "version": "latest",
-      "exe": "yt-dlp.exe"
-    },
-    "scrcpy": {
-      "version": "3.1",
-      "exe": "scrcpy.exe"
-    },
-    "ffmpeg": {
-      "version": "release",
-      "exe": "ffmpeg.exe"
-    }
-  }
+  ]
 }

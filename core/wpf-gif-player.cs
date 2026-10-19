@@ -432,7 +432,7 @@ public class WpfGifPlayer : IDisposable {
 }
 
 /// <summary>One dedicated STA renderer, one pending timestamp and one completed frozen preview.
-/// UI callers never decode, decompress checkpoints, or wait for the renderer.</summary>
+/// Decode/seek work runs off the UI thread; Close may Join the renderer for up to 100 ms.</summary>
 public sealed class WpfGifPlaybackWorker : IDisposable {
     private readonly object _gate = new object();
     private readonly System.Threading.AutoResetEvent _wake = new System.Threading.AutoResetEvent(false);

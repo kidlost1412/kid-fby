@@ -9,12 +9,3 @@ core/_backup/
 *.old
 *.old.*
 *.candidate.*
-/tests/
-/assets/logo-concepts/
-/AUDIT*.md
-/FIX-*.md
-/PROMPT-*.md
-/RECHECK*.md
-/RETEST*.md
-/NUT-*.md
-/UI-LOAD-*.md

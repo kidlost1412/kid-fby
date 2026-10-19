@@ -4,6 +4,17 @@ param([string]$Root='')
 $ErrorActionPreference='Stop'
 if(-not $Root){$Root=$PSScriptRoot}
 $Root=[IO.Path]::GetFullPath($Root)
+# The same version file drives the GUI, update payload and launcher metadata.
+$buildVersion=[IO.File]::ReadAllText((Join-Path $Root 'core/version.txt')).Trim()
+if ($buildVersion -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+    throw 'core/version.txt must contain a version in x.y.z format.'
+}
+foreach ($component in $buildVersion.Split('.')) {
+    $versionNumber=0
+    if (-not [int]::TryParse($component,[ref]$versionNumber) -or $versionNumber -gt 65534) {
+        throw 'Each launcher version component must be between 0 and 65534.'
+    }
+}
 $gui=Join-Path $Root 'core/kid-fby-gui.ps1'
 $source=Join-Path $Root 'core/wpf-gif-player.cs'
 $tokens=$null;$errors=$null
@@ -24,15 +35,38 @@ foreach ($scriptName in @('kid-fby-gui.ps1','kid-fby.ps1','whisper-language.ps1'
 }
 $compiler='C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if(-not (Test-Path -LiteralPath $compiler -PathType Leaf)){throw 'C# compiler is unavailable.'}
-Push-Location $Root
+# Keep generated compiler input outside the checkout and retire only this owned directory.
+$assemblyTempDir=Join-Path ([IO.Path]::GetTempPath()) ('kidfby-assembly-'+[guid]::NewGuid().ToString('N'))
+$locationPushed=$false
 try{
+    [void][IO.Directory]::CreateDirectory($assemblyTempDir)
+    $assemblyInfo=Join-Path $assemblyTempDir 'AssemblyInfo.cs'
+    $assemblyText='using System.Reflection;' + "`r`n" +
+        '[assembly: AssemblyVersion("' + $buildVersion + '.0")]' + "`r`n" +
+        '[assembly: AssemblyFileVersion("' + $buildVersion + '.0")]' + "`r`n" +
+        '[assembly: AssemblyInformationalVersion("' + $buildVersion + '")]' + "`r`n"
+    [IO.File]::WriteAllText($assemblyInfo,$assemblyText,[Text.UTF8Encoding]::new($true))
+    Push-Location -LiteralPath $Root
+    $locationPushed=$true
     & $compiler /nologo /target:winexe /out:Kid-FB.Y.exe /win32icon:core\Kid-FB.Y.ico /optimize+ /r:System.Windows.Forms.dll `
         /res:core\kid-fby-gui.ps1,kid-fby-gui.ps1 /res:core\kid-fby.ps1,kid-fby.ps1 `
         /res:core\whisper-language.ps1,whisper-language.ps1 /res:core\facebook-links.ps1,facebook-links.ps1 `
-        /res:core\fix-ket-noi.ps1,fix-ket-noi.ps1 /res:core\kid-logo.zip,kid-logo.zip /res:core\Kid-FB.Y.ico,Kid-FB.Y.ico Program.cs
+        /res:core\fix-ket-noi.ps1,fix-ket-noi.ps1 /res:core\kid-logo.zip,kid-logo.zip /res:core\Kid-FB.Y.ico,Kid-FB.Y.ico Program.cs $assemblyInfo
     if($LASTEXITCODE -ne 0){throw 'Local EXE compile failed.'}
-    Write-Output 'Local EXE compiled with synchronized GIF source and seven embedded resources.'
-}finally{Pop-Location}
+    $launcherMetadata=[Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $Root 'Kid-FB.Y.exe'))
+    if ($launcherMetadata.FileVersion -ne ($buildVersion+'.0') -or $launcherMetadata.ProductVersion -ne $buildVersion) {
+        throw 'Launcher version metadata does not match core/version.txt.'
+    }
+    Write-Output ('Local EXE v'+$buildVersion+' compiled with synchronized GIF source and seven embedded resources.')
+}finally{
+    if ($locationPushed) { Pop-Location }
+    $resolvedAssembly=[IO.Path]::GetFullPath($assemblyTempDir)
+    $assemblyBoundary=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'
+    if (-not $resolvedAssembly.StartsWith($assemblyBoundary,[StringComparison]::OrdinalIgnoreCase) -or
+        [IO.Path]::GetDirectoryName($resolvedAssembly) -ne $assemblyBoundary.TrimEnd('\') -or
+        [IO.Path]::GetFileName($resolvedAssembly) -notmatch '^kidfby-assembly-[0-9a-f]{32}$') { throw 'Unsafe assembly-input cleanup path.' }
+    if (Test-Path -LiteralPath $resolvedAssembly) { Remove-Item -LiteralPath $resolvedAssembly -Recurse -Force }
+}
 
 # Check the actual launcher in a fresh, disposable directory.
 $buildCheckDir=Join-Path ([IO.Path]::GetTempPath()) ('kidfby-build-check-'+[guid]::NewGuid().ToString('N'))

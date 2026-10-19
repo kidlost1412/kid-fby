@@ -3,7 +3,7 @@
   Phat hanh ban moi Kid FB.Y len GitHub.
     .\publish.ps1 -Version 1.1.0 -Note "Sua loi bam Dung bi dung tool","Them nut cap nhat"
     .\publish.ps1 -Version 1.1.1 -Note "Fix gap" -Mandatory     (bat buoc khach cap nhat)
-    .\publish.ps1 -Version 1.1.0 -Note "..." -NoPush            (chi tao version.json, khong git push)
+    .\publish.ps1 -Version 1.1.0 -Note "..." -NoPush            (doi version, build va tao manifest; khong commit/tag/push)
 #>
 param(
     [Parameter(Mandatory = $true)][string]$Version,
@@ -13,12 +13,16 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
-Set-Location $root
+Set-Location -LiteralPath $root
 
-try { [void][version]$Version } catch { throw "Phien ban khong dung dinh dang x.y.z (vi du: 1.1.0)" }
+if ($Version -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Version phai co dinh dang x.y.z.' }
+foreach ($component in $Version.Split('.')) {
+    $versionNumber=0
+    if (-not [int]::TryParse($component,[ref]$versionNumber) -or $versionNumber -gt 65534) { throw 'Moi thanh phan version phai tu 0 den 65534.' }
+}
 
 $verFile = Join-Path $root 'core\version.txt'
-$old = if (Test-Path $verFile) { (Get-Content $verFile -Raw).Trim() } else { '0.0.0' }
+$old = if (Test-Path -LiteralPath $verFile) { (Get-Content -LiteralPath $verFile -Raw).Trim() } else { '0.0.0' }
 if ([version]$Version -le [version]$old) {
     throw "Version moi ($Version) phai lon hon version hien tai ($old)"
 }
@@ -26,7 +30,7 @@ if ([version]$Version -le [version]$old) {
 Write-Host "=== PHAT HANH PHIEN BAN MOI: v$Version (hien tai: v$old) ===" -ForegroundColor Cyan
 
 # 1. Tu dong khoi tao git neu chua co
-if (-not (Test-Path (Join-Path $root '.git'))) {
+if (-not (Test-Path -LiteralPath (Join-Path $root '.git'))) {
     Write-Host "[1/6] Khoi tao Git repository..." -ForegroundColor Yellow
     & git init -b main | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'git init that bai. Dung phat hanh.' }
@@ -41,8 +45,8 @@ $cfgFile = Join-Path $root 'core\update.json'
 if ($remoteUrl -and ($remoteUrl -match 'github\.com[:/]([^/]+)/([^/\.]+?)(\.git)?$')) {
     $detectedRepo = "$($matches[1])/$($matches[2])"
     $curCfg = @{}
-    if (Test-Path $cfgFile) {
-        try { $curCfg = Get-Content $cfgFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+    if (Test-Path -LiteralPath $cfgFile) {
+        try { $curCfg = Get-Content -LiteralPath $cfgFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
     }
     if ($curCfg.repo -ne $detectedRepo) {
         $newCfg = [ordered]@{ repo = $detectedRepo; branch = if ($curCfg.branch) { $curCfg.branch } else { 'main' } }
@@ -68,7 +72,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Local build or launcher verification failed. P
 Write-Host "[5/6] Dang tao manifest version.json..." -ForegroundColor Yellow
 function Get-NormalizedFileHash([System.IO.FileInfo]$fi) {
     if ($fi.Extension -in '.ico','.exe','.dll','.zip') {
-        return (Get-FileHash $fi.FullName -Algorithm SHA256).Hash
+        return (Get-FileHash -LiteralPath $fi.FullName -Algorithm SHA256).Hash
     }
     $txt = [System.IO.File]::ReadAllText($fi.FullName, [System.Text.Encoding]::UTF8).TrimStart([char]0xFEFF)
     $cleanTxt = $txt -replace "`r`n", "`n"
@@ -77,7 +81,7 @@ function Get-NormalizedFileHash([System.IO.FileInfo]$fi) {
     try { ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','') } finally { $sha.Dispose() }
 }
 
-$coreFiles = Get-ChildItem 'core' -File | Where-Object {
+$coreFiles = Get-ChildItem -LiteralPath (Join-Path $root 'core') -File | Where-Object {
     $_.Extension -in '.ps1','.ico','.txt','.json','.zip' -and $_.Name -notin @('run.log')
 } | ForEach-Object {
     [ordered]@{
@@ -95,15 +99,11 @@ $coreFiles = @($coreFiles) + @([ordered]@{
 $man = [ordered]@{
     version     = $Version
     releasedAt  = (Get-Date).ToString('yyyy-MM-dd HH:mm')
+    # Compatibility metadata only; the current updater does not enforce minLauncher.
     minLauncher = '1.0.0'
     mandatory   = [bool]$Mandatory
     changelog   = @($Note)
     files       = @($coreFiles)
-    tools       = [ordered]@{
-        'yt-dlp' = [ordered]@{ version = 'latest'; exe = 'yt-dlp.exe' }
-        'scrcpy' = [ordered]@{ version = '3.1';    exe = 'scrcpy.exe' }
-        'ffmpeg' = [ordered]@{ version = 'release'; exe = 'ffmpeg.exe' }
-    }
 }
 [System.IO.File]::WriteAllText((Join-Path $root 'version.json'), ($man | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
 Write-Host "    -> Da tao version.json ($(@($coreFiles).Count) file)" -ForegroundColor Green
