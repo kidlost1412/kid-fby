@@ -40,6 +40,14 @@ Start-Sleep -Milliseconds 600
 # 2. Quet thu muc cai dat LDPlayer
 Write-Host "[2] Quét tìm thư mục cài đặt LDPlayer trên máy..." -ForegroundColor Gray
 $ldDirs = @(
+    'C:\LDPlayer\LDPlayer14',
+    'D:\LDPlayer\LDPlayer14',
+    'E:\LDPlayer\LDPlayer14',
+    'C:\leidian\LDPlayer14',
+    'D:\leidian\LDPlayer14',
+    'E:\leidian\LDPlayer14',
+    'C:\Program Files\LDPlayer14',
+    'D:\Program Files\LDPlayer14',
     'C:\LDPlayer\LDPlayer9',
     'D:\LDPlayer\LDPlayer9',
     'E:\LDPlayer\LDPlayer9',
@@ -63,19 +71,40 @@ foreach ($ld in $ldDirs) {
 if ($ldFound) {
     $ldAdb = Join-Path $ldFound 'adb.exe'
     if (Test-Path $ldAdb) {
-        Write-Host "    -> Đang đồng bộ phiên bản ADB với LDPlayer để tránh xung đột version..." -ForegroundColor Gray
-        try {
+        Write-Host "    -> adb của LDPlayer khác phiên bản adb của tool có thể gây xung đột (server version doesn't match)." -ForegroundColor Gray
+        Write-Host "       Ghi đè sẽ thay file trong thư mục LDPlayer; file cũ được sao lưu thành adb.exe.bak-<thời gian>." -ForegroundColor Gray
+        $canPrompt = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
+        if ($canPrompt) {
+            $answer = Read-Host "    Ghi đè adb.exe của LDPlayer bằng adb của tool? (Y/N, mặc định N)"
+        } else {
+            $answer = 'N'
+            Write-Host "    - Không có console tương tác (chạy ẩn hoặc nhập bị chuyển hướng): mặc định N, không ghi đè." -ForegroundColor DarkGray
+        }
+        if ($answer -match '^(?i:y|yes)$') {
             $toolDir = Split-Path $toolAdb -Parent
-            Copy-Item (Join-Path $toolDir 'adb.exe') $ldFound -Force -ErrorAction SilentlyContinue
-            if (Test-Path (Join-Path $toolDir 'AdbWinApi.dll')) {
-                Copy-Item (Join-Path $toolDir 'AdbWinApi.dll') $ldFound -Force -ErrorAction SilentlyContinue
+            $stamp = Get-Date -Format 'yyyyMMddHHmmss'
+            $syncOk = $true
+            try {
+                Copy-Item -LiteralPath $ldAdb -Destination ($ldAdb + '.bak-' + $stamp) -Force -ErrorAction Stop
+                Write-Host "    -> Đã sao lưu: adb.exe.bak-$stamp" -ForegroundColor DarkGray
+                Copy-Item -LiteralPath $toolAdb -Destination $ldAdb -Force -ErrorAction Stop
+                foreach ($dll in @('AdbWinApi.dll','AdbWinUsbApi.dll')) {
+                    $dllSrc = Join-Path $toolDir $dll
+                    if (Test-Path -LiteralPath $dllSrc) {
+                        $dllDst = Join-Path $ldFound $dll
+                        if (Test-Path -LiteralPath $dllDst) { Copy-Item -LiteralPath $dllDst -Destination ($dllDst + '.bak-' + $stamp) -Force -ErrorAction Stop }
+                        Copy-Item -LiteralPath $dllSrc -Destination $dllDst -Force -ErrorAction Stop
+                    }
+                }
+            } catch {
+                $syncOk = $false
+                Write-Host "    (!) Không thể ghi đè ADB vào LDPlayer (có thể LDPlayer đang mở hoặc thiếu quyền): $($_.Exception.Message)" -ForegroundColor Yellow
             }
-            if (Test-Path (Join-Path $toolDir 'AdbWinUsbApi.dll')) {
-                Copy-Item (Join-Path $toolDir 'AdbWinUsbApi.dll') $ldFound -Force -ErrorAction SilentlyContinue
+            if ($syncOk) {
+                Write-Host "    [V] Đã đồng bộ ADB. Có thể khôi phục từ adb.exe.bak-$stamp nếu LDPlayer lỗi." -ForegroundColor Green
             }
-            Write-Host "    [V] Đã đồng bộ ADB thành công! Không còn nguy cơ xung đột." -ForegroundColor Green
-        } catch {
-            Write-Host "    (!) Không thể ghi đè ADB vào LDPlayer (có thể LDPlayer đang mở)." -ForegroundColor Yellow
+        } else {
+            Write-Host "    - Bỏ qua: không ghi đè adb của LDPlayer." -ForegroundColor DarkGray
         }
     }
 } else {
@@ -101,8 +130,8 @@ Write-Host "[4] Kiểm tra danh sách thiết bị nhận diện được:" -For
 $devList = & $toolAdb devices -l
 $devList | ForEach-Object { Write-Host "    $_" -ForegroundColor White }
 
-$online = @($devList | Where-Object { $_ -match '\sdevice\s*' })
-$unauth = @($devList | Where-Object { $_ -match '\sunauthorized' })
+$online = @($devList | Where-Object { $_ -match '^\S+\s+device(\s|$)' })
+$unauth = @($devList | Where-Object { $_ -match '^\S+\s+unauthorized(\s|$)' })
 
 Write-Host ""
 Write-Host "======================================================================" -ForegroundColor Cyan

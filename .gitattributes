@@ -5,3 +5,5 @@
 *.cs text eol=crlf
 *.ico binary
 *.exe binary
+version.json -text
+version.json.sig -text

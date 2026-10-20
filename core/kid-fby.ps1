@@ -43,6 +43,7 @@ param(
     [double]$GifCustomHeight = -1,
     [string]$WatermarkVideo,
     [string]$ReeditVideo,
+    [switch]$ForceRetryRejected,
     [System.Collections.IDictionary]$ProcessRegistry
 )
 
@@ -64,7 +65,28 @@ if (-not (Test-Path -LiteralPath (Join-Path $script:Here 'tools'))) {
 }
 
 # ------------------------------------------------------------------ in ra ----
-function Write-Step($n, $t) { Write-Host ''; Write-Host "[$n] $t" -ForegroundColor Cyan }
+function Write-Step($n, $t) {
+    Write-Host ''; Write-Host "[$n] $t" -ForegroundColor Cyan
+    # Dong su kien may doc (hop dong GUI muc 1): chi cho buoc so 1-7.
+    $stepNo = 0
+    if ([int]::TryParse([string]$n, [ref]$stepNo) -and $stepNo -ge 1 -and $stepNo -le 7) {
+        $stepName = ([string]$t) -replace '[^\x20-\x7E]', '?'
+        Write-Host ('@@KIDFBY_STAGE ' + ([ordered]@{ step = $stepNo; name = $stepName } | ConvertTo-Json -Compress -Depth 5))
+    }
+}
+
+# Phat dong ket qua cuoi cung cua mot link (hop dong GUI muc 1). Goi dung 1 lan / link.
+function Write-KidResult {
+    param([System.Collections.IDictionary]$Result)
+    Write-Host ('@@KIDFBY_RESULT ' + ($Result | ConvertTo-Json -Compress -Depth 5))
+}
+
+function Set-KidResultState {
+    param([System.Collections.IDictionary]$Result, [string]$Status, [string]$Reason, [string]$Message = '')
+    $Result.status = $Status
+    $Result.reason = $Reason
+    $Result.message = $Message
+}
 function Write-Ok($t)       { Write-Host "    v  $t" -ForegroundColor Green }
 function Write-Note($t)     { Write-Host "    -  $t" -ForegroundColor DarkGray }
 function Write-Warn2($t)    { Write-Host "    !  $t" -ForegroundColor Yellow }
@@ -90,6 +112,14 @@ function Quote-Arg {
     if ($null -eq $A -or $A -eq '') { return '""' }
     if ($A -match '[\s"]') { return '"' + ($A -replace '"', '\"') + '"' }
     return $A
+}
+
+# Quote cho shell Android (adb shell noi chuoi roi shell thiet bi dien giai ; & | ` $()).
+# Quote-Arg giu nguyen cho CreateProcess cua Windows (GUI cung dung ban do).
+function Quote-AndroidArg {
+    param([string]$A)
+    if ($null -eq $A) { $A = '' }
+    return "'" + ($A -replace "'", "'\''") + "'"
 }
 
 function Invoke-Exe {
@@ -394,6 +424,76 @@ function Invoke-Download {
     return $false
 }
 
+# ---- xac minh tai ve: chi nguon chinh thuc HTTPS + SHA256 + magic bytes ----
+function Get-TextFromUrl {
+    param([string]$Url)
+    if ($Url -notmatch '^https://') { throw "Chi chap nhan HTTPS: $Url" }
+    if ([Net.ServicePointManager]::SecurityProtocol -ne [Net.SecurityProtocolType]::SystemDefault) {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    }
+    $req = [System.Net.HttpWebRequest]::Create($Url)
+    $req.AllowAutoRedirect = $true
+    $req.MaximumAutomaticRedirections = 10
+    $req.UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    $req.Timeout = 30000
+    $req.ReadWriteTimeout = 30000
+    $resp = $req.GetResponse()
+    try {
+        $reader = New-Object System.IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)
+        try {
+            $buf = New-Object char[] 1048577
+            $n = $reader.ReadBlock($buf, 0, $buf.Length)
+            if ($n -gt 1048576) { throw 'File checksum qua lon, bo qua.' }
+            return (New-Object string($buf, 0, $n))
+        } finally { $reader.Dispose() }
+    } finally { $resp.Dispose() }
+}
+
+# Lay SHA256 cua AssetName tu noi dung file checksum ("<hash>  <ten>" hoac "<hash> *<ten>" hoac chi 1 dong hash).
+function Get-ExpectedSha256 {
+    param([string]$Text, [string]$AssetName)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    $lines = @($Text -split "`r?`n" | Where-Object { $_ -match '\S' })
+    foreach ($line in $lines) {
+        $m = [regex]::Match($line, '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$')
+        if ($m.Success) {
+            $name = $m.Groups[2].Value.Trim().Replace('\','/')
+            $leaf = $name.Substring($name.LastIndexOf('/') + 1)
+            if ($leaf -ieq $AssetName) { return $m.Groups[1].Value.ToLowerInvariant() }
+        }
+    }
+    if ($lines.Count -eq 1) {
+        $single = [regex]::Match($lines[0], '^\s*([0-9a-fA-F]{64})\s*$')
+        if ($single.Success) { return $single.Groups[1].Value.ToLowerInvariant() }
+    }
+    return $null
+}
+
+function Test-FileMagic {
+    param([string]$File, [ValidateSet('zip','exe')][string]$Kind)
+    $fs = [System.IO.File]::OpenRead($File)
+    try {
+        $head = New-Object byte[] 4
+        $n = $fs.Read($head, 0, 4)
+        if ($Kind -eq 'zip') { return ($n -ge 4 -and $head[0] -eq 0x50 -and $head[1] -eq 0x4B -and $head[2] -eq 0x03 -and $head[3] -eq 0x04) }
+        return ($n -ge 2 -and $head[0] -eq 0x4D -and $head[1] -eq 0x5A)
+    } finally { $fs.Dispose() }
+}
+
+# Tra ve $null neu hop le, nguoc lai tra chuoi loi. Khong tu xoa file (nguoi goi xoa).
+function Confirm-DownloadedTool {
+    param([string]$File, [string]$SumsUrl, [string]$AssetName, [ValidateSet('zip','exe')][string]$Kind)
+    if (-not $SumsUrl) { return 'Khong co file checksum chinh thuc; khong cai.' }
+    try { $sumsText = Get-TextFromUrl -Url $SumsUrl }
+    catch { return ('Khong tai duoc checksum chinh thuc (' + $SumsUrl + '): ' + $_.Exception.Message) }
+    $expected = Get-ExpectedSha256 -Text $sumsText -AssetName $AssetName
+    if (-not $expected) { return "Checksum chinh thuc khong co dong cho $AssetName; khong cai." }
+    $actual = (Get-FileHash -LiteralPath $File -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) { return "SHA256 khong khop (mong doi $expected, nhan $actual); khong cai." }
+    if (-not (Test-FileMagic -File $File -Kind $Kind)) { return "File tai ve khong dung dinh dang $Kind (magic bytes); khong cai." }
+    return $null
+}
+
 function Invoke-SetupDirect {
     param([string]$Tool = 'all')
     Write-Note 'Dang tai cong cu truc tiep vao thu muc tools (chay doc lap, khong can cai vao he thong)...'
@@ -411,31 +511,32 @@ function Invoke-SetupDirect {
     }
     $tmpd = Join-Path $dir '_download'
 
+    # Chi nguon chinh thuc (GitHub / gyan.dev), HTTPS, bat buoc khop SHA256 cong bo cung nguon.
     $viec = @(
         @{ Id = 'scrcpy'; Ten = 'scrcpy & adb (Ket noi Android & thu am thanh)'; Exe = 'scrcpy'; Zip = $true
            SubExe = 'adb';
-           Urls = @(
-               'https://github.com/Genymobile/scrcpy/releases/download/v3.1/scrcpy-win64-v3.1.zip',
-               'https://ghproxy.net/https://github.com/Genymobile/scrcpy/releases/download/v3.1/scrcpy-win64-v3.1.zip',
-               'https://gh-proxy.com/https://github.com/Genymobile/scrcpy/releases/download/v3.1/scrcpy-win64-v3.1.zip',
-               'https://github.com/Genymobile/scrcpy/releases/download/v2.7/scrcpy-win64-v2.7.zip'
+           Sources = @(
+               @{ Url = 'https://github.com/Genymobile/scrcpy/releases/download/v3.1/scrcpy-win64-v3.1.zip'
+                  SumsUrl = 'https://github.com/Genymobile/scrcpy/releases/download/v3.1/SHA256SUMS.txt'
+                  Asset = 'scrcpy-win64-v3.1.zip' }
            ) }
         @{ Id = 'ytdlp';  Ten = 'yt-dlp (Tai video Facebook 4K/2K/1080p)'; Exe = 'yt-dlp'; Zip = $false
-           Urls = @(
-               'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe',
-               'https://ghproxy.net/https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe',
-               'https://gh-proxy.com/https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
+           Sources = @(
+               @{ Url = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
+                  SumsUrl = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS'
+                  Asset = 'yt-dlp.exe' }
            ) }
         @{ Id = 'ffmpeg'; Ten = 'FFmpeg & ffprobe (Giai ma, chuyen ma H.264 & ghep video)'; Exe = 'ffmpeg'; Zip = $true
            SubExe = 'ffprobe';
-           Urls = @(
-               'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
-               'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
-               'https://ghproxy.net/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
-               'https://gh-proxy.com/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+           Sources = @(
+               @{ Url = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+                  SumsUrl = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256'
+                  Asset = 'ffmpeg-release-essentials.zip' },
+               @{ Url = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+                  SumsUrl = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/checksums.sha256'
+                  Asset = 'ffmpeg-master-latest-win64-gpl.zip' }
            ) }
     )
-
     if ($Tool -and $Tool -ne '' -and $Tool -ne 'all') {
         $viec = @($viec | Where-Object { $_.Id -match $Tool -or $_.Exe -match $Tool -or ($_.SubExe -and $_.SubExe -match $Tool) })
     }
@@ -544,17 +645,21 @@ function Invoke-SetupDirect {
             $ext = if ($v.Zip) { '.zip' } else { '.exe' }
             $file = Join-Path $tmpd "$($v.Exe)$ext"
 
-            $urls = if ($v.Urls) { $v.Urls } elseif ($v.Url) { @(& $v.Url) } else { @() }
-            foreach ($url in $urls) {
-                if (-not $url) { continue }
+            foreach ($src in @($v.Sources)) {
+                if (-not $src -or -not $src.Url -or $src.Url -notmatch '^https://') { continue }
                 Write-Note "Dang tai $($v.Ten)..."
-                Write-Note "Nguon: $url"
-                if (Invoke-Download -Url $url -OutFile $file) {
-                    $dlSuccess = $true
-                    $sizeMb = [math]::Round(((Get-Item -LiteralPath $file).Length / 1MB), 2)
-                    Write-Ok "Tai ve hoan tat ($sizeMb MB)"
-                    break
+                Write-Note "Nguon: $($src.Url)"
+                if (-not (Invoke-Download -Url $src.Url -OutFile $file)) { continue }
+                $verifyError = Confirm-DownloadedTool -File $file -SumsUrl $src.SumsUrl -AssetName $src.Asset -Kind $(if ($v.Zip) { 'zip' } else { 'exe' })
+                if ($verifyError) {
+                    Write-Bad "Xac minh that bai, khong cai tu nguon nay: $verifyError"
+                    try { [System.IO.File]::Delete($file) } catch { Write-Warn2 "Khong xoa duoc file tai do: $($_.Exception.Message)" }
+                    continue
                 }
+                $dlSuccess = $true
+                $sizeMb = [math]::Round(((Get-Item -LiteralPath $file).Length / 1MB), 2)
+                Write-Ok "Tai ve hoan tat va khop SHA256 chinh thuc ($sizeMb MB)"
+                break
             }
 
             if (-not $dlSuccess -or -not (Test-Path -LiteralPath $file)) {
@@ -934,12 +1039,157 @@ function Get-AudioOnset {
     return 0.0
 }
 
+# Thoi luong theo so mau (giay), khong tin pts: file scrcpy co the co khoang trong pts khi thiet bi khong phat tieng.
+function Get-SampleDuration {
+    param($T, [string]$File)
+    $r = Invoke-Exe $T.ffmpeg @('-hide_banner','-i',$File,'-vn','-af','asetpts=N/SR/TB','-f','null','-') -TimeoutMs 120000
+    $ms = [regex]::Matches([string]$r.Err, 'time=(\d+):(\d+):(\d+(?:\.\d+)?)')
+    if ($r.Code -eq 0 -and $ms.Count -gt 0) {
+        $m = $ms[$ms.Count - 1]
+        return ([double]$m.Groups[1].Value * 3600.0 + [double]$m.Groups[2].Value * 60.0 + [double]::Parse($m.Groups[3].Value, [cultureinfo]::InvariantCulture))
+    }
+    return (Get-Duration -T $T -File $File)
+}
+
+# scrcpy khong gui goi khi thiet bi im lang => pts co khoang trong, pts la dong ho that. Chuan hoa 1 lan thanh WAV
+# (aresample=async=1:first_pts=0 lap khoang trong bang im lang, bat dau tu 0); tren file nay truc mau = truc pts.
+# Tra ve @{ Path; FixedSec; SampleSec; ContainerSec; GapFilledSec; Warning } hoac $null neu that bai.
+function ConvertTo-FixedRecording {
+    param($T, [string]$Rec, [string]$Out)
+    $r = Invoke-Exe $T.ffmpeg @('-hide_banner','-loglevel','error','-y','-i',$Rec,'-vn','-af','aresample=async=1:first_pts=0','-c:a','pcm_s16le','-ar','48000',$Out) -TimeoutMs 300000
+    if ($r.Code -ne 0 -or -not (Test-Path -LiteralPath $Out -PathType Leaf) -or (Get-Item -LiteralPath $Out).Length -le 0) { return $null }
+    $sampleSec = Get-SampleDuration -T $T -File $Rec
+    $containerSec = Get-Duration -T $T -File $Rec
+    $fixedSec = Get-SampleDuration -T $T -File $Out
+    $warn = ''
+    if ($containerSec -gt 0 -and [Math]::Abs($fixedSec - $containerSec) -gt 0.05) {
+        $warn = ('Thoi luong file da lap ({0:0.000}s) lech thoi luong container ({1:0.000}s) hon 0.05s' -f $fixedSec, $containerSec)
+    }
+    return @{ Path = $Out; FixedSec = $fixedSec; SampleSec = $sampleSec; ContainerSec = $containerSec; GapFilledSec = ($fixedSec - $sampleSec); Warning = $warn }
+}
+
+# Onset moi: nguong thich nghi theo nen on va muc noi dung, chi xet tu SearchFrom (= tOpen - tRec - 0.3).
+# Tra hashtable @{ Onset; NoiseFloorDb; ThresholdDb; ContentDb; Reason }.
+# File vao nen la rec-fixed.wav (truc mau = truc pts tu 0): onset = chi so cua so x 0.02 s, SearchFrom dung thang.
+function Get-AudioOnsetInfo {
+    param($T, [string]$File, [double]$SearchFrom = 0.0)
+    $info = @{ Onset = $null; NoiseFloorDb = $null; ThresholdDb = $null; ContentDb = $null; Reason = 'no-onset' }
+    if (-not $T -or -not $T.ffmpeg) { $info.Reason = 'no-ffmpeg'; return $info }
+    if ($SearchFrom -lt 0) { $SearchFrom = 0.0 }
+    # RMS moi 20 ms: ep 48 kHz, 960 mau / cua so, khong dem, astats reset moi frame.
+    $r = Invoke-Exe $T.ffmpeg @('-hide_banner','-nostats','-t','15','-i',$File,'-vn','-af',
+        'aformat=channel_layouts=mono,aresample=48000,asetnsamples=n=960:p=0,astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-',
+        '-f','null','-') -TimeoutMs 90000
+    if ($r.Code -ne 0) { $info.Reason = 'analysis-failed'; return $info }
+
+    $levels = New-Object 'System.Collections.Generic.List[double]'
+    $inv = [cultureinfo]::InvariantCulture
+    foreach ($line in ([string]$r.Out -split "`r?`n")) {
+        if ($line -match 'lavfi\.astats\.Overall\.RMS_level=(\S+)') {
+            $raw = $Matches[1]
+            $lv = -120.0
+            if ($raw -notmatch 'inf|nan') {
+                if (-not [double]::TryParse($raw, [Globalization.NumberStyles]::Float, $inv, [ref]$lv)) { $lv = -120.0 }
+            }
+            if ($lv -lt -120.0) { $lv = -120.0 }
+            $levels.Add($lv)
+        }
+    }
+    $n = $levels.Count
+    if ($n -eq 0) { $info.Reason = 'analysis-empty'; return $info }
+
+    # Cua so dau tien co thoi diem >= SearchFrom = diem bat dau xet (cua so k bat dau o k x 0.02 s).
+    $i0 = [int][Math]::Ceiling(($SearchFrom - 0.0005) / 0.02)
+    if ($i0 -lt 0) { $i0 = 0 }
+    if ($i0 -ge $n) { return $info }
+
+    # Nen on: phan vi 20% cua RMS trong 1.0 s dau (50 cua so) tu diem bat dau, kep [-90, -45].
+    $head = New-Object 'System.Collections.Generic.List[double]'
+    for ($i = $i0; $i -lt $n -and $i -lt ($i0 + 50); $i++) { $head.Add($levels[$i]) }
+    $sorted = @($head | Sort-Object)
+    $floor = [double]$sorted[[int][Math]::Floor(0.2 * ($sorted.Count - 1))]
+    if ($floor -lt -90.0) { $floor = -90.0 }
+    if ($floor -gt -45.0) { $floor = -45.0 }
+
+    # Muc noi dung L = trung vi RMS cac cua so > -100 dB tu diem bat dau den het du lieu (ban thu co the rat nho).
+    $content = New-Object 'System.Collections.Generic.List[double]'
+    for ($i = $i0; $i -lt $n; $i++) { if ($levels[$i] -gt -100.0) { $content.Add($levels[$i]) } }
+    if ($content.Count -eq 0) { $info.NoiseFloorDb = $floor; return $info }
+    $csorted = @($content | Sort-Object)
+    $L = if ($csorted.Count % 2 -eq 1) { [double]$csorted[[int](($csorted.Count - 1) / 2)] }
+         else { ([double]$csorted[$csorted.Count / 2 - 1] + [double]$csorted[$csorted.Count / 2]) / 2.0 }
+
+    $threshold = [Math]::Max($floor + 12.0, $L - 15.0)
+    $quietLimit = [Math]::Max($floor + 6.0, $L - 30.0)
+    $info.NoiseFloorDb = $floor
+    $info.ThresholdDb = $threshold
+    $info.ContentDb = $L
+
+    # Ung vien: cua so dau > nguong; trong 8 cua so (160 ms) cho phep toi da 2 cua so hut, moi cho hut <= 2 cua so lien tiep.
+    # Loai ung vien dung mau blip: doan active < 400 ms roi >= 300 ms (15 cua so) lien tuc <= muc im lang.
+    # Khoang nghi loi noi ngan (< 300 ms) khong bi loai. Ngoai ra can >= 70% cua so > nguong trong 1.0 s sau ung vien.
+    $runLen = 8
+    $quietNeed = 15
+    $minActive = 20
+    $start = -1
+    $i = $i0
+    while (($i + $runLen - 1) -lt $n) {
+        if ($levels[$i] -le $threshold) { $i++; continue }
+        $dips = 0; $dipRun = 0; $runOk = $true
+        for ($k = 0; $k -lt $runLen; $k++) {
+            if ($levels[$i + $k] -gt $threshold) { $dipRun = 0 }
+            else { $dips++; $dipRun++; if ($dipRun -gt 2 -or $dips -gt 2) { $runOk = $false; break } }
+        }
+        if (-not $runOk) { $i++; continue }
+
+        # Tim khoang lang dau tien >= 300 ms ke tu ung vien (trong pham vi du de ket luan blip).
+        $scanEnd = [Math]::Min($n - 1, $i + $minActive + $quietNeed + 5)
+        $quietCount = 0; $quietStart = -1; $quietEnd = -1
+        for ($k = $i; $k -le $scanEnd; $k++) {
+            if ($levels[$k] -le $quietLimit) {
+                $quietCount++
+                if ($quietCount -ge $quietNeed -and $quietStart -lt 0) { $quietStart = $k - $quietNeed + 1 }
+            } else {
+                if ($quietStart -ge 0) { $quietEnd = $k - 1; break }
+                $quietCount = 0
+            }
+        }
+        if ($quietStart -ge 0 -and ($quietStart - $i) -lt $minActive) {
+            # blip: bo ung vien, tim tiep sau khoang lang
+            $i = if ($quietEnd -ge 0) { $quietEnd + 1 } else { $quietStart + $quietNeed }
+            while ($i -lt $n -and $levels[$i] -le $quietLimit) { $i++ }
+            continue
+        }
+        $endIdx = [Math]::Min($n - 1, $i + 49)
+        $aboveWin = 0
+        for ($k = $i; $k -le $endIdx; $k++) { if ($levels[$k] -gt $threshold) { $aboveWin++ } }
+        if (($aboveWin / [double]($endIdx - $i + 1)) -lt 0.7) { $i++; continue }
+        $start = $i
+        break
+    }
+    if ($start -lt 0) { return $info }
+
+    # Lui ve truoc toi da 300 ms (15 cua so, khong qua diem bat dau xet) qua cac cua so > muc im lang,
+    # cho phep bang qua cho hut <= 2 cua so (40 ms) neu truoc do con tieng.
+    $j = $start
+    while ($j - 1 -ge $i0 -and ($start - $j) -lt 15) {
+        $q = $j - 1
+        if ($levels[$q] -gt $quietLimit) { $j = $q; continue }
+        $dipLen = 0
+        while ($q -ge $i0 -and $levels[$q] -le $quietLimit -and $dipLen -lt 3) { $q--; $dipLen++ }
+        if ($dipLen -le 2 -and $q -ge $i0 -and $levels[$q] -gt $quietLimit -and ($start - $q) -le 15) { $j = $q; continue }
+        break
+    }
+    $info.Onset = [double]($j * 0.02)
+    $info.Reason = 'ok'
+    return $info
+}
 # ------------------------------------------------------------ thao tac app ----
 function Open-Reel {
     param($T, [string]$Url)
-    $r = Invoke-Adb $T @('shell','am','start','-a','android.intent.action.VIEW','-d', (Quote-Arg $Url),'-n',"$($script:Fb)/.IntentUriHandler")
+    $r = Invoke-Adb $T @('shell','am','start','-a','android.intent.action.VIEW','-d', (Quote-AndroidArg $Url),'-n',"$($script:Fb)/.IntentUriHandler")
     if ($r.Code -ne 0 -or "$($r.Out)$($r.Err)" -match 'Error|does not exist') {
-        $r = Invoke-Adb $T @('shell','am','start','-a','android.intent.action.VIEW','-d', (Quote-Arg $Url),$script:Fb)
+        $r = Invoke-Adb $T @('shell','am','start','-a','android.intent.action.VIEW','-d', (Quote-AndroidArg $Url),$script:Fb)
     }
     if ($r.Code -ne 0 -or "$($r.Out)$($r.Err)" -match 'Error|does not exist') { throw 'Khong mo duoc Reel tren Facebook; khong xac nhan ngon ngu.' }
     return $r
@@ -1087,31 +1337,103 @@ function Get-ReelOptionsMenuState {
     } catch { return $null }
 }
 
+# Tom tat text cac node Facebook tren mot man hinh (chi de ghi bang chung loai video).
+function Get-UiTextSummary {
+    param([string]$Xml)
+    if ([string]::IsNullOrWhiteSpace($Xml)) { return '(khong doc duoc man hinh)' }
+    try {
+        [xml]$document = $Xml
+        $labels = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($node in @($document.SelectNodes('//node[@package="com.facebook.katana"]'))) {
+            $label = [string]$node.GetAttribute('text')
+            if (-not $label) { $label = [string]$node.GetAttribute('content-desc') }
+            $label = ($label.Trim() -replace '\s+', ' ')
+            if (-not $label) { continue }
+            if ($label.Length -gt 40) { $label = $label.Substring(0,40) }
+            if (-not $labels.Contains($label)) { $labels.Add($label) }
+            if ($labels.Count -ge 20) { break }
+        }
+        return ($labels -join ' | ')
+    } catch {
+        return ('(xml loi: ' + $_.Exception.Message + ')')
+    }
+}
+
+# Chuoi bang chung: moi lan doc menu (thoi diem + text da thay) + so lan doc.
+function Format-DubbingEvidence {
+    param([string]$Kind, $Reads)
+    $arr = @($Reads)
+    $inv = [cultureinfo]::InvariantCulture
+    if ($arr.Count -eq 0) { return "kind=$Kind; reads=0" }
+    $span = [double]$arr[$arr.Count - 1].T - [double]$arr[0].T
+    $parts = New-Object 'System.Collections.Generic.List[string]'
+    for ($i = 0; $i -lt $arr.Count; $i++) {
+        $text = [string]$arr[$i].Text
+        if ($text.Length -gt 300) { $text = $text.Substring(0,300) }
+        $parts.Add([string]::Format($inv, '#{0} t={1:0.00}s: {2}', ($i + 1), [double]$arr[$i].T, $text))
+    }
+    return ([string]::Format($inv, 'kind={0}; reads={1}; span={2:0.0}s; ', $Kind, $arr.Count, $span) + ($parts -join ' || '))
+}
+
+# Doc lai nhieu lan, chi coi la on dinh khi >= Count lan cung Key (khac rong) tren >= MinSpanSec giay.
+# Initial = lan doc dau (t=0) da lam truoc khi goi. Reader tra ve @{Key;Text} hoac $null.
+function Confirm-StableReads {
+    param([scriptblock]$Reader, $Initial, [int]$Count = 3, [double]$MinSpanSec = 2.0, [int]$IntervalMs = 1000, [int]$MaxReads = 6)
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $reads = New-Object 'System.Collections.Generic.List[object]'
+    $reads.Add([pscustomobject]@{ T = 0.0; Key = [string]$Initial.Key; Text = [string]$Initial.Text })
+    while ($true) {
+        $span = [double]$reads[$reads.Count - 1].T - [double]$reads[0].T
+        if ($reads.Count -ge $Count -and $span -ge $MinSpanSec) { break }
+        if ($reads.Count -ge $MaxReads) { break }
+        Start-Sleep -Milliseconds $IntervalMs
+        $r = & $Reader
+        $key = if ($r) { [string]$r.Key } else { '' }
+        $text = if ($r) { [string]$r.Text } else { '(khong doc duoc)' }
+        $reads.Add([pscustomobject]@{ T = $sw.Elapsed.TotalSeconds; Key = $key; Text = $text })
+        if ($key -ne [string]$reads[0].Key) { break }
+    }
+    $arr = $reads.ToArray()
+    $span = [double]$arr[$arr.Count - 1].T - [double]$arr[0].T
+    $same = $true
+    foreach ($x in $arr) { if (-not $x.Key -or $x.Key -ne $arr[0].Key) { $same = $false } }
+    return [pscustomobject]@{ Stable = ($same -and $arr.Count -ge $Count -and $span -ge $MinSpanSec); Reads = $arr; SpanSec = $span }
+}
+
 function Find-ReelLanguageSelector {
     param($T)
-    $previous = $null; $recognizedStart = $false; $hasScrolled = $false
-    for ($attempt = 0; $attempt -lt 5; $attempt++) {
-        $state = Get-ReelOptionsMenuState -Xml (Get-UiNodeBounds -T $T -SnapshotOnly)
-        if (-not $state) { $previous = $null; Start-Sleep -Milliseconds 700; continue }
-        if ($state.Selector) { return [pscustomobject]@{Status='available';Node=$state.Selector} }
+    $recognizedStart = $false; $hasScrolled = $false
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $streak = New-Object 'System.Collections.Generic.List[object]'
+    for ($attempt = 0; $attempt -lt 10; $attempt++) {
+        $xml = Get-UiNodeBounds -T $T -SnapshotOnly
+        $state = Get-ReelOptionsMenuState -Xml $xml
+        if (-not $state) { $streak.Clear(); Start-Sleep -Milliseconds 1000; continue }
+        if ($state.Selector) { return [pscustomobject]@{Status='available';Node=$state.Selector;Evidence=''} }
         if (-not $hasScrolled -and $state.StartVisible) { $recognizedStart = $true }
-        # Stable visible rows after a scroll (or two reads of a non-scrolling sheet)
-        # establish the end. Missing/damaged/loading snapshots never prove absence.
-        if ($recognizedStart -and $previous -and -not $state.HasSelectorNode -and -not $previous.HasSelectorNode -and $previous.Signature -eq $state.Signature) {
-            Write-Note 'DUB_NO_SELECTOR: Hai lan doc menu ba cham day du on dinh khong co bo chon am thanh/ngon ngu.'
-            return [pscustomobject]@{Status='unavailable';Node=$null}
+        # Absence needs >= 3 consistent complete reads (same visible rows) spanning >= 2.0 s.
+        # Missing/damaged/loading snapshots or changing rows never prove absence.
+        if ($recognizedStart -and -not $state.HasSelectorNode) {
+            if ($streak.Count -gt 0 -and $streak[0].Sig -ne $state.Signature) { $streak.Clear() }
+            $streak.Add([pscustomobject]@{ T = $sw.Elapsed.TotalSeconds; Sig = [string]$state.Signature; Text = (Get-UiTextSummary -Xml $xml) })
+            $streakSpan = [double]$streak[$streak.Count - 1].T - [double]$streak[0].T
+            if ($streak.Count -ge 3 -and $streakSpan -ge 2.0) {
+                Write-Note ('DUB_NO_SELECTOR: {0} lan doc menu ba cham day du on dinh trong {1:0.0}s khong co bo chon am thanh/ngon ngu.' -f $streak.Count, $streakSpan)
+                return [pscustomobject]@{Status='unavailable';Node=$null;Evidence=(Format-DubbingEvidence -Kind 'no-selector' -Reads $streak.ToArray())}
+            }
+        } else {
+            $streak.Clear()
         }
-        $previous = $state
         if ($state.Scroll) {
             $from = [int]($state.Scroll.Top+($state.Scroll.Bottom-$state.Scroll.Top)*0.8)
             $to = [int]($state.Scroll.Top+($state.Scroll.Bottom-$state.Scroll.Top)*0.2)
             $swipe = Invoke-Adb $T @('shell','input','swipe',"$($state.Scroll.X)","$from","$($state.Scroll.X)","$to",'400')
-            if ($swipe.Code -ne 0) { return [pscustomobject]@{Status='unverified';Node=$null} }
+            if ($swipe.Code -ne 0) { return [pscustomobject]@{Status='unverified';Node=$null;Evidence=''} }
             $hasScrolled = $true
         }
-        Start-Sleep -Milliseconds 700
+        Start-Sleep -Milliseconds 1000
     }
-    return [pscustomobject]@{Status='unverified';Node=$null}
+    return [pscustomobject]@{Status='unverified';Node=$null;Evidence=''}
 }
 
 # Meta closes the language sheet after applying a language. A successful tap alone
@@ -1136,6 +1458,7 @@ function Test-DubbingReturnedToReel {
 function Ensure-VietnameseDubbing {
     param($T, [string]$Url)
     $dubbingUiStatus = 'unverified'
+    $script:LastDubbingEvidence = ''
     Write-Step 4 'Kiem tra che do long tieng Viet (Meta AI)'
     
     # Tang am luong media thiet bi len muc toi da
@@ -1175,7 +1498,7 @@ function Ensure-VietnameseDubbing {
         if ($tap.Code -ne 0) { return 'unverified' }
     } else {
         $null = Invoke-Adb $T @('shell','am','force-stop',$script:Fb)
-        if ($selector.Status -eq 'unavailable') { return 'unavailable' }
+        if ($selector.Status -eq 'unavailable') { $script:LastDubbingEvidence = [string]$selector.Evidence; return 'unavailable' }
         Write-Warn2 'DUB_UNVERIFIED: Chua doc duoc menu ba cham day du; dung truoc thu/tai, chua loai vinh vien.'
         return 'unverified'
     }
@@ -1183,18 +1506,38 @@ function Ensure-VietnameseDubbing {
 
     $menuSnapshot = Get-UiNodeBounds -T $T -SnapshotOnly
     if ((Get-DubbingMenuState -Xml $menuSnapshot) -eq 'original-only') {
-        Start-Sleep -Milliseconds 1000
-        $confirmedSnapshot = Get-UiNodeBounds -T $T -SnapshotOnly
-        if ((Get-DubbingMenuState -Xml $confirmedSnapshot) -eq 'original-only') {
-            Write-Note 'DUB_UNAVAILABLE: Hai lan doc menu hoan chinh chi co Am thanh goc; khong co ban dich.'
+        # Chi ket luan 'unavailable' khi >= 3 lan doc nhat quan trai tren >= 2.0 s; neu khong thi di tiep
+        # luong chon binh thuong (khong bao gio ghi loai).
+        $initialRead = [pscustomobject]@{ Key = 'original-only'; Text = (Get-UiTextSummary -Xml $menuSnapshot) }
+        $stateReader = {
+            $xmlNow = Get-UiNodeBounds -T $T -SnapshotOnly
+            [pscustomobject]@{ Key = [string](Get-DubbingMenuState -Xml $xmlNow); Text = (Get-UiTextSummary -Xml $xmlNow) }
+        }
+        $stable = Confirm-StableReads -Reader $stateReader -Initial $initialRead
+        if ($stable.Stable) {
+            Write-Note ('DUB_UNAVAILABLE: {0} lan doc menu hoan chinh trong {1:0.0}s deu chi co Am thanh goc; khong co ban dich.' -f @($stable.Reads).Count, $stable.SpanSec)
+            $script:LastDubbingEvidence = Format-DubbingEvidence -Kind 'original-only' -Reads $stable.Reads
             $null = Invoke-Adb $T @('shell','am','force-stop',$script:Fb)
             return 'unavailable'
         }
+        Write-Warn2 'DUB_UNVERIFIED: Cac lan doc menu khong nhat quan; khong ket luan khong co ban dich.'
     }
-    $unavailable = Get-UiNodeBounds -T $T -Patterns @('Ti[e\u00ea\u1ebf]ng Vi[e\u00ea\u1ec7]t.*kh[o\u00f4]ng (kh[a\u1ea3] d[u\u1ee5]ng|[d\u0111][u\u01b0][o\u1ee3]c h[o\u1ed7] tr[o\u1ee3])', 'Vietnamese.*(not available|unavailable|not supported)')
+    $unavailablePatterns = @('Ti[e\u00ea\u1ebf]ng Vi[e\u00ea\u1ec7]t.*kh[o\u00f4]ng (kh[a\u1ea3] d[u\u1ee5]ng|[d\u0111][u\u01b0][o\u1ee3]c h[o\u1ed7] tr[o\u1ee3])', 'Vietnamese.*(not available|unavailable|not supported)')
+    $unavailable = Get-UiNodeBounds -T $T -Patterns $unavailablePatterns
     if ($unavailable) {
-        $null = Invoke-Adb $T @('shell','am','force-stop',$script:Fb)
-        return 'unavailable'
+        $nodeKey = ("$($unavailable.Text) $($unavailable.Desc)").Trim()
+        $initialNode = [pscustomobject]@{ Key = $nodeKey; Text = ('node: ' + $nodeKey) }
+        $nodeReader = {
+            $nodeNow = Get-UiNodeBounds -T $T -Patterns $unavailablePatterns
+            if ($nodeNow) { $k = ("$($nodeNow.Text) $($nodeNow.Desc)").Trim(); [pscustomobject]@{ Key = $k; Text = ('node: ' + $k) } } else { $null }
+        }
+        $stableNode = Confirm-StableReads -Reader $nodeReader -Initial $initialNode
+        if ($stableNode.Stable) {
+            $script:LastDubbingEvidence = Format-DubbingEvidence -Kind 'vietnamese-marked-unavailable' -Reads $stableNode.Reads
+            $null = Invoke-Adb $T @('shell','am','force-stop',$script:Fb)
+            return 'unavailable'
+        }
+        Write-Warn2 'DUB_UNVERIFIED: Nhan Tieng Viet khong kha dung chua nhat quan qua cac lan doc; khong ket luan loai.'
     }
 
     # Nodes outside a scrolling viewport may still exist in accessibility XML.
@@ -1407,25 +1750,45 @@ function Get-OptimalVideoEncoder {
     param($T)
     if ($script:optimalVideoEncoder) { return $script:optimalVideoEncoder }
     if (-not $T -or -not $T.ffmpeg) { return 'libx264' }
+    $reasons = New-Object 'System.Collections.Generic.List[string]'
     try {
-        $testNvenc = Invoke-Exe $T.ffmpeg @('-hide_banner','-f','lavfi','-i','color=c=black:s=256x256:d=0.04','-c:v','h264_nvenc','-f','null','-') -TimeoutMs 3000
-        if ($testNvenc.Code -eq 0) {
-            $script:optimalVideoEncoder = 'h264_nvenc'
-            return $script:optimalVideoEncoder
+        foreach ($enc in @('h264_nvenc','h264_qsv','h264_amf')) {
+            $probe = Invoke-Exe $T.ffmpeg @('-hide_banner','-f','lavfi','-i','color=c=black:s=256x256:d=0.04','-c:v',$enc,'-f','null','-') -TimeoutMs 8000
+            if ($probe.Code -eq 0) {
+                $script:optimalVideoEncoder = $enc
+                return $script:optimalVideoEncoder
+            }
+            $errLines = @(([string]$probe.Err -split "`r?`n") | Where-Object { $_ -match '\S' })
+            $why = if ($errLines.Count -gt 0) { $errLines[$errLines.Count - 1].Trim() } else { 'khong co thong bao loi' }
+            if ($why.Length -gt 160) { $why = $why.Substring(0,160) }
+            $reasons.Add(("{0}: ma {1}, {2}" -f $enc, $probe.Code, $why))
         }
-        $testQsv = Invoke-Exe $T.ffmpeg @('-hide_banner','-f','lavfi','-i','color=c=black:s=256x256:d=0.04','-c:v','h264_qsv','-f','null','-') -TimeoutMs 3000
-        if ($testQsv.Code -eq 0) {
-            $script:optimalVideoEncoder = 'h264_qsv'
-            return $script:optimalVideoEncoder
-        }
-        $testAmf = Invoke-Exe $T.ffmpeg @('-hide_banner','-f','lavfi','-i','color=c=black:s=256x256:d=0.04','-c:v','h264_amf','-f','null','-') -TimeoutMs 3000
-        if ($testAmf.Code -eq 0) {
-            $script:optimalVideoEncoder = 'h264_amf'
-            return $script:optimalVideoEncoder
-        }
-    } catch { }
+    } catch {
+        $reasons.Add('loi khi thu encoder phan cung: ' + $_.Exception.Message)
+    }
     $script:optimalVideoEncoder = 'libx264'
+    Write-Warn2 ('Khong dung duoc encoder phan cung, dung CPU libx264. Ly do: ' + ($reasons -join ' | '))
     return $script:optimalVideoEncoder
+}
+
+# Tham so encoder video dung chung (CRF/CQ co dinh, High profile, yuv420p).
+function Get-VideoEncoderArgs {
+    param([string]$Encoder = 'libx264')
+    switch ($Encoder) {
+        'h264_nvenc' { return @('-c:v','h264_nvenc','-preset','p5','-rc','vbr','-cq','21','-b:v','0','-profile:v','high','-pix_fmt','yuv420p') }
+        'h264_qsv'   { return @('-c:v','h264_qsv','-global_quality','21','-profile:v','high','-pix_fmt','yuv420p') }
+        'h264_amf'   { return @('-c:v','h264_amf','-rc','cqp','-qp_i','20','-qp_p','22','-profile:v','high','-pix_fmt','yuv420p') }
+        default      { return @('-c:v','libx264','-crf','19','-preset','medium','-profile:v','high','-pix_fmt','yuv420p') }
+    }
+}
+
+# Dong tom tat ly do ffmpeg that bai (dung khi roi ve libx264).
+function Get-FfmpegFailureSummary {
+    param($Result)
+    $errLines = @(([string]$Result.Err -split "`r?`n") | Where-Object { $_ -match '\S' })
+    $why = if ($errLines.Count -gt 0) { $errLines[$errLines.Count - 1].Trim() } else { 'khong co thong bao loi' }
+    if ($why.Length -gt 200) { $why = $why.Substring(0,200) }
+    return ("ma {0}: {1}" -f $Result.Code, $why)
 }
 
 function Get-MovingLogoMuxArgs {
@@ -1446,7 +1809,8 @@ function Get-MovingLogoMuxArgs {
           [double]$CustomWidth = -1,
           [double]$CustomHeight = -1,
           [double]$GifCustomWidth = -1,
-          [double]$GifCustomHeight = -1)
+          [double]$GifCustomHeight = -1,
+          [double]$Duration = 0)
     if ($Width -le 0 -or $Height -le 0) { throw 'Kich thuoc video khong hop le de chen logo.' }
 
     $coordinates = @{
@@ -1457,12 +1821,9 @@ function Get-MovingLogoMuxArgs {
         Center      = @('(W-w)*0.5','(H-h)*0.5')
     }
 
-    $encArgs = switch ($VideoEncoder) {
-        'h264_nvenc' { @('-c:v','h264_nvenc','-preset','p4','-rc:v','vbr','-cq:v','19','-pix_fmt','yuv420p') }
-        'h264_qsv'   { @('-c:v','h264_qsv','-global_quality','20','-pix_fmt','yuv420p') }
-        'h264_amf'   { @('-c:v','h264_amf','-quality','speed','-rc','cqp','-qp_i','19','-qp_p','19','-pix_fmt','yuv420p') }
-        default      { @('-c:v','libx264','-crf','18','-preset','veryfast','-pix_fmt','yuv420p') }
-    }
+    $encArgs = Get-VideoEncoderArgs -Encoder $VideoEncoder
+    # Gioi han bang -t (thoi luong video that) thay vi -shortest de khong cat khung cuoi.
+    $limitArgs = if ($Duration -gt 0.5) { @('-t', $Duration.ToString('0.###', [cultureinfo]::InvariantCulture)) } else { @('-shortest') }
     $hasLogo = -not [string]::IsNullOrWhiteSpace($Logo)
     $hasGif  = -not [string]::IsNullOrWhiteSpace($Gif)
     $outputWidth = [Math]::Max(2, [int]([Math]::Ceiling($Width / 2.0) * 2))
@@ -1528,7 +1889,7 @@ function Get-MovingLogoMuxArgs {
         return @('-hide_banner','-loglevel','error','-y','-i',$Video,'-i',$Audio,
                  '-loop','1','-i',$Logo,'-stream_loop','-1','-i',$Gif,'-filter_complex',$filter,'-map','[v]','-map','1:a:0?') +
                  $encArgs +
-                 @('-c:a','copy','-shortest','-movflags','+faststart',$Output)
+                 @('-c:a','copy') + $limitArgs + @('-movflags','+faststart',$Output)
     } elseif ($hasGif) {
         $filter = "[0:v]pad=ceil(iw/2)*2:ceil(ih/2)*2[vbase];" +
                   "[2:v]format=rgba,scale=${gifScale}[gif];" +
@@ -1536,7 +1897,7 @@ function Get-MovingLogoMuxArgs {
         return @('-hide_banner','-loglevel','error','-y','-i',$Video,'-i',$Audio,
                  '-stream_loop','-1','-i',$Gif,'-filter_complex',$filter,'-map','[v]','-map','1:a:0?') +
                  $encArgs +
-                 @('-c:a','copy','-shortest','-movflags','+faststart',$Output)
+                 @('-c:a','copy') + $limitArgs + @('-movflags','+faststart',$Output)
     } elseif ($hasLogo) {
         $filter = "[0:v]pad=ceil(iw/2)*2:ceil(ih/2)*2[vbase];" +
                   "[2:v]format=rgba,scale=${logoScale},colorchannelmixer=aa=${alpha}[logo];" +
@@ -1544,13 +1905,13 @@ function Get-MovingLogoMuxArgs {
         return @('-hide_banner','-loglevel','error','-y','-i',$Video,'-i',$Audio,
                  '-loop','1','-i',$Logo,'-filter_complex',$filter,'-map','[v]','-map','1:a:0?') +
                  $encArgs +
-                 @('-c:a','copy','-shortest','-movflags','+faststart',$Output)
+                 @('-c:a','copy') + $limitArgs + @('-movflags','+faststart',$Output)
     } else {
         $filter = "[0:v]pad=ceil(iw/2)*2:ceil(ih/2)*2[v]"
         return @('-hide_banner','-loglevel','error','-y','-i',$Video,'-i',$Audio,
                  '-filter_complex',$filter,'-map','[v]','-map','1:a:0?') +
                  $encArgs +
-                 @('-c:a','copy','-shortest','-movflags','+faststart',$Output)
+                 @('-c:a','copy') + $limitArgs + @('-movflags','+faststart',$Output)
     }
 }
 
@@ -1607,24 +1968,24 @@ function Invoke-ReeditVideo {
                 -Width $sizeInfo.W -Height $sizeInfo.H -Fade $Fade -Size $Size -Motion $Motion -Position $Position `
                 -Gif $resolvedGif -GifSize $GifSize -GifFullFrame:$GifFullFrame -GifPosition $GifPosition `
                 -CustomWidth $CustomWidth -CustomHeight $CustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight `
-                -CustomX $CustomX -CustomY $CustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY -VideoEncoder $activeEncoder
+                -CustomX $CustomX -CustomY $CustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY -VideoEncoder $activeEncoder -Duration $duration
         } else {
-            $editArgs = @('-hide_banner','-loglevel','error','-y','-i',$source,'-i',$audio,'-map','0:v:0','-map','1:a:0?','-c','copy','-shortest','-movflags','+faststart',$staged)
+            $editArgs = @('-hide_banner','-loglevel','error','-y','-i',$source,'-i',$audio,'-map','0:v:0','-map','1:a:0?','-c','copy','-t',$duration.ToString('0.###',[cultureinfo]::InvariantCulture),'-movflags','+faststart',$staged)
         }
         Write-Note 'Sua tu video goc va audio da luu; khong tai video, khong thu am lai.'
         $result = Invoke-Exe $T.ffmpeg $editArgs -TimeoutMs (Get-ReelProcessTimeoutMs $duration)
         if ($result.Code -ne 0 -and $activeEncoder -ne 'libx264' -and ($resolvedLogo -or $resolvedGif)) {
-            Write-Warn2 "Hardware encoder ($activeEncoder) that bai, tu dong chuyen sang CPU libx264..."
+            Write-Warn2 "Hardware encoder ($activeEncoder) that bai ($(Get-FfmpegFailureSummary $result)), tu dong chuyen sang CPU libx264..."
             $script:optimalVideoEncoder = 'libx264'
             $editArgs = Get-MovingLogoMuxArgs -Video $source -Audio $audio -Logo $resolvedLogo -Output $staged `
                 -Width $sizeInfo.W -Height $sizeInfo.H -Fade $Fade -Size $Size -Motion $Motion -Position $Position `
                 -Gif $resolvedGif -GifSize $GifSize -GifFullFrame:$GifFullFrame -GifPosition $GifPosition `
                 -CustomWidth $CustomWidth -CustomHeight $CustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight `
-                -CustomX $CustomX -CustomY $CustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY -VideoEncoder 'libx264'
+                -CustomX $CustomX -CustomY $CustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY -VideoEncoder 'libx264' -Duration $duration
             $result = Invoke-Exe $T.ffmpeg $editArgs -TimeoutMs (Get-ReelProcessTimeoutMs $duration)
         }
         if ($result.Code -ne 0) { throw "Sua video that bai: $($result.Err)" }
-        if (-not (Test-ValidReelOutput $T $staged)) { throw 'Video sua khong qua kiem tra. Giu nguyen ban cu.' }
+        if (-not (Test-ValidReelOutput $T $staged -ReferenceVideo $source)) { throw 'Video sua khong qua kiem tra. Giu nguyen ban cu.' }
         Publish-ReelFiles -Dest $dest -Pairs @(@{Source=$staged;Destination=$final})
         Write-Host "REEDIT_OK: $final"
         Write-Host "Video : $final"
@@ -1637,7 +1998,7 @@ function Invoke-ReeditVideo {
 }
 
 function Test-ValidReelOutput {
-    param($T, [string]$File, [switch]$AllowSilent)
+    param($T, [string]$File, [switch]$AllowSilent, [string]$ReferenceVideo = '')
     if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { return $false }
     if ((Get-Item -LiteralPath $File).Length -le 0) { return $false }
     try {
@@ -1651,6 +2012,18 @@ function Test-ValidReelOutput {
         $value = [string]$data.format.duration
         $hasValidDuration = [double]::TryParse($value, [Globalization.NumberStyles]::Float, [cultureinfo]::InvariantCulture, [ref]$duration) -and -not [double]::IsNaN($duration) -and -not [double]::IsInfinity($duration) -and $duration -gt 0.5
         if (-not $hasValidDuration) { return $false }
+
+        # So do dai stream video voi file tham chieu (-1): lech > 0.10 s => khong hop le (mat khung cuoi).
+        if ($ReferenceVideo) {
+            if (-not (Test-Path -LiteralPath $ReferenceVideo -PathType Leaf)) { return $false }
+            $outVideoDur = Get-VideoDuration $T $File
+            $refVideoDur = Get-VideoDuration $T $ReferenceVideo
+            if ($outVideoDur -le 0.5 -or $refVideoDur -le 0.5) { return $false }
+            if ([Math]::Abs($outVideoDur - $refVideoDur) -gt 0.10) {
+                Write-Warn2 ("Do dai video khong khop: ban hoan chinh {0:0.000}s, video goc {1:0.000}s (lech > 0.10s)" -f $outVideoDur, $refVideoDur)
+                return $false
+            }
+        }
 
         # Kiem tra giai ma toan bo stream de loai bo file bi cat / thieu frame (M4)
         if ($T -and $T.ffmpeg) {
@@ -1738,11 +2111,9 @@ function Publish-ReelFiles {
 
 # ---------------------------------------------------------- xu ly 1 link ----
 function Stop-ReelForLanguage {
-    param([string]$VideoId, [string[]]$Urls, [string]$Dest, [string]$Reason)
-    # Persist first: a locked output must never cause this video to be downloaded again.
-    $null = Save-RejectedReel -Root $script:Here -VideoId $VideoId -Urls $Urls -Reason $Reason -Language '' -Probability 0
-    $cleanup = Remove-RejectedReelMedia -OutDir $Dest -VideoId $VideoId
-    if (-not $cleanup.Success) { Write-Warn2 ('REEL_CLEANUP_PENDING: '+($cleanup.Errors -join '; ')) }
+    param([string]$VideoId, [string[]]$Urls, [string]$Dest, [string]$Reason, [string]$Evidence = '')
+    # Luu lich su loai (kem bang chung). KHONG xoa file -1/-2/-3 da co trong thu muc xuat (hop dong GUI muc 4).
+    $null = Save-RejectedReel -Root $script:Here -VideoId $VideoId -Urls $Urls -Reason $Reason -Language '' -Probability 0 -Evidence $Evidence
     Write-Note ('REEL_REJECTED: id='+$VideoId+' reason='+$Reason)
 }
 
@@ -1750,35 +2121,68 @@ function Stop-KnownRejectedReel {
     param($Entry, [string]$Dest)
     $id = [string]$Entry.VideoId
     if ($id -notmatch '^\d+$') { throw 'Lich su loai co ID khong hop le.' }
-    # Older outputs can predate the rejection. Retry exact-ID cleanup even on a cache hit.
-    $cleanup = Remove-RejectedReelMedia -OutDir $Dest -VideoId $id
-    if (-not $cleanup.Success) { Write-Warn2 ('REEL_CLEANUP_PENDING: '+($cleanup.Errors -join '; ')) }
+    # Khong xoa file da co: nguoi dung quyet dinh (Bo loai & thu lai).
     Write-Note ('REEL_REJECTED: id='+$id+' reason=already-rejected')
+}
+
+# Doc khong chan stdout/stderr cua scrcpy theo tung dong (ReadLineAsync, tham do tu luong chinh)
+# de khong deadlock pipe va ghi moc "Recording started" (tRec) tinh bang giay tu luc process start.
+function Receive-ProcLines {
+    param($Pump)
+    foreach ($k in @('Out','Err')) {
+        $reader = if ($k -eq 'Out') { $Pump.Proc.StandardOutput } else { $Pump.Proc.StandardError }
+        while ($true) {
+            $task = $Pump.Tasks[$k]
+            if ($null -eq $task) {
+                if ($Pump.Eof[$k]) { break }
+                $task = $reader.ReadLineAsync()
+                $Pump.Tasks[$k] = $task
+            }
+            if (-not $task.IsCompleted) { break }
+            $Pump.Tasks[$k] = $null
+            if ($task.IsFaulted) { $Pump.Eof[$k] = $true; break }
+            $line = $task.Result
+            if ($null -eq $line) { $Pump.Eof[$k] = $true; break }
+            [void]$Pump.Text[$k].AppendLine($line)
+            if ($null -eq $Pump.TRec -and $line -match '(?i)recording started') { $Pump.TRec = $Pump.Sw.Elapsed.TotalSeconds }
+        }
+    }
 }
 
 function Invoke-OneLink {
     param($T, [string]$Url, [string]$Dest, [switch]$KeepFiles, [switch]$GifFullFrame,
           [double]$LogoCustomWidth = -1, [double]$LogoCustomHeight = -1,
-          [double]$GifCustomWidth = -1, [double]$GifCustomHeight = -1)
+          [double]$GifCustomWidth = -1, [double]$GifCustomHeight = -1,
+          [switch]$ForceRetryRejected)
 
+    # Ket qua may doc, phat dung 1 lan trong finally (hop dong GUI muc 1).
+    $res = [ordered]@{ v = 1; status = 'failed'; id = ''; url = $Url; video = ''; source = ''; audio = ''
+                       reason = 'unknown'; message = ''; t0 = $null; tOpen = $null; tRec = $null; gapFilledSec = $null; encoder = ''; durationSec = $null }
+    $inv = [cultureinfo]::InvariantCulture
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ("kidfby-" + [Guid]::NewGuid().ToString('N').Substring(0,8))
-    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
     $rejectedForLanguage = $false
+    $tOpen = $null
+    $encoderUsed = ''
     try {
+        New-Item -ItemType Directory -Path $tmp -Force | Out-Null
         # ---------- 3. tai video goc va do thoi luong ----------
         Write-Step 3 'Doc ID va thoi luong; chua tai video'
         $originalUrl = $Url
         $knownId = Get-FacebookVideoId -Url $Url
-        $knownRejection = Find-RejectedReel -Root $script:Here -VideoId $knownId -Url $Url
+        if ($ForceRetryRejected) { Write-Note 'FORCE_RETRY_REJECTED: bo qua lich su loai cho lan nay.' }
+        $knownRejection = if ($ForceRetryRejected) { $null } else { Find-RejectedReel -Root $script:Here -VideoId $knownId -Url $Url }
         if ($knownRejection) {
             $rejectedForLanguage = $true
+            $res.id = [string]$knownId
             Stop-KnownRejectedReel -Entry $knownRejection -Dest $Dest
+            Set-KidResultState $res 'rejected' 'already-rejected' 'Video da nam trong lich su loai.'
             return $null
         }
         if (Get-Command Get-FacebookInputLinks -CommandType Function -ErrorAction SilentlyContinue) {
             $cleanLinks = @(Get-FacebookInputLinks -Text $Url)
             if ($cleanLinks.Count -ne 1) {
                 Show-Fail -Message 'Can mot link video Facebook hop le cho moi tac vu.' -Fix @('Dan URL Facebook/share/Reel, khong dan nhieu link vao mot tac vu.')
+                Set-KidResultState $res 'failed' 'invalid-link' 'Can mot link video Facebook hop le cho moi tac vu.'
                 return $null
             }
             $Url = $cleanLinks[0]
@@ -1790,31 +2194,45 @@ function Invoke-OneLink {
         if ($vid) { $vid = $vid.Trim() }
         if ($idr.Code -ne 0 -or -not $vid) {
             Show-Fail -Message 'Chua doc duoc video tu link Facebook.' -Fix @('Xem loi yt-dlp ben duoi; neu video can dang nhap, rieng tu hoac bi gioi han thi thu link cong khai.', 'Neu bao Unsupported URL, tai lai yt-dlp tai tab cong cu.', $idr.Err)
+            Set-KidResultState $res 'failed' 'metadata-failed' 'Chua doc duoc video tu link Facebook (yt-dlp).'
             return $null
         }
+        if ($vid -match '^\d+$') { $res.id = [string]$vid }
         if (Get-Command Get-FacebookCanonicalVideoUrl -CommandType Function -ErrorAction SilentlyContinue) {
             $Url = Get-FacebookCanonicalVideoUrl -Url $Url -VideoId $vid
         }
 
-        $knownRejection = Find-RejectedReel -Root $script:Here -VideoId $vid -Url $originalUrl
+        $knownRejection = if ($ForceRetryRejected) { $null } else { Find-RejectedReel -Root $script:Here -VideoId $vid -Url $originalUrl }
         if ($knownRejection) {
             $rejectedForLanguage = $true
             Stop-KnownRejectedReel -Entry $knownRejection -Dest $Dest
+            Set-KidResultState $res 'rejected' 'already-rejected' 'Video da nam trong lich su loai.'
             return $null
         }
         if ($vid -notmatch '^\d+$') { throw 'Facebook returned an invalid video ID.' }
         $durationMetadata = Invoke-Exe $T.ytdlp @('--ignore-config','--no-playlist','--no-warnings','--skip-download','--print','%(duration)s',$Url) -TimeoutMs 120000
         $dur = 0.0
-        if ($durationMetadata.Code -ne 0 -or -not [double]::TryParse(([string]$durationMetadata.Out).Trim(),[Globalization.NumberStyles]::Float,[cultureinfo]::InvariantCulture,[ref]$dur) -or [double]::IsNaN($dur) -or [double]::IsInfinity($dur) -or $dur -le 0.5 -or $dur -gt 3600) { throw 'Khong doc duoc thoi luong Reel hop le; chua tai video.' }
+        if ($durationMetadata.Code -ne 0 -or -not [double]::TryParse(([string]$durationMetadata.Out).Trim(),[Globalization.NumberStyles]::Float,[cultureinfo]::InvariantCulture,[ref]$dur) -or [double]::IsNaN($dur) -or [double]::IsInfinity($dur) -or $dur -le 0.5 -or $dur -gt 3600) { Set-KidResultState $res 'failed' 'invalid-duration' 'Khong doc duoc thoi luong Reel hop le; chua tai video.'; throw 'Khong doc duoc thoi luong Reel hop le; chua tai video.' }
+        $res.durationSec = [Math]::Round($dur, 3)
 
         # ---------- 4. dam bao Facebook da bat tieng Viet ----------
         $dubbingUiStatus = Ensure-VietnameseDubbing -T $T -Url $Url
         if ($dubbingUiStatus -eq 'unavailable') {
             $rejectedForLanguage = $true
-            Stop-ReelForLanguage -VideoId $vid -Urls @($originalUrl,$Url) -Dest $Dest -Reason 'vietnamese-unavailable'
+            try {
+                Stop-ReelForLanguage -VideoId $vid -Urls @($originalUrl,$Url) -Dest $Dest -Reason 'vietnamese-unavailable' -Evidence ([string]$script:LastDubbingEvidence)
+            } catch {
+                Show-Fail -Message ('Khong luu duoc lich su loai: ' + $_.Exception.Message) -Fix @('Kiem tra file data\rejected-videos.json (khoa/hong).')
+                Set-KidResultState $res 'failed' 'history-save-failed' ('Khong luu duoc lich su loai: ' + $_.Exception.Message)
+                return $null
+            }
+            Set-KidResultState $res 'rejected' 'vietnamese-unavailable' 'Meta khong co ban long tieng Viet cho video nay.'
             return $null
         }
-        if ((Get-ReelLanguageDecision -DubbingStatus $dubbingUiStatus) -ne 'accept') { throw 'Chua xac minh duoc Tieng Viet dang duoc chon tren Reel. Dung truoc khi thu/tai; khong loai vinh vien khi giao dien chua ro.' }
+        if ((Get-ReelLanguageDecision -DubbingStatus $dubbingUiStatus) -ne 'accept') {
+            Set-KidResultState $res 'unverified' 'dub-unverified' 'Chua xac minh duoc Tieng Viet dang chon tren Reel; khong loai vinh vien.'
+            throw 'Chua xac minh duoc Tieng Viet dang duoc chon tren Reel. Dung truoc khi thu/tai; khong loai vinh vien khi giao dien chua ro.'
+        }
 
         Write-Note 'DUB_UI_ACCEPTED: Meta da xac nhan Tieng Viet dang chon; khong chay nhan dien ngon ngu audio.'
 
@@ -1856,34 +2274,48 @@ function Invoke-OneLink {
         $proc.StartInfo = $psi
         $procStarted = $false
         $procRegistry = $script:ProcessRegistry
-        $tO = $null; $tE = $null
         $captureOut = ''; $captureErr = ''; $captureCode = -1; $captureTimedOut = $false
+        $pump = $null
         try {
             [void]$proc.Start()
+            $swScrcpy = [Diagnostics.Stopwatch]::StartNew()
             $procStarted = $true
             if ($procRegistry) { $procRegistry[$proc.Id] = $proc }
-            $tO = $proc.StandardOutput.ReadToEndAsync()
-            $tE = $proc.StandardError.ReadToEndAsync()
+            $pump = @{ Proc = $proc; Sw = $swScrcpy; TRec = $null
+                       Tasks = @{ Out = $null; Err = $null }; Eof = @{ Out = $false; Err = $false }
+                       Text = @{ Out = (New-Object Text.StringBuilder); Err = (New-Object Text.StringBuilder) } }
 
-            # Cho 1.8 giay de scrcpy ket noi am thanh Android HAL
-            Start-Sleep -Milliseconds 1800
+            # Cho 1.8 giay de scrcpy ket noi am thanh Android HAL (van doc output de bat moc ghi am)
+            while ($swScrcpy.ElapsedMilliseconds -lt 1800) { Receive-ProcLines $pump; Start-Sleep -Milliseconds 40 }
 
             # Mo lai Reel sau khi recorder san sang; onset am thanh duoc uoc tinh o buoc sau
+            $tOpen = $swScrcpy.Elapsed.TotalSeconds
+            $res.tOpen = [Math]::Round($tOpen, 3)
+            Receive-ProcLines $pump
+            if ($null -ne $pump.TRec) { $res.tRec = [Math]::Round([double]$pump.TRec, 3) }
             $null = Open-Reel $T $Url
 
-            # Cho scrcpy thu am dung thoi han va tu dong dong file hoan chinh.
+            # Cho scrcpy thu am dung thoi han va tu dong dong file hoan chinh (van doc output, khong chan pipe).
             $captureWaitMs = [int][Math]::Min([int]::MaxValue, ([double]($recLen + 30) * 1000))
-            if (-not $proc.WaitForExit($captureWaitMs)) {
-                $captureTimedOut = $true
-                try { $proc.Kill() } catch { }
-                try { $null = $proc.WaitForExit(5000) } catch { }
+            $swWait = [Diagnostics.Stopwatch]::StartNew()
+            while (-not $proc.HasExited -and $swWait.ElapsedMilliseconds -lt $captureWaitMs) {
+                Receive-ProcLines $pump
+                Start-Sleep -Milliseconds 50
             }
-            try { $null = $tO.Wait(10000) } catch { }
-            try { $null = $tE.Wait(10000) } catch { }
-            if (-not $tO.IsCompleted) { try { $proc.StandardOutput.Close() } catch { }; try { $null = $tO.Wait(1000) } catch { } }
-            if (-not $tE.IsCompleted) { try { $proc.StandardError.Close() } catch { }; try { $null = $tE.Wait(1000) } catch { } }
-            if ($tO.IsCompleted -and -not $tO.IsFaulted) { $captureOut = $tO.Result }
-            if ($tE.IsCompleted -and -not $tE.IsFaulted) { $captureErr = $tE.Result }
+            if (-not $proc.HasExited) {
+                $captureTimedOut = $true
+                try { $proc.Kill() } catch { Write-Warn2 ('Khong dung duoc scrcpy: ' + $_.Exception.Message) }
+                try { $null = $proc.WaitForExit(5000) } catch { Write-Warn2 ('Cho scrcpy thoat loi: ' + $_.Exception.Message) }
+            }
+            $swDrain = [Diagnostics.Stopwatch]::StartNew()
+            while (($swDrain.ElapsedMilliseconds -lt 10000) -and -not ($pump.Eof.Out -and $pump.Eof.Err)) {
+                Receive-ProcLines $pump
+                Start-Sleep -Milliseconds 50
+            }
+            Receive-ProcLines $pump
+            if ($null -ne $pump.TRec -and $null -eq $res.tRec) { $res.tRec = [Math]::Round([double]$pump.TRec, 3) }
+            $captureOut = $pump.Text.Out.ToString()
+            $captureErr = $pump.Text.Err.ToString()
             if ($proc.HasExited -and -not $captureTimedOut) { $captureCode = $proc.ExitCode }
         } finally {
             if ($procStarted -and -not $proc.HasExited) {
@@ -1893,8 +2325,11 @@ function Invoke-OneLink {
             if ($procRegistry -and $procStarted) {
                 try { $procRegistry.Remove($proc.Id) } catch { }
             }
-            if ($tO -and -not $tO.IsCompleted) { try { $proc.StandardOutput.Close() } catch { }; try { $null = $tO.Wait(1000) } catch { } }
-            if ($tE -and -not $tE.IsCompleted) { try { $proc.StandardError.Close() } catch { }; try { $null = $tE.Wait(1000) } catch { } }
+            if ($procStarted) {
+                # Dong stream truoc Dispose de task ReadLineAsync dang treo khong giu handle.
+                try { $proc.StandardOutput.Close() } catch { Write-Warn2 ('Dong stdout scrcpy loi: ' + $_.Exception.Message) }
+                try { $proc.StandardError.Close() } catch { Write-Warn2 ('Dong stderr scrcpy loi: ' + $_.Exception.Message) }
+            }
             $proc.Dispose()
         }
 
@@ -1903,35 +2338,73 @@ function Invoke-OneLink {
 
         if ($captureTimedOut -or $captureCode -ne 0) {
             Show-Fail -Message 'Thu am that bai.' -Fix @('scrcpy bi qua thoi gian hoac ket thuc voi loi.', $captureErr, $captureOut)
+            Set-KidResultState $res 'failed' 'capture-failed' 'Thu am that bai: scrcpy qua thoi gian hoac ket thuc voi loi.'
             return $null
         }
         if (-not (Test-Path -LiteralPath $rec) -or (Get-Item -LiteralPath $rec).Length -lt 1000) {
             Show-Fail -Message 'Thu am that bai.' -Fix @('Kiem tra ket noi thiet bi.', $captureErr, $captureOut)
+            Set-KidResultState $res 'failed' 'capture-failed' 'Thu am that bai: file thu rong hoac khong ton tai.'
             return $null
         }
 
+        if ($KeepFiles) { Write-Note ('KEEP_RAW_CAPTURE: ' + $rec) }
+
+        # Chuan hoa mot lan: lap khoang trong pts bang im lang => truc mau = truc pts (dong ho that).
+        $recFixedPath = Join-Path $tmp 'rec-fixed.wav'
+        $fixedInfo = ConvertTo-FixedRecording -T $T -Rec $rec -Out $recFixedPath
+        if (-not $fixedInfo) {
+            Show-Fail -Message 'Chuan hoa ban thu (lap khoang trong pts) that bai.' -Fix @('Chay lai thu.')
+            Set-KidResultState $res 'failed' 'audio-failed' 'Chuan hoa ban thu that bai.'
+            return $null
+        }
+        $res.gapFilledSec = [Math]::Round([double]$fixedInfo.GapFilledSec, 3)
+        Write-Ok ([string]::Format($inv, 'Lap khoang trong pts: {0:0.000} s', [double]$fixedInfo.GapFilledSec))
+        if ($fixedInfo.Warning) { Write-Warn2 $fixedInfo.Warning }
+        if ($KeepFiles) { Write-Note ('KEEP_FIXED_CAPTURE: ' + $recFixedPath) }
+        $analysisFile = $recFixedPath
         # ---------- 6. do onset t0 va cat am thanh chuan ----------
         Write-Step 6 'Xac dinh diem khoi dau Giay 0 va cat am thanh'
-        $t0 = Get-AudioOnset -T $T -File $rec
-        Write-Ok ("Phat hien am thanh bat dau tai t0 = {0:0.000}s" -f $t0)
-
-        # Kiem tra thoi luong thuc te dam bao video da phat tron ven
-        $recDur = Get-Duration -T $T -File $rec
-        if (($recDur - $t0) -lt ($dur - 0.5)) {
-            Write-Warn2 ("Am thanh ghi duoc ({0:0.0}s) co the chua phat het video ({1:0.0}s)" -f ($recDur - $t0), $dur)
+        $tOpenValue = if ($null -ne $tOpen) { [double]$tOpen } else { 0.0 }
+        # Moc 0 cua file thu = luc recorder that su bat dau (tRec tinh tu luc scrcpy start); Reel mo tai ~ tOpen - tRec.
+        if ($null -ne $res.tRec) {
+            $tRecValue = [double]$res.tRec
+            $searchFrom = [Math]::Max(0.0, $tOpenValue - $tRecValue - 0.3)
         } else {
-            Write-Ok ("Kiem tra phat tron ven: thoi gian nghe thuc te {0:0.0}s >= {1:0.0}s" -f ($recDur - $t0), $dur)
+            $tRecValue = $null
+            $searchFrom = [Math]::Max(0.0, $tOpenValue - 1.5)
+            Write-Warn2 'Khong bat duoc dong "Recording started" cua scrcpy; dung SearchFrom du phong = tOpen - 1.5s.'
         }
+        $onsetInfo = Get-AudioOnsetInfo -T $T -File $analysisFile -SearchFrom $searchFrom
+        if ($null -eq $onsetInfo.Onset) {
+            Show-Fail -Message 'Khong xac dinh duoc diem bat dau tieng trong ban thu.' -Fix @(('Ly do: ' + [string]$onsetInfo.Reason), 'Kiem tra Reel co phat tieng khong, roi thu lai.')
+            Set-KidResultState $res 'unverified' 'no-onset' 'Khong xac dinh duoc diem bat dau tieng trong ban thu; khong xuat ban.'
+            return $null
+        }
+        $t0 = [double]$onsetInfo.Onset
+        $res.t0 = [Math]::Round($t0, 3)
+        Write-Ok ([string]::Format($inv, 't0 = {0:0.000}s (tOpen {1:0.000}s, tRec {2}, nen {3:0.0} dB, noi dung L {4:0.0} dB, nguong {5:0.0} dB)', $t0, $tOpenValue, $(if ($null -ne $tRecValue) { $tRecValue.ToString('0.000', $inv) + 's' } else { 'n/a' }), [double]$onsetInfo.NoiseFloorDb, [double]$onsetInfo.ContentDb, [double]$onsetInfo.ThresholdDb))
+
+        # Kiem tra thoi luong thuc te dam bao video da phat tron ven; thieu => khong xuat ban
+        $recDur = [double]$fixedInfo.FixedSec
+        if (($recDur - $t0) -lt ($dur - 0.5)) {
+            Show-Fail -Message ([string]::Format($inv, 'Ban thu qua ngan: nghe duoc {0:0.0}s nhung video dai {1:0.0}s.', ($recDur - $t0), $dur)) -Fix @('Facebook co the khoi dong cham hoac Reel bi ngat; thu lai.')
+            Set-KidResultState $res 'unverified' 'short-capture' 'Ban thu ngan hon video; khong xuat ban.'
+            return $null
+        }
+        Write-Ok ("Kiem tra phat tron ven: thoi gian nghe thuc te {0:0.0}s >= {1:0.0}s" -f ($recDur - $t0), $dur)
 
         $durStr = $dur.ToString([cultureinfo]::InvariantCulture)
         $t0Str  = $t0.ToString([cultureinfo]::InvariantCulture)
         $cut    = Join-Path $tmp 'dub.m4a'
 
         # Chuan hoa am luong loudnorm phat thanh (-16 LUFS, Peak -1.5)
-        $r1 = Invoke-Exe $T.ffmpeg @('-hide_banner','-nostats','-y','-ss',$t0Str,'-t',$durStr,'-i',$rec,'-vn',
-                                     '-af','loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json','-f','null','-') -TimeoutMs 300000
+        # Cat tren rec-fixed.wav (truc mau = truc pts, cung truc voi onset).
+        $sliceFilter = "atrim=start=${t0Str}:duration=${durStr},asetpts=PTS-STARTPTS"
+        $r1 = Invoke-Exe $T.ffmpeg @('-hide_banner','-nostats','-y','-i',$analysisFile,'-vn',
+                                     '-af',($sliceFilter + ',loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json'),'-f','null','-') -TimeoutMs 300000
         if ($r1.Code -ne 0) {
             Show-Fail -Message 'Phan tich am thanh that bai.' -Fix @($r1.Err)
+            Set-KidResultState $res 'failed' 'audio-failed' 'Phan tich am thanh that bai.'
             return $null
         }
         $mj = [regex]::Match($r1.Err, '\{[^{}]*"input_i"[\s\S]*?\}')
@@ -1946,36 +2419,58 @@ function Invoke-OneLink {
             } catch { }
         }
 
-        $cutResult = Invoke-Exe $T.ffmpeg @('-hide_banner','-loglevel','error','-y','-ss',$t0Str,'-t',$durStr,'-i',$rec,'-vn',
-                                            '-af',$flt,'-c:a','aac','-b:a','192k',$cut) -TimeoutMs 300000
+        $cutResult = Invoke-Exe $T.ffmpeg @('-hide_banner','-loglevel','error','-y','-i',$analysisFile,'-vn',
+                                            '-af',($sliceFilter + ',' + $flt),'-c:a','aac','-b:a','192k',$cut) -TimeoutMs 300000
 
         if ($cutResult.Code -ne 0 -or -not (Test-Path -LiteralPath $cut -PathType Leaf) -or (Get-Item -LiteralPath $cut).Length -le 0) {
             Show-Fail -Message 'Cat am thanh that bai.' -Fix @('Chay lai thu.', $cutResult.Err)
+            Set-KidResultState $res 'failed' 'audio-failed' 'Cat am thanh that bai.'
             return $null
         }
 
         $cutMean = Get-MeanVolume -T $T -File $cut
         Write-Ok ("Am thanh da cat va chuan hoa xong ({0:0.0}s, muc am {1} dB)" -f $dur, $cutMean)
+        if ($null -eq $cutMean -or $cutMean -lt -50.0) {
+            Show-Fail -Message 'Ban thu gan nhu im lang; khong xuat ban.' -Fix @('Reel co the khong phat tieng (mang cham, hop thoai, chua dang nhap); thu lai.')
+            Set-KidResultState $res 'unverified' 'silent-capture' 'Ban thu im lang hoac khong doc duoc muc am; khong xuat ban.'
+            return $null
+        }
 
         Write-Ok 'Da chap nhan lua chon Tieng Viet tu UI Meta; bat dau tai phan hinh HD.'
 
         # Uu tien do phan giai, fps, bitrate trong cac dinh dang yt-dlp doc duoc
-        $dlr = Invoke-Exe $T.ytdlp @('--ignore-config','--no-playlist','-S','res,fps,br','-f','bestvideo/best','--no-warnings','-o',"$tmp\v.%(ext)s",$Url) -TimeoutMs 600000
-        $vf = Get-ChildItem -LiteralPath $tmp -File -ErrorAction SilentlyContinue | Where-Object {
-            $_.Name -like 'v.*' -and $_.Name -notmatch '\.(part|ytdl|tmp)$' -and $_.Extension.ToLowerInvariant() -notin @('.part','.ytdl','.tmp')
-        } | Select-Object -First 1
+        # Loi tai video: thu lai toi da 2 lan, cach 3 s va 8 s.
+        $retryDelays = @(3, 8)
+        $dlr = $null; $vf = $null
+        for ($dlAttempt = 0; $dlAttempt -le $retryDelays.Count; $dlAttempt++) {
+            if ($dlAttempt -gt 0) {
+                Write-Warn2 ("Tai video loi (ma {0}); thu lai lan {1}/{2} sau {3} giay..." -f $dlr.Code, $dlAttempt, $retryDelays.Count, $retryDelays[$dlAttempt - 1])
+                Start-Sleep -Seconds $retryDelays[$dlAttempt - 1]
+            }
+            $dlr = Invoke-Exe $T.ytdlp @('--ignore-config','--no-playlist','-S','res,fps,br','-f','bestvideo/best','--no-warnings','-o',"$tmp\v.%(ext)s",$Url) -TimeoutMs 600000
+            $vf = Get-ChildItem -LiteralPath $tmp -File -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -like 'v.*' -and $_.Name -notmatch '\.(part|ytdl|tmp)$' -and $_.Extension.ToLowerInvariant() -notin @('.part','.ytdl','.tmp')
+            } | Select-Object -First 1
+            if ($dlr.Code -eq 0 -and $vf) { break }
+        }
         if ($dlr.Code -ne 0 -or -not $vf) {
             Show-Fail -Message 'Tai video that bai.' -Fix @('Kiem tra mang.','Video co the da bi xoa hoac rieng tu.', $dlr.Err)
+            Set-KidResultState $res 'failed' 'download-failed' 'Tai video that bai sau 3 lan thu.'
             return $null
         }
 
         $actualDuration = Get-VideoDuration $T $vf.FullName
         if ($actualDuration -le 0.5) {
             Show-Fail -Message "Do dai video bat thuong ($actualDuration giay)." -Fix @('Chay lai thu.')
+            Set-KidResultState $res 'failed' 'invalid-duration' 'Do dai video tai ve bat thuong.'
             return $null
         }
-        if ([Math]::Abs($actualDuration - $dur) -gt 0.5) { throw 'Video duration changed after language capture; no output was published.' }
+        if ([Math]::Abs($actualDuration - $dur) -gt 0.5) {
+            Set-KidResultState $res 'failed' 'duration-mismatch' 'Do dai video doi sau khi thu am; khong xuat ban.'
+            throw 'Video duration changed after language capture; no output was published.'
+        }
         $dur = $actualDuration
+        $res.durationSec = [Math]::Round($dur, 3)
         $sz = Get-VideoSize $T $vf.FullName
         $cv = Get-VideoCodec -T $T -File $vf.FullName
         Write-Ok "$($sz.W)x$($sz.H)  $cv  |  $([Math]::Round($dur, 2)) giay  |  $([Math]::Round($vf.Length/1MB, 1)) MB"
@@ -1990,16 +2485,19 @@ function Invoke-OneLink {
         $finalOut = Join-Path $Dest "$vid-3-hoan-chinh.mp4"
 
         # Chuyen AV1/VP9 sang H.264 yuv420p de tang kha nang tuong thich trinh phat
+        $muxDur = [Math]::Ceiling($dur * 1000.0) / 1000.0
         $vCodecOpt = if ($cv -match 'av1|av01|vp9|vp09') {
             Write-Note "Phat hien codec $cv (chuyen ma H.264 tuong thich Player/CapCut/Premiere, giu nguyen do phan giai $($sz.W)x$($sz.H))..."
-            @('-c:v', 'libx264', '-crf', '18', '-preset', 'veryfast', '-pix_fmt', 'yuv420p')
+            $encoderUsed = 'libx264'
+            Get-VideoEncoderArgs -Encoder 'libx264'
         } else {
+            $encoderUsed = 'copy'
             @('-c:v', 'copy')
         }
 
-        # Ghep video goc + audio long tieng
+        # Ghep video goc + audio long tieng; gioi han bang -t (thoi luong video that), khong dung -shortest.
         $muxArgs = @('-hide_banner','-loglevel','error','-y','-i',$vf.FullName,'-i',$cut,
-                     '-map','0:v:0','-map','1:a:0') + $vCodecOpt + @('-c:a','copy','-shortest','-movflags','+faststart',$out)
+                     '-map','0:v:0','-map','1:a:0') + $vCodecOpt + @('-c:a','copy','-t',$muxDur.ToString('0.###',$inv),'-movflags','+faststart',$out)
 
         $resolvedLogo = ''
         $resolvedGif  = ''
@@ -2017,42 +2515,48 @@ function Invoke-OneLink {
         }
         $chosenEncoder = if (Get-Command "Get-OptimalVideoEncoder" -ErrorAction SilentlyContinue) { Get-OptimalVideoEncoder -T $T } else { "libx264" }
         if ($resolvedLogo -or $resolvedGif) {
+            $encoderUsed = $chosenEncoder
             $muxArgs = Get-MovingLogoMuxArgs -Video $vf.FullName -Audio $cut -Logo $resolvedLogo -Output $out `
                 -Width $sz.W -Height $sz.H -Fade $LogoFade -Size $LogoSize -Motion $LogoMotion -Position $LogoPosition `
                 -Gif $resolvedGif -GifSize $GifSize -GifFullFrame:$GifFullFrame -GifPosition $GifPosition `
                 -CustomWidth $LogoCustomWidth -CustomHeight $LogoCustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight `
-                -CustomX $LogoCustomX -CustomY $LogoCustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY -VideoEncoder $chosenEncoder
+                -CustomX $LogoCustomX -CustomY $LogoCustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY -VideoEncoder $chosenEncoder -Duration $muxDur
         }
         $muxResult = Invoke-Exe $T.ffmpeg $muxArgs -TimeoutMs (Get-ReelProcessTimeoutMs $dur)
         if ($muxResult.Code -ne 0 -and $chosenEncoder -ne 'libx264' -and ($resolvedLogo -or $resolvedGif)) {
-            Write-Warn2 "Hardware encoder ($chosenEncoder) that bai, tu dong chuyen sang CPU libx264..."
+            Write-Warn2 "Hardware encoder ($chosenEncoder) that bai ($(Get-FfmpegFailureSummary $muxResult)), tu dong chuyen sang CPU libx264..."
             $script:optimalVideoEncoder = 'libx264'
+            $encoderUsed = 'libx264'
             $muxArgs = Get-MovingLogoMuxArgs -Video $vf.FullName -Audio $cut -Logo $resolvedLogo -Output $out `
                 -Width $sz.W -Height $sz.H -Fade $LogoFade -Size $LogoSize -Motion $LogoMotion -Position $LogoPosition `
                 -Gif $resolvedGif -GifSize $GifSize -GifFullFrame:$GifFullFrame -GifPosition $GifPosition `
                 -CustomWidth $LogoCustomWidth -CustomHeight $LogoCustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight `
-                -CustomX $LogoCustomX -CustomY $LogoCustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY -VideoEncoder 'libx264'
+                -CustomX $LogoCustomX -CustomY $LogoCustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY -VideoEncoder 'libx264' -Duration $muxDur
             $muxResult = Invoke-Exe $T.ffmpeg $muxArgs -TimeoutMs (Get-ReelProcessTimeoutMs $dur)
         }
         if ($muxResult.Code -ne 0 -or -not (Test-Path -LiteralPath $out -PathType Leaf) -or (Get-Item -LiteralPath $out).Length -le 0) {
             Show-Fail -Message 'Ghep video that bai.' -Fix @('Chay lai thu.', $muxResult.Err)
-            return $null
-        }
-        if (-not (Test-ValidReelOutput -T $T -File $out)) {
-            Show-Fail -Message 'File da ghep nhung khong qua kiem tra dau ra.' -Fix @('FFmpeg da ket thuc thanh cong; ffprobe can doc du stream video/audio va thoi luong hop le.','Kiem tra lai ffprobe hoac giu file tam bang -Keep de doi chieu.')
+            Set-KidResultState $res 'failed' 'mux-failed' 'Ghep video that bai.'
             return $null
         }
 
-        # Luu video goc khong tieng va file am thanh da tach
+        # Luu video goc khong tieng (-1) truoc de so do dai voi ban hoan chinh (-3)
         $gocArgs = @('-hide_banner','-loglevel','error','-y','-i',$vf.FullName,'-map','0:v:0','-an') + $vCodecOpt + @($fGoc)
         $gocResult = Invoke-Exe $T.ffmpeg $gocArgs -TimeoutMs (Get-ReelProcessTimeoutMs $dur)
         if ($gocResult.Code -ne 0 -or -not (Test-Path -LiteralPath $fGoc -PathType Leaf) -or (Get-Item -LiteralPath $fGoc).Length -le 0) {
             Show-Fail -Message 'Xuat video goc that bai.' -Fix @($gocResult.Err)
+            Set-KidResultState $res 'failed' 'mux-failed' 'Xuat video goc that bai.'
+            return $null
+        }
+        if (-not (Test-ValidReelOutput -T $T -File $out -ReferenceVideo $fGoc)) {
+            Show-Fail -Message 'File da ghep nhung khong qua kiem tra dau ra.' -Fix @('FFmpeg da ket thuc thanh cong; ffprobe can doc du stream video/audio, thoi luong hop le va do dai video khop video goc (lech <= 0.10s).','Kiem tra lai ffprobe hoac giu file tam bang -Keep de doi chieu.')
+            Set-KidResultState $res 'failed' 'invalid-output' 'File hoan chinh khong qua kiem tra dau ra (hoac do dai khong khop video goc).'
             return $null
         }
         Copy-Item -LiteralPath $cut -Destination $fAm -Force -ErrorAction Stop
         if (-not (Test-Path -LiteralPath $fAm -PathType Leaf) -or (Get-Item -LiteralPath $fAm).Length -le 0) {
             Show-Fail -Message 'Luu am thanh that bai.' -Fix @('Chay lai thu.')
+            Set-KidResultState $res 'failed' 'publish-failed' 'Luu am thanh that bai.'
             return $null
         }
         Publish-ReelFiles -Dest $Dest -Pairs @(
@@ -2060,6 +2564,19 @@ function Invoke-OneLink {
             @{ Source = $fAm; Destination = $finalAm },
             @{ Source = $out; Destination = $finalOut }
         )
+
+        $res.id = [string]$vid
+        $res.video = $finalOut; $res.source = $finalGoc; $res.audio = $finalAm
+        $res.encoder = $encoderUsed
+        $res.durationSec = [Math]::Round($dur, 3)
+        Set-KidResultState $res 'ok' 'ok' 'Hoan tat.'
+        if ($ForceRetryRejected -and (Get-Command Remove-RejectedReel -CommandType Function -ErrorAction SilentlyContinue)) {
+            try {
+                if (Remove-RejectedReel -Root $script:Here -VideoId $vid) { Write-Note ('REEL_REJECTED_CLEARED: id=' + $vid) }
+            } catch {
+                Write-Warn2 ('Khong go duoc muc loai sau khi thanh cong: ' + $_.Exception.Message)
+            }
+        }
 
         Write-Host ''
         Write-Host '  XONG  ' -ForegroundColor White -BackgroundColor DarkGreen
@@ -2071,7 +2588,21 @@ function Invoke-OneLink {
         Write-Host ''
         return [pscustomobject]@{ File = $finalOut; Duration = $dur; DubbingUiStatus = $dubbingUiStatus }
     }
+    catch {
+        $stopRequested = $false
+        for ($ex = $_.Exception; $null -ne $ex; $ex = $ex.InnerException) {
+            if ($ex -is [System.Management.Automation.PipelineStoppedException]) { $stopRequested = $true }
+        }
+        if ($res.reason -eq 'unknown') {
+            if ($stopRequested) { Set-KidResultState $res 'cancelled' 'stopped' 'Bi dung boi nguoi dung.' }
+            else { Set-KidResultState $res 'failed' 'exception' ([string]$_.Exception.Message) }
+        }
+        throw
+    }
     finally {
+        # Chua co ly do nao ma khoi finally van chay => tien trinh bi dung giua chung.
+        if ($res.reason -eq 'unknown') { Set-KidResultState $res 'cancelled' 'stopped' 'Bi dung boi nguoi dung.' }
+        Write-KidResult -Result $res
         if ($rejectedForLanguage -or -not $KeepFiles) {
             $fullTmp = [IO.Path]::GetFullPath($tmp)
             $tempBoundary = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'
@@ -2133,16 +2664,16 @@ if ($WatermarkVideo) {
             -Width $size.W -Height $size.H -Fade $LogoFade -Size $LogoSize -Motion $LogoMotion -Position $LogoPosition `
             -Gif $resolvedGif -GifSize $GifSize -GifFullFrame:$GifFullFrame -GifPosition $GifPosition `
             -CustomX $LogoCustomX -CustomY $LogoCustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY `
-            -CustomWidth $LogoCustomWidth -CustomHeight $LogoCustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight -VideoEncoder $chosenEncoder
+            -CustomWidth $LogoCustomWidth -CustomHeight $LogoCustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight -VideoEncoder $chosenEncoder -Duration $duration
         $result = Invoke-Exe $logoTools.ffmpeg $logoArgs -TimeoutMs (Get-ReelProcessTimeoutMs $duration)
         if ($result.Code -ne 0 -and $chosenEncoder -ne 'libx264') {
-            Write-Warn2 "Hardware encoder ($chosenEncoder) that bai, tu dong chuyen sang CPU libx264..."
+            Write-Warn2 "Hardware encoder ($chosenEncoder) that bai ($(Get-FfmpegFailureSummary $result)), tu dong chuyen sang CPU libx264..."
             $script:optimalVideoEncoder = 'libx264'
             $logoArgs = Get-MovingLogoMuxArgs -Video $sourceVideo -Audio $sourceVideo -Logo $resolvedLogo -Output $stagedVideo `
                 -Width $size.W -Height $size.H -Fade $LogoFade -Size $LogoSize -Motion $LogoMotion -Position $LogoPosition `
                 -Gif $resolvedGif -GifSize $GifSize -GifFullFrame:$GifFullFrame -GifPosition $GifPosition `
                 -CustomX $LogoCustomX -CustomY $LogoCustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY `
-                -CustomWidth $LogoCustomWidth -CustomHeight $LogoCustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight -VideoEncoder 'libx264'
+                -CustomWidth $LogoCustomWidth -CustomHeight $LogoCustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight -VideoEncoder 'libx264' -Duration $duration
             $result = Invoke-Exe $logoTools.ffmpeg $logoArgs -TimeoutMs (Get-ReelProcessTimeoutMs $duration)
         }
         if ($result.Code -ne 0) { throw "Chen logo that bai: $($result.Err)" }
@@ -2233,6 +2764,33 @@ if ($Watermark) {
 $tools = Test-Ready
 if (-not $tools) { return }
 
+# yt-dlp: kiem tra cap nhat toi da 14 ngay/lan. Moc luu o data\ytdlp-update-check.txt (ISO UTC); chi ghi khi -U thanh cong.
+try {
+    $ytMarker = Join-Path $script:Here 'data\ytdlp-update-check.txt'
+    $needUpdate = $true
+    if (Test-Path -LiteralPath $ytMarker -PathType Leaf) {
+        $markerText = ([IO.File]::ReadAllText($ytMarker)).Trim()
+        $markerTime = [datetime]::MinValue
+        if ([datetime]::TryParse($markerText, [cultureinfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$markerTime)) {
+            if (((Get-Date).ToUniversalTime() - $markerTime.ToUniversalTime()).TotalDays -le 14) { $needUpdate = $false }
+        }
+    }
+    if ($needUpdate -and $tools.ytdlp) {
+        Write-Note 'Kiem tra cap nhat yt-dlp (yt-dlp -U, toi da 45 giay)...'
+        $upd = Invoke-Exe $tools.ytdlp @('-U') -TimeoutMs 45000
+        $updText = (([string]$upd.Out + ' ' + [string]$upd.Err) -replace '\s+', ' ').Trim()
+        if ($updText.Length -gt 300) { $updText = $updText.Substring(0,300) }
+        if ($upd.Code -eq 0) {
+            Write-Note "yt-dlp -U: $updText"
+            [void][IO.Directory]::CreateDirectory((Split-Path $ytMarker -Parent))
+            [IO.File]::WriteAllText($ytMarker, (Get-Date).ToUniversalTime().ToString('o'), [Text.UTF8Encoding]::new($false))
+        } else {
+            Write-Warn2 "yt-dlp -U that bai (ma $($upd.Code)): $updText"
+        }
+    }
+} catch {
+    Write-Warn2 ('Khong kiem tra/cap nhat duoc yt-dlp: ' + $_.Exception.Message)
+}
 Write-Host ''
 Write-Note "Se xu ly $($links.Count) video. Luu vao: $OutDir"
 Write-Note 'De man hinh thiet bi SANG va DA MO KHOA suot qua trinh.'
@@ -2248,7 +2806,8 @@ foreach ($raw in $links) {
     }
     $kq = $null
     try { $kq = Invoke-OneLink -T $tools -Url $u -Dest $OutDir -KeepFiles:$Keep -GifFullFrame:$GifFullFrame `
-        -LogoCustomWidth $LogoCustomWidth -LogoCustomHeight $LogoCustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight }
+        -LogoCustomWidth $LogoCustomWidth -LogoCustomHeight $LogoCustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight `
+        -ForceRetryRejected:$ForceRetryRejected }
     catch { Show-Fail -Message "Loi: $($_.Exception.Message)" -Fix @('Chay lai thu.') }
     if ($kq) { $xong++ } else { $loi++ }
 }

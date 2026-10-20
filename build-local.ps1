@@ -44,7 +44,11 @@ try{
     $assemblyText='using System.Reflection;' + "`r`n" +
         '[assembly: AssemblyVersion("' + $buildVersion + '.0")]' + "`r`n" +
         '[assembly: AssemblyFileVersion("' + $buildVersion + '.0")]' + "`r`n" +
-        '[assembly: AssemblyInformationalVersion("' + $buildVersion + '")]' + "`r`n"
+        '[assembly: AssemblyInformationalVersion("' + $buildVersion + '")]' + "`r`n" +
+        '[assembly: AssemblyCompany("Kid FB.Y")]' + "`r`n" +
+        '[assembly: AssemblyProduct("Kid FB.Y")]' + "`r`n" +
+        '[assembly: AssemblyTitle("Kid FB.Y")]' + "`r`n" +
+        '[assembly: AssemblyCopyright("' + [char]0x00A9 + ' 2026 Kid FB.Y")]' + "`r`n"
     [IO.File]::WriteAllText($assemblyInfo,$assemblyText,[Text.UTF8Encoding]::new($true))
     Push-Location -LiteralPath $Root
     $locationPushed=$true
@@ -84,6 +88,8 @@ try {
     $buildInfo.UseShellExecute=$false
     $buildInfo.CreateNoWindow=$true
     $buildInfo.WindowStyle=[Diagnostics.ProcessWindowStyle]::Hidden
+    # Build check must not collide with a Kid FB.Y the developer already has open.
+    $buildInfo.EnvironmentVariables['KID_FBY_ALLOW_MULTI']='1'
     $buildProcess=[Diagnostics.Process]::Start($buildInfo)
     if (-not $buildProcess.WaitForExit(30000)) {
         & taskkill.exe /F /T /PID $buildProcess.Id | Out-Null

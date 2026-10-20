@@ -9,7 +9,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Version,
     [string[]]$Note = @(),
     [switch]$Mandatory,
-    [switch]$NoPush
+    [switch]$NoPush,
+    [string]$SigningKeyPath = ''
 )
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
@@ -25,6 +26,20 @@ $verFile = Join-Path $root 'core\version.txt'
 $old = if (Test-Path -LiteralPath $verFile) { (Get-Content -LiteralPath $verFile -Raw).Trim() } else { '0.0.0' }
 if ([version]$Version -le [version]$old) {
     throw "Version moi ($Version) phai lon hon version hien tai ($old)"
+}
+
+# Khoa ky manifest (RSA-SHA256). Khoa rieng nam NGOAI repo; thieu khoa -> dung truoc khi doi bat cu thu gi.
+if (-not $SigningKeyPath) { $SigningKeyPath = Join-Path $env:USERPROFILE '.kidfby\update-signing-private.xml' }
+if (-not (Test-Path -LiteralPath $SigningKeyPath -PathType Leaf)) {
+    throw "Thieu khoa ky manifest: $SigningKeyPath. Chay .\new-signing-key.ps1 de tao (va dan khoa cong khai vao core\updater.ps1). Dung phat hanh."
+}
+$signingFull = [IO.Path]::GetFullPath($SigningKeyPath)
+if ($signingFull.StartsWith(([IO.Path]::GetFullPath($root).TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Khoa rieng nam trong repo ($signingFull). Chuyen ra ngoai repo roi chay lai."
+}
+
+if ([System.IO.File]::ReadAllText((Join-Path $root 'core\updater.ps1')) -match 'PUBLIC_KEY_PLACEHOLDER') {
+    throw 'core\updater.ps1 van la placeholder khoa ky: ban phat hanh se lam khach mat tu cap nhat. Chay .\new-signing-key.ps1, dan chuoi khoa cong khai vao $UpdatePublicKeyXml trong core\updater.ps1, roi phat hanh lai (ke ca -NoPush).'
 }
 
 Write-Host "=== PHAT HANH PHIEN BAN MOI: v$Version (hien tai: v$old) ===" -ForegroundColor Cyan
@@ -99,14 +114,44 @@ $coreFiles = @($coreFiles) + @([ordered]@{
 $man = [ordered]@{
     version     = $Version
     releasedAt  = (Get-Date).ToString('yyyy-MM-dd HH:mm')
-    # Compatibility metadata only; the current updater does not enforce minLauncher.
+    # updater.ps1 tu choi cap nhat tu dong neu Kid-FB.Y.exe hien tai thap hon minLauncher.
     minLauncher = '1.0.0'
     mandatory   = [bool]$Mandatory
     changelog   = @($Note)
     files       = @($coreFiles)
 }
-[System.IO.File]::WriteAllText((Join-Path $root 'version.json'), ($man | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+# LF-only, khong BOM: git (text=auto) khong doi byte, nen chu ky van dung tren ban raw.githubusercontent.
+$manJson = (($man | ConvertTo-Json -Depth 5) -replace "`r`n", "`n")
+$manPath = Join-Path $root 'version.json'
+[System.IO.File]::WriteAllText($manPath, $manJson, (New-Object System.Text.UTF8Encoding($false)))
 Write-Host "    -> Da tao version.json ($(@($coreFiles).Count) file)" -ForegroundColor Green
+
+# Ky DUNG byte cua version.json -> version.json.sig (Base64, RSA-SHA256, PKCS#1 v1.5)
+Write-Host "[5b/6] Dang ky manifest..." -ForegroundColor Yellow
+$rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider
+try {
+    $rsa.PersistKeyInCsp = $false
+    $rsa.FromXmlString([System.IO.File]::ReadAllText($signingFull))
+    if ($rsa.PublicOnly) { throw 'File khoa khong chua khoa rieng.' }
+    $manBytes = [System.IO.File]::ReadAllBytes($manPath)
+    $sigBytes = $rsa.SignData($manBytes, 'SHA256')
+    $pubXml = $rsa.ToXmlString($false)
+    if (-not $rsa.VerifyData($manBytes, 'SHA256', $sigBytes)) { throw 'Tu kiem chu ky that bai.' }
+} finally { $rsa.Dispose() }
+$sigPath = Join-Path $root 'version.json.sig'
+[System.IO.File]::WriteAllText($sigPath, [Convert]::ToBase64String($sigBytes), (New-Object System.Text.ASCIIEncoding))
+Write-Host "    -> Da tao version.json.sig" -ForegroundColor Green
+
+# Khoa cong khai nhung trong updater.ps1 phai khop khoa ky, neu khong khach se tu choi moi ban cap nhat.
+$updaterText = [System.IO.File]::ReadAllText((Join-Path $root 'core\updater.ps1'))
+if ($updaterText -match 'PUBLIC_KEY_PLACEHOLDER') {
+    throw 'core\updater.ps1 van la placeholder khoa ky: ban phat hanh se lam khach mat tu cap nhat. Chay .\new-signing-key.ps1, dan chuoi khoa cong khai vao $UpdatePublicKeyXml trong core\updater.ps1, roi phat hanh lai (ke ca -NoPush).'
+} else {
+    $modulusOf = { param($t) if ($t -match '<Modulus>([^<]+)</Modulus>') { $matches[1] } else { '' } }
+    if ((& $modulusOf $updaterText) -ne (& $modulusOf $pubXml)) {
+        throw 'Khoa cong khai trong core\updater.ps1 KHONG khop khoa ky dang dung. Dung phat hanh.'
+    }
+}
 
 if ($NoPush) {
     Write-Host "`n[HOAN TAT] Che do -NoPush: Da tao san ban v$Version tren may. Khong push len Git." -ForegroundColor Cyan
@@ -119,12 +164,14 @@ if (-not $remoteUrl) {
     Write-Host "`n! Luu y quan trong:" -ForegroundColor Yellow
     Write-Host "  Chua co remote GitHub origin de push. Hay tao repo tren GitHub roi chay lenh sau tren may:" -ForegroundColor White
     Write-Host "    git remote add origin https://github.com/<tai-khoan>/<ten-repo>.git" -ForegroundColor Cyan
-    Write-Host "    git add -A" -ForegroundColor Cyan
+    Write-Host "    git add -A   (gom ca version.json va version.json.sig)" -ForegroundColor Cyan
     Write-Host "    git commit -m `"Phat hanh ban v$Version`"" -ForegroundColor Cyan
     Write-Host "    git push -u origin main`n" -ForegroundColor Cyan
     return
 }
 
+& git add -- version.json version.json.sig
+if ($LASTEXITCODE -ne 0) { throw 'git add version.json/version.json.sig that bai. Chua phat hanh.' }
 & git add -A
 if ($LASTEXITCODE -ne 0) { throw 'git add that bai. Chua phat hanh.' }
 $commitMsg = if ($Note -and $Note.Count -gt 0) { "v$Version - $($Note -join '; ')" } else { "Release v$Version" }

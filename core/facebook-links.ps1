@@ -1,4 +1,38 @@
-﻿function Get-FacebookInputLinks {
+﻿# Chuan hoa URL Facebook truoc khi dedupe: host m./mbasic./web./mobile./touch. -> www., https,
+# bo "/" cuoi, bo fragment va tham so theo doi (giu v, story_fbid, id va tham so khac).
+function ConvertTo-FacebookNormalizedUrl {
+    param([string]$Url)
+    if ([string]::IsNullOrWhiteSpace($Url)) { return $Url }
+    $uri = $null
+    if (-not [Uri]::TryCreate($Url.Trim(), [UriKind]::Absolute, [ref]$uri)) { return $Url }
+    if ($uri.Scheme -ne 'http' -and $uri.Scheme -ne 'https') { return $Url }
+    $hostName = $uri.Host.ToLowerInvariant()
+    if ($hostName -eq 'fb.watch' -or $hostName -eq 'www.fb.watch') {
+        $newHost = $hostName
+    } elseif ($hostName -eq 'facebook.com' -or $hostName -match '^(?:www|m|mbasic|web|mobile|touch)\.facebook\.com$') {
+        $newHost = 'www.facebook.com'
+    } elseif ($hostName.EndsWith('.facebook.com', [StringComparison]::Ordinal)) {
+        $newHost = $hostName
+    } else {
+        return $Url
+    }
+    $path = $uri.AbsolutePath
+    if ($path.Length -gt 1) { $path = $path.TrimEnd('/') }
+    if ([string]::IsNullOrEmpty($path)) { $path = '/' }
+    $trackingNames = @('mibextid','rdid','share_url','__tn__','sfnsn','s','fs','ref')
+    $kept = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($pair in ($uri.Query.TrimStart('?') -split '&')) {
+        if ([string]::IsNullOrEmpty($pair)) { continue }
+        $name = [Uri]::UnescapeDataString(($pair -split '=', 2)[0]).ToLowerInvariant()
+        if ($trackingNames -contains $name -or $name.StartsWith('__cft__', [StringComparison]::Ordinal)) { continue }
+        $kept.Add($pair)
+    }
+    $port = if ($uri.IsDefaultPort) { '' } else { ':' + $uri.Port }
+    $result = 'https://' + $newHost + $port + $path
+    if ($kept.Count -gt 0) { $result += '?' + ($kept -join '&') }
+    return $result
+}
+function Get-FacebookInputLinks {
     param([string]$Text, [switch]$KeepDuplicates)
 
     if ([string]::IsNullOrEmpty($Text)) { return }
@@ -10,18 +44,18 @@
 
     $candidates = New-Object 'System.Collections.Generic.List[object]'
     $fullMatches = [regex]::Matches($Text, $fullPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    # Danh dau vung cua URL day du bang mang bool de tranh quet lap O(N*M).
+    $insideMask = New-Object 'bool[]' ($Text.Length + 1)
     foreach ($match in $fullMatches) {
         $candidates.Add([pscustomobject]@{ Index = $match.Index; Value = $match.Value; Bare = $false })
+        $maskEnd = [Math]::Min($Text.Length, $match.Index + $match.Length)
+        for ($mi = $match.Index; $mi -lt $maskEnd; $mi++) { $insideMask[$mi] = $true }
     }
     foreach ($match in [regex]::Matches($Text, $barePattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
         $value = $match.Value.TrimStart()
         if ($value.Length -eq 0) { continue }
         $index = $match.Index + ($match.Value.Length - $value.Length)
-        $insideFullUrl = $false
-        foreach ($fullMatch in $fullMatches) {
-            if ($index -ge $fullMatch.Index -and $index -lt ($fullMatch.Index + $fullMatch.Length)) { $insideFullUrl = $true; break }
-        }
-        if ($insideFullUrl) { continue }
+        if ($insideMask[$index]) { continue }
         # A match in the middle of a larger URL or host is never a bare Facebook link.
         if ($index -gt 0 -and $Text[$index - 1] -match '[A-Za-z0-9._/@?=&-]') { continue }
         $candidates.Add([pscustomobject]@{ Index = $index; Value = $value; Bare = ($value -notmatch '^https?://') })
@@ -40,6 +74,7 @@
         $trusted = ($hostName -eq 'facebook.com' -or $hostName.EndsWith('.facebook.com', [StringComparison]::Ordinal))
         if ($hostName -eq 'fb.watch' -or $hostName -eq 'www.fb.watch') { $trusted = $true }
         if (-not $trusted) { continue }
+        $url = ConvertTo-FacebookNormalizedUrl -Url $url
         if ($KeepDuplicates -or $seen.Add($url)) { $found.Add($url) }
     }
 
@@ -57,15 +92,19 @@ function Get-FacebookVideoId {
     if (-not ($hostName -eq 'facebook.com' -or $hostName.EndsWith('.facebook.com', [StringComparison]::Ordinal))) { return $null }
 
     $path = [Uri]::UnescapeDataString($uri.AbsolutePath)
-    if ($path -match '^/(?:reel|reels|videos)/(\d+)(?:/|$)' -or $path -match '^/[^/]+/videos/(\d+)(?:/|$)') {
+    if ($path -match '^/(?:reel|reels|videos)/(\d+)(?:/|$)' -or $path -match '^/[^/]+/videos/(\d+)(?:/|$)' -or $path -match '^/[^/]+/videos/[^/]+/(\d+)(?:/|$)') {
         return $matches[1]
     }
-    if ($path -match '^/watch/?$' -or $path -match '^/video\.php/?$') {
-        foreach ($pair in ($uri.Query.TrimStart('?') -split '&')) {
-            $parts = $pair -split '=', 2
-            if ($parts.Count -eq 2 -and [Uri]::UnescapeDataString($parts[0]) -eq 'v') {
-                $value = [Uri]::UnescapeDataString($parts[1])
-                if ($value -match '^\d+$') { return $value }
+    if ($path -match '^/watch(?:/live)?/?$' -or $path -match '^/video\.php/?$') {
+        $idNames = @('v')
+        if ($path -match '^/video\.php/?$') { $idNames = @('v','story_fbid') }
+        foreach ($idName in $idNames) {
+            foreach ($pair in ($uri.Query.TrimStart('?') -split '&')) {
+                $parts = $pair -split '=', 2
+                if ($parts.Count -eq 2 -and [Uri]::UnescapeDataString($parts[0]) -eq $idName) {
+                    $value = [Uri]::UnescapeDataString($parts[1])
+                    if ($value -match '^\d+$') { return $value }
+                }
             }
         }
     }
@@ -91,15 +130,22 @@ function Get-RejectedReels {
 
 function Find-RejectedReel {
     param([string]$Root, [string]$VideoId, [string]$Url)
+    $normalizedUrl = if ($Url) { ConvertTo-FacebookNormalizedUrl -Url $Url } else { '' }
     foreach ($entry in @(Get-RejectedReels -Root $Root)) {
-        if (($VideoId -and [string]$entry.VideoId -eq $VideoId) -or ($Url -and $Url -cin @($entry.Urls))) { return $entry }
+        if ($VideoId -and [string]$entry.VideoId -eq $VideoId) { return $entry }
+        if ($Url) {
+            foreach ($savedUrl in @($entry.Urls)) {
+                if ($savedUrl -and ($Url -ceq [string]$savedUrl -or $normalizedUrl -ceq (ConvertTo-FacebookNormalizedUrl -Url ([string]$savedUrl)))) { return $entry }
+            }
+        }
     }
 }
 
 function Save-RejectedReel {
-    param([string]$Root, [string]$VideoId, [string[]]$Urls, [string]$Reason, [string]$Language, [double]$Probability = 0)
+    param([string]$Root, [string]$VideoId, [string[]]$Urls, [string]$Reason, [string]$Language, [double]$Probability = 0, [string]$Evidence = '')
     if ($VideoId -notmatch '^\d+$') { throw 'Rejected video requires an exact numeric ID.' }
     if ($Reason -notin @('vietnamese-unavailable','audio-not-vietnamese')) { throw 'Only confirmed language rejections can be saved.' }
+    if ($Evidence -and $Evidence.Length -gt 2000) { $Evidence = $Evidence.Substring(0,2000) }
     $path = Get-RejectedReelPath -Root $Root
     [void][IO.Directory]::CreateDirectory((Split-Path $path -Parent))
     $hash = [Security.Cryptography.SHA256]::Create()
@@ -113,7 +159,7 @@ function Save-RejectedReel {
         $entries = @(Get-RejectedReels -Root $Root)
         $previous = @($entries | Where-Object { [string]$_.VideoId -eq $VideoId })
         $allUrls = @(@($Urls) + @($previous | ForEach-Object { $_.Urls }) | Where-Object { $_ } | Select-Object -Unique)
-        $record = [pscustomobject]@{ VideoId=$VideoId; Urls=$allUrls; Reason=$Reason; Language=$Language; Probability=$Probability; RejectedAt=[DateTime]::UtcNow.ToString('o') }
+        $record = [pscustomobject]@{ VideoId=$VideoId; Urls=$allUrls; Reason=$Reason; Language=$Language; Probability=$Probability; RejectedAt=[DateTime]::UtcNow.ToString('o'); Evidence=[string]$Evidence }
         $entries = @($entries | Where-Object { [string]$_.VideoId -ne $VideoId }) + @($record)
         $json = [pscustomobject]@{ Schema=1; Entries=@($entries) } | ConvertTo-Json -Depth 8
         [IO.File]::WriteAllText($stage,$json,[Text.UTF8Encoding]::new($false))
@@ -127,6 +173,38 @@ function Save-RejectedReel {
     }
 }
 
+# Go muc loai theo ID. Cung mutex + ghi file tam roi replace nhu Save-RejectedReel.
+# Tra ve $true neu co muc bi go. Nem loi khi file hong / khoa qua han.
+function Remove-RejectedReel {
+    param([Parameter(Mandatory=$true)][string]$Root, [Parameter(Mandatory=$true)][string]$VideoId)
+    if ($VideoId -notmatch '^\d+$') { throw 'Remove-RejectedReel requires an exact numeric ID.' }
+    $path = Get-RejectedReelPath -Root $Root
+    if (-not [IO.File]::Exists($path)) { return $false }
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try { $key = ([BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($path.ToLowerInvariant())))).Replace('-','') } finally { $hash.Dispose() }
+    $mutex = New-Object Threading.Mutex($false, ('Local\KidFbyRejected'+$key))
+    $locked = $false; $stage = $path+'.writing.'+[guid]::NewGuid().ToString('N')
+    $backup = $path+'.previous.'+[guid]::NewGuid().ToString('N')
+    try {
+        try { $locked = $mutex.WaitOne(10000) } catch [Threading.AbandonedMutexException] { $locked = $true }
+        if (-not $locked) { throw 'Rejected-video history is busy; retry later.' }
+        $entries = @(Get-RejectedReels -Root $Root)
+        $remaining = @($entries | Where-Object { [string]$_.VideoId -ne $VideoId })
+        if ($remaining.Count -eq $entries.Count) { return $false }
+        $json = [pscustomobject]@{ Schema=1; Entries=@($remaining) } | ConvertTo-Json -Depth 8
+        [IO.File]::WriteAllText($stage,$json,[Text.UTF8Encoding]::new($false))
+        [IO.File]::Replace($stage,$path,$backup)
+        if ([IO.File]::Exists($backup)) { [IO.File]::Delete($backup) }
+        return $true
+    } finally {
+        if ([IO.File]::Exists($stage)) { [IO.File]::Delete($stage) }
+        if ($locked) { $mutex.ReleaseMutex() }
+        $mutex.Dispose()
+    }
+}
+
+# KHONG con duoc goi tu luong loai video (hop dong GUI muc 4): loai video khong xoa file da co.
+# Giu lai de cong cu bao tri/goi tay; thay doi hanh vi nay can nem ro voi nguoi dung.
 function Remove-RejectedReelMedia {
     param([string]$OutDir, [string]$VideoId)
     if ($VideoId -notmatch '^\d+$' -or [string]::IsNullOrWhiteSpace($OutDir)) { throw 'Unsafe rejected-video cleanup arguments.' }

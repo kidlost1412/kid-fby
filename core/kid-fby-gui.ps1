@@ -70,14 +70,20 @@ if (-not ([System.Management.Automation.PSTypeName]'WpfGifPlayer').Type) {
     $wpfGifPlayerCode = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($wpfGifPlayerB64))
     try {
         Add-Type -TypeDefinition $wpfGifPlayerCode -ReferencedAssemblies PresentationCore, PresentationFramework, WindowsBase, System.Xaml
-    } catch { }
+    } catch {
+        # Bao lai sau khi log/toast san sang (Report-StartupGifError).
+        $script:gifAddTypeError = $_.Exception.Message
+        $script:gifAddTypeErrorDetail = [string]$_
+    }
 }
 $script:gifPlayer = $null
 $script:gifSelectionGeneration = 0
 $script:gifSelectionWorker = $null
 $script:gifCancelledWorkers = New-Object System.Collections.ArrayList
 if (([System.Management.Automation.PSTypeName]'WpfGifPlayer').Type) {
-    try { $script:gifPlayer = New-Object WpfGifPlayer } catch { }
+    try { $script:gifPlayer = New-Object WpfGifPlayer } catch {
+        if (-not $script:gifAddTypeError) { $script:gifAddTypeError = $_.Exception.Message; $script:gifAddTypeErrorDetail = [string]$_ }
+    }
 }
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
@@ -113,6 +119,71 @@ try {
     $vf = Join-Path $scriptDir 'version.txt'
     if (Test-Path -LiteralPath $vf) { $script:verLocal = (Get-Content -LiteralPath $vf -Raw).Trim() }
 } catch { }
+
+# ------------------------------------------------------------- log ben tren dia ----
+# Goc app = thu muc cha cua core. Loi ghi log khong bao gio duoc lam hong UI.
+$script:logDir = Join-Path $root 'logs'
+$script:fileLogPending = [System.Text.StringBuilder]::new()
+$script:fileLogError = $null
+$script:fileLogErrorReported = $false
+$script:fileLogMaxBytes = 5MB
+
+function Get-GuiLogPath {
+    return (Join-Path $script:logDir ('gui-' + (Get-Date).ToString('yyyyMMdd') + '.log'))
+}
+
+function Write-FileLog {
+    param([string]$Text, [switch]$Immediate)
+    try {
+        [void]$script:fileLogPending.Append((Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')).Append('  ').Append($Text).Append("`r`n")
+        if ($Immediate -or $script:fileLogPending.Length -gt 65536) { Flush-FileLog }
+    } catch {
+        $script:fileLogError = $_.Exception.Message
+    }
+}
+
+function Flush-FileLog {
+    if ($script:fileLogPending.Length -eq 0) { return }
+    $chunk = $script:fileLogPending.ToString()
+    [void]$script:fileLogPending.Clear()
+    try {
+        [void][System.IO.Directory]::CreateDirectory($script:logDir)
+        $path = Get-GuiLogPath
+        $info = [System.IO.FileInfo]::new($path)
+        if ($info.Exists -and $info.Length -gt $script:fileLogMaxBytes) {
+            $rotated = Join-Path $script:logDir ('gui-' + (Get-Date).ToString('yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.log')
+            [System.IO.File]::Move($path, $rotated)
+        }
+        [System.IO.File]::AppendAllText($path, $chunk, [System.Text.UTF8Encoding]::new($false))
+        $script:fileLogError = $null
+    } catch {
+        # Khong nem lai: chi ghi nho de bao mot lan tren log hien thi.
+        $script:fileLogError = $_.Exception.Message
+    }
+}
+
+function Write-CrashLog {
+    param([string]$Source, $Exception, [string]$ScriptStack = '')
+    try {
+        [void][System.IO.Directory]::CreateDirectory($script:logDir)
+        $path = Join-Path $script:logDir ('crash-' + (Get-Date).ToString('yyyyMMdd-HHmmss') + '.log')
+        $sb = [System.Text.StringBuilder]::new()
+        [void]$sb.AppendLine("Kid FB.Y v$($script:verLocal) - crash $((Get-Date).ToString('o'))")
+        [void]$sb.AppendLine("Nguon: $Source")
+        [void]$sb.AppendLine("PowerShell: $($PSVersionTable.PSVersion) · OS: $([Environment]::OSVersion.VersionString)")
+        if ($ScriptStack) { [void]$sb.AppendLine('--- ScriptStackTrace ---'); [void]$sb.AppendLine($ScriptStack) }
+        if ($Exception -and $Exception.PSObject.Properties.Name -contains 'ErrorRecord' -and $Exception.ErrorRecord -and $Exception.ErrorRecord.ScriptStackTrace) {
+            [void]$sb.AppendLine('--- ErrorRecord.ScriptStackTrace ---'); [void]$sb.AppendLine([string]$Exception.ErrorRecord.ScriptStackTrace)
+        }
+        [void]$sb.AppendLine('--- Exception ---'); [void]$sb.AppendLine([string]$Exception)
+        [System.IO.File]::WriteAllText($path, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
+        Write-FileLog "CRASH ($Source): $(if ($Exception) { $Exception.Message }) -> $path" -Immediate
+        return $path
+    } catch {
+        $script:fileLogError = $_.Exception.Message
+        return $null
+    }
+}
 
 [xml]$xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -396,6 +467,11 @@ try {
                 </Border>
               </Popup>
             </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.45"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
@@ -441,22 +517,23 @@ try {
 
         <!-- Real-time HUD Chips -->
         <StackPanel x:Name="HeaderBadges" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0">
-          <Border Background="#131A28" BorderBrush="#233048" BorderThickness="1" CornerRadius="12" Padding="10,4" Margin="0,0,8,0">
+          <!-- Trang thai that: xanh = san sang, do = loi/thieu, xam = chua kiem -->
+          <Border x:Name="ChipDevice" Background="#131A28" BorderBrush="#233048" BorderThickness="1" CornerRadius="12" Padding="10,4" Margin="0,0,8,0" ToolTip="Chưa kiểm tra thiết bị Android.">
             <StackPanel Orientation="Horizontal">
-              <TextBlock Text="● " Foreground="#10B981" FontSize="13" VerticalAlignment="Center"/>
-              <TextBlock Text="Android / LDPlayer" Foreground="#CBD5E1" FontSize="13" FontWeight="Medium"/>
+              <TextBlock x:Name="ChipDeviceDot" Text="● " Foreground="#64748B" FontSize="13" VerticalAlignment="Center"/>
+              <TextBlock x:Name="ChipDeviceText" Text="Thiết bị" Foreground="#CBD5E1" FontSize="13" FontWeight="Medium"/>
             </StackPanel>
           </Border>
-          <Border Background="#131A28" BorderBrush="#233048" BorderThickness="1" CornerRadius="12" Padding="10,4" Margin="0,0,8,0">
+          <Border x:Name="ChipScrcpy" Background="#131A28" BorderBrush="#233048" BorderThickness="1" CornerRadius="12" Padding="10,4" Margin="0,0,8,0" ToolTip="Chưa kiểm tra scrcpy.">
             <StackPanel Orientation="Horizontal">
-              <TextBlock Text="● " Foreground="#38BDF8" FontSize="13" VerticalAlignment="Center"/>
-              <TextBlock Text="scrcpy audio capture" Foreground="#CBD5E1" FontSize="13" FontWeight="Medium"/>
+              <TextBlock x:Name="ChipScrcpyDot" Text="● " Foreground="#64748B" FontSize="13" VerticalAlignment="Center"/>
+              <TextBlock x:Name="ChipScrcpyText" Text="scrcpy" Foreground="#CBD5E1" FontSize="13" FontWeight="Medium"/>
             </StackPanel>
           </Border>
-          <Border Background="#131A28" BorderBrush="#233048" BorderThickness="1" CornerRadius="12" Padding="10,4">
+          <Border x:Name="ChipTools" Background="#131A28" BorderBrush="#233048" BorderThickness="1" CornerRadius="12" Padding="10,4" ToolTip="Chưa kiểm tra FFmpeg/ffprobe/yt-dlp.">
             <StackPanel Orientation="Horizontal">
-              <TextBlock Text="● " Foreground="#A855F7" FontSize="13" VerticalAlignment="Center"/>
-              <TextBlock Text="Video / AAC / MP4" Foreground="#CBD5E1" FontSize="13" FontWeight="Medium"/>
+              <TextBlock x:Name="ChipToolsDot" Text="● " Foreground="#64748B" FontSize="13" VerticalAlignment="Center"/>
+              <TextBlock x:Name="ChipToolsText" Text="FFmpeg/yt-dlp" Foreground="#CBD5E1" FontSize="13" FontWeight="Medium"/>
             </StackPanel>
           </Border>
         </StackPanel>
@@ -560,7 +637,7 @@ try {
                     <TextBlock x:Name="TxtLogoName" Text="Đang dùng: Logo Kid" Foreground="#6EE7B7" FontWeight="SemiBold" FontSize="13" TextTrimming="CharacterEllipsis" Margin="0,0,0,4"/>
                     <Grid>
                       <TextBox x:Name="TxtLogoPath" Height="32" Padding="8,3" FontSize="13" IsReadOnly="True" VerticalContentAlignment="Center" ToolTip="Đường dẫn đầy đủ của logo PNG đã chọn."/>
-                      <TextBlock x:Name="TxtLogoDefaultHint" Text="Logo Kid mặc định · ảnh số 5" Foreground="#94A3B8" FontSize="13" Margin="9,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+                      <TextBlock x:Name="TxtLogoDefaultHint" Text="Logo Kid mặc định" Foreground="#94A3B8" FontSize="13" Margin="9,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
                     </Grid>
                   </StackPanel>
                   <StackPanel Grid.Column="2">
@@ -588,9 +665,10 @@ try {
                   </ComboBox>
                   <StackPanel x:Name="PanelLogoPosition" Orientation="Horizontal" Visibility="Collapsed">
                     <TextBlock Text="Vị trí" Foreground="#94A3B8" FontSize="13" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                    <ComboBox x:Name="CmbLogoPosition" Width="125" Height="32" SelectedIndex="3" VerticalContentAlignment="Center" IsEnabled="False">
+                    <ComboBox x:Name="CmbLogoPosition" Width="165" Height="32" SelectedIndex="3" VerticalContentAlignment="Center" IsEnabled="False">
                       <ComboBoxItem Content="Trên trái"/><ComboBoxItem Content="Trên phải"/>
                       <ComboBoxItem Content="Dưới trái"/><ComboBoxItem Content="Dưới phải"/><ComboBoxItem Content="Giữa"/>
+                      <ComboBoxItem Content="Tùy chỉnh (kéo thả)" ToolTip="Vị trí/kích thước do bạn kéo thả trên khung xem trước."/>
                     </ComboBox>
                   </StackPanel>
                 </WrapPanel>
@@ -622,9 +700,10 @@ try {
                   </StackPanel>
                   <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="Vị trí cố định" Foreground="#94A3B8" FontSize="13" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                    <ComboBox x:Name="CmbGifPosition" Width="125" Height="32" SelectedIndex="1" VerticalContentAlignment="Center">
+                    <ComboBox x:Name="CmbGifPosition" Width="165" Height="32" SelectedIndex="1" VerticalContentAlignment="Center">
                       <ComboBoxItem Content="Trên trái"/><ComboBoxItem Content="Trên phải"/>
                       <ComboBoxItem Content="Dưới trái"/><ComboBoxItem Content="Dưới phải"/><ComboBoxItem Content="Giữa"/>
+                      <ComboBoxItem Content="Tùy chỉnh (kéo thả)" ToolTip="Vị trí/kích thước do bạn kéo thả trên khung xem trước."/>
                     </ComboBox>
                   </StackPanel>
                 </WrapPanel>
@@ -701,6 +780,8 @@ try {
           <ProgressBar x:Name="Bar" DockPanel.Dock="Top" Height="4" IsIndeterminate="True"
                        Visibility="Collapsed" Margin="0,0,0,8" Foreground="#0099FF" Background="#1A2234" BorderThickness="0"/>
 
+          <!-- Bon view chong cung mot o Grid (con cuoi cua DockPanel) de moi view lap day vung con lai. -->
+          <Grid x:Name="WorkflowViews">
           <!-- Content View 1: Visual Pipeline Cards -->
           <ScrollViewer x:Name="ViewPipeline" VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="0,2,4,0">
@@ -806,9 +887,12 @@ try {
             <DockPanel>
               <!-- Filter Deck -->
               <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
-                <Expander x:Name="RejectedDashboard" Header="Video đã loại · không tải lại" Foreground="#FBBF24" Margin="0,0,0,8">
-                  <ScrollViewer MaxHeight="160" VerticalScrollBarVisibility="Auto">
-                    <TextBlock x:Name="TxtRejectedDashboard" Text="Chưa có video bị loại." TextWrapping="Wrap" Foreground="#CBD5E1" FontSize="13" Margin="8"/>
+                <Expander x:Name="RejectedDashboard" Header="Lịch sử đã loại · tổng 0" Foreground="#FBBF24" Margin="0,0,0,8"
+                          ToolTip="Video bị loại sẽ tự bỏ qua khi tải. Bấm Bỏ loại để cho phép tải lại.">
+                  <ScrollViewer MaxHeight="200" VerticalScrollBarVisibility="Auto">
+                    <StackPanel x:Name="RejectedListPanel" Margin="4">
+                      <TextBlock x:Name="TxtRejectedDashboard" Text="Chưa có video bị loại." TextWrapping="Wrap" Foreground="#CBD5E1" FontSize="13" Margin="4"/>
+                    </StackPanel>
                   </ScrollViewer>
                 </Expander>
                 <!-- Row 1: Header + Refresh -->
@@ -1037,6 +1121,7 @@ try {
                        Padding="14,12" Cursor="IBeam" SelectionBrush="#0284C7"/>
             </DockPanel>
           </Border>
+          </Grid>
         </DockPanel>
       </Border>
       </Grid>
@@ -1252,7 +1337,8 @@ foreach ($n in @('BtnWinMin','BtnWinMax','BtnWinClose',
                  'TxtQueueCount','TxtLinks','TxtDuplicateWarning','TxtOut','BtnPick','BtnOpenOut','BtnStart','BtnCheck','BtnOpenTools','BtnStop','BtnUpdate',
                  'BtnTabPipeline','BtnTabGallery','BtnTabTools','BtnTabLogs','TxtStat','Bar',
                  'ViewPipeline','ViewGallery','ViewTools','ViewLogs',
-                 'GalleryPanel','TxtGalleryCount','BtnRefreshGallery','RejectedDashboard','TxtRejectedDashboard',
+                 'GalleryPanel','TxtGalleryCount','BtnRefreshGallery','RejectedDashboard','TxtRejectedDashboard','RejectedListPanel','WorkflowViews',
+                 'ChipDevice','ChipDeviceDot','ChipDeviceText','ChipScrcpy','ChipScrcpyDot','ChipScrcpyText','ChipTools','ChipToolsDot','ChipToolsText',
                  'BtnFilterAllDate','BtnFilterToday','BtnFilterYesterday','BtnFilter7Days','CmbFilterSpecificDate',
                  'BtnFilterTikTokAll','BtnFilterTikTokUnposted','BtnFilterTikTokPosted',
                  'BtnInstallAllTools','BtnCheckTools','BtnOpenUninstall',
@@ -1328,6 +1414,223 @@ $script:txtOutWasEnabled = $true
 $script:activeTrack   = 'B'
 $script:filterDate    = 'all'
 $script:filterTikTok  = 'all'
+$script:boTruoc       = 0      # link bo qua vi da loai truoc (loc luc bam Bat dau hoac engine bao already-rejected)
+$script:currentResult = $null  # @@KIDFBY_RESULT cua muc dang chay
+$script:queueFinalizedIdx = -1 # chi so muc da duoc tinh ket qua (chong dem trung khi tick loi)
+$script:forceRetryRejected = $false
+$script:logoLastPresetIdx = 3
+$script:gifLastPresetIdx  = 1
+$script:tickErrorKey  = ''
+$script:tickErrorRepeat = 0
+$script:settingsLoading = $false
+$script:settingsPath  = Join-Path $root 'data\settings.json'
+$script:settingsReady = $false   # chi luu sau khi da nap xong, tranh ghi de file cua nguoi dung bang mac dinh
+$script:redoRestoreOutDir = $null      # thu muc xuat cua nguoi dung trong luc "Ghi am lai" doi tam
+$script:settingsOutDirPreserved = $null # outDir trong file khong ton tai luc mo app -> giu nguyen khi luu
+$script:outDirAfterImport = $null
+$script:tSettings     = $null
+
+# ------------------------------------------------------------- cai dat nguoi dung (data\settings.json) ----
+function Read-KidSettings {
+    # Tra ve doi tuong cai dat hoac $null (khong co file / file hong -> doi ten .corrupt-<ts>).
+    param([string]$Path)
+    if (-not [System.IO.File]::Exists($Path)) { return $null }
+    try {
+        $json = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+        if ([string]::IsNullOrWhiteSpace($json) -or -not $json.TrimStart().StartsWith('{')) { throw 'Không phải đối tượng JSON.' }
+        $obj = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+        if ($null -eq $obj -or $obj -isnot [pscustomobject]) { throw 'Định dạng cài đặt không hợp lệ.' }
+        return $obj
+    } catch {
+        $err = $_.Exception.Message
+        $bad = $Path + '.corrupt-' + (Get-Date).ToString('yyyyMMdd-HHmmss')
+        if ([System.IO.File]::Exists($bad)) { $bad += '-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) }
+        try {
+            [System.IO.File]::Move($Path, $bad)
+            Add-Log "File cài đặt bị hỏng ($err); đã đổi tên thành '$bad' và dùng cài đặt mặc định." '#FBBF24'
+        } catch {
+            Add-Log "File cài đặt bị hỏng ($err) và không đổi tên được: $($_.Exception.Message). Dùng cài đặt mặc định." '#FBBF24'
+        }
+        return $null
+    }
+}
+
+function Write-KidSettings {
+    # Ghi nguyen tu: file tam cung thu muc -> Flush(true) -> File.Replace (hoac Move neu chua co).
+    param([string]$Path, $Data)
+    $dir = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($Path))
+    [void][System.IO.Directory]::CreateDirectory($dir)
+    $json = ConvertTo-Json -InputObject $Data -Depth 6 -ErrorAction Stop
+    $temp = Join-Path $dir ('.settings-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        $stream = [System.IO.File]::Open($temp, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        try {
+            $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($json)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        } finally { $stream.Dispose() }
+        if ([System.IO.File]::Exists($Path)) { [System.IO.File]::Replace($temp, $Path, [System.Management.Automation.Language.NullString]::Value) }
+        else { [System.IO.File]::Move($temp, $Path) }
+        $temp = $null
+    } finally {
+        if ($temp -and [System.IO.File]::Exists($temp)) {
+            try { [System.IO.File]::Delete($temp) } catch { Write-FileLog "WARN Không xóa được file tạm cài đặt '$temp': $($_.Exception.Message)" }
+        }
+    }
+}
+
+function Get-SettingsOutDir {
+    # 1) Dang "Ghi am lai": thu muc tam khong duoc luu -> dung thu muc goc cua nguoi dung.
+    if ($null -ne $script:redoRestoreOutDir) { return $script:redoRestoreOutDir }
+    # 2) outDir trong file khong ton tai luc mo app (o rut/USB): giu nguyen gia tri goc cho toi khi nguoi dung tu doi.
+    if ($script:settingsOutDirPreserved -and [string]$ui.TxtOut.Text -eq [string]$script:outDirAfterImport) { return $script:settingsOutDirPreserved }
+    return [string]$ui.TxtOut.Text
+}
+
+function Get-CurrentSettings {
+    $winW = $win.Width; $winH = $win.Height; $state = 'Normal'
+    if ($win.WindowState -eq [System.Windows.WindowState]::Maximized) {
+        $state = 'Maximized'
+        if (-not $win.RestoreBounds.IsEmpty) { $winW = $win.RestoreBounds.Width; $winH = $win.RestoreBounds.Height }
+    } elseif ($win.ActualWidth -gt 0) { $winW = $win.ActualWidth; $winH = $win.ActualHeight }
+    $gifPath = if ($ui.TxtGifPath -and $ui.TxtGifPath.Text) { $ui.TxtGifPath.Text } elseif ($script:gifSelectionWorker) { [string]$script:gifSelectionWorker.Path } else { '' }
+    return [ordered]@{
+        version = 1
+        outDir  = [string](Get-SettingsOutDir)
+        logo = [ordered]@{
+            enabled  = [bool]$ui.ChkWatermark.IsChecked
+            path     = [string]$ui.TxtLogoPath.Text
+            size     = [int]$ui.SldLogoSize.Value
+            fade     = [int]$ui.SldLogoFade.Value
+            motion   = $(if ($ui.CmbLogoMode.SelectedIndex -eq 1) { 'Fixed' } else { 'Free' })
+            position = [int]$ui.CmbLogoPosition.SelectedIndex
+            lastPreset = [int]$script:logoLastPresetIdx
+            customX = [double]$script:logoCustomX; customY = [double]$script:logoCustomY
+            customW = [double]$script:logoCustomWidth; customH = [double]$script:logoCustomHeight
+        }
+        gif = [ordered]@{
+            enabled   = [bool]$ui.ChkGif.IsChecked
+            path      = $gifPath
+            size      = [int]$ui.SldGifSize.Value
+            position  = [int]$ui.CmbGifPosition.SelectedIndex
+            lastPreset = [int]$script:gifLastPresetIdx
+            fullFrame = [bool]$script:gifFullFrame
+            customX = [double]$script:gifCustomX; customY = [double]$script:gifCustomY
+            customW = [double]$script:gifCustomWidth; customH = [double]$script:gifCustomHeight
+        }
+        window = [ordered]@{ width = [double]$winW; height = [double]$winH; state = $state }
+    }
+}
+
+function ConvertTo-SettingDouble {
+    param($Value, [double]$Default = -1.0)
+    $d = 0.0
+    if ($null -ne $Value -and [double]::TryParse([string]$Value, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$d) -and
+        -not [double]::IsNaN($d) -and -not [double]::IsInfinity($d)) { return $d }
+    return $Default
+}
+
+function Import-UserSettings {
+    param([string]$Path = $script:settingsPath)
+    $s = Read-KidSettings -Path $Path
+    if (-not $s) { return $false }
+    $script:settingsLoading = $true
+    try {
+        $script:settingsOutDirPreserved = $null
+        if ($s.outDir -and [System.IO.Directory]::Exists([string]$s.outDir)) { $ui.TxtOut.Text = [string]$s.outDir }
+        elseif ($s.outDir) {
+            $script:settingsOutDirPreserved = [string]$s.outDir
+            Add-Log "Thư mục xuất đã lưu không tồn tại ('$($s.outDir)'); tạm dùng '$($ui.TxtOut.Text)', giữ nguyên giá trị đã lưu." '#FBBF24'
+        }
+        $script:outDirAfterImport = [string]$ui.TxtOut.Text
+        $l = $s.logo
+        if ($l) {
+            if ($null -ne $l.enabled) { $ui.ChkWatermark.IsChecked = [bool]$l.enabled }
+            if ($l.path -and [System.IO.File]::Exists([string]$l.path)) {
+                try { Set-LogoSelection -Path ([string]$l.path) } catch { Add-Log "Không nạp lại được logo đã lưu: $($_.Exception.Message)" '#FBBF24' }
+            }
+            if ($null -ne $l.size) { $ui.SldLogoSize.Value = [Math]::Max($ui.SldLogoSize.Minimum, [Math]::Min($ui.SldLogoSize.Maximum, (ConvertTo-SettingDouble $l.size 30))) }
+            if ($null -ne $l.fade) { $ui.SldLogoFade.Value = [Math]::Max($ui.SldLogoFade.Minimum, [Math]::Min($ui.SldLogoFade.Maximum, (ConvertTo-SettingDouble $l.fade 60))) }
+            $ui.CmbLogoMode.SelectedIndex = $(if ([string]$l.motion -eq 'Fixed') { 1 } else { 0 })
+            $last = [int](ConvertTo-SettingDouble $l.lastPreset 3); if ($last -lt 0 -or $last -gt 4) { $last = 3 }
+            $pos = [int](ConvertTo-SettingDouble $l.position 3)
+            $ui.CmbLogoPosition.SelectedIndex = $(if ($pos -ge 0 -and $pos -le 4) { $pos } else { $last })
+            $script:logoLastPresetIdx = $(if ($pos -ge 0 -and $pos -le 4) { $pos } else { $last })
+            # Sau slider (ValueChanged xoa W/H) va preset (SelectionChanged xoa X/Y).
+            $script:logoCustomX = ConvertTo-SettingDouble $l.customX; $script:logoCustomY = ConvertTo-SettingDouble $l.customY
+            $script:logoCustomWidth = ConvertTo-SettingDouble $l.customW; $script:logoCustomHeight = ConvertTo-SettingDouble $l.customH
+            if (Test-LogoHasCustomGeometry) { $ui.CmbLogoPosition.SelectedIndex = $script:positionCustomIndex }
+        }
+        $g = $s.gif
+        if ($g) {
+            if ($null -ne $g.size) { $ui.SldGifSize.Value = [Math]::Max($ui.SldGifSize.Minimum, [Math]::Min($ui.SldGifSize.Maximum, (ConvertTo-SettingDouble $g.size 20))) }
+            $last = [int](ConvertTo-SettingDouble $g.lastPreset 1); if ($last -lt 0 -or $last -gt 4) { $last = 1 }
+            $pos = [int](ConvertTo-SettingDouble $g.position 1)
+            $ui.CmbGifPosition.SelectedIndex = $(if ($pos -ge 0 -and $pos -le 4) { $pos } else { $last })
+            $script:gifLastPresetIdx = $(if ($pos -ge 0 -and $pos -le 4) { $pos } else { $last })
+            if ([bool]$g.fullFrame) {
+                $script:gifApplyingFullFrame = $true
+                try {
+                    $ui.SldGifSize.Value = $ui.SldGifSize.Maximum
+                    $script:gifFullFrame = $true
+                    $script:gifCustomX = 0.0; $script:gifCustomY = 0.0; $script:gifCustomWidth = -1.0; $script:gifCustomHeight = -1.0
+                    if ($ui.BtnGifFullFrame) { $ui.BtnGifFullFrame.Content = '✓ Phủ đầy khung video' }
+                } finally { $script:gifApplyingFullFrame = $false }
+            } else {
+                $script:gifCustomX = ConvertTo-SettingDouble $g.customX; $script:gifCustomY = ConvertTo-SettingDouble $g.customY
+                $script:gifCustomWidth = ConvertTo-SettingDouble $g.customW; $script:gifCustomHeight = ConvertTo-SettingDouble $g.customH
+            }
+            if (Test-GifHasCustomGeometry) { $ui.CmbGifPosition.SelectedIndex = $script:positionCustomIndex }
+            if ($g.path -and [System.IO.File]::Exists([string]$g.path)) {
+                try { Set-GifSelection -Path ([string]$g.path) } catch { Add-Log "Không nạp lại được GIF đã lưu: $($_.Exception.Message)" '#FBBF24' }
+            }
+            if ($null -ne $g.enabled) { $ui.ChkGif.IsChecked = [bool]$g.enabled }
+        }
+        $w = $s.window
+        if ($w) {
+            $ww = ConvertTo-SettingDouble $w.width 0; $wh = ConvertTo-SettingDouble $w.height 0
+            if ($ww -ge 600 -and $wh -ge 400) { $win.Width = $ww; $win.Height = $wh }
+            if ([string]$w.state -eq 'Maximized') { $win.WindowState = [System.Windows.WindowState]::Maximized }
+        }
+    } finally { $script:settingsLoading = $false }
+    if (Get-Command 'Update-WatermarkOverlay' -ErrorAction SilentlyContinue) { Update-WatermarkOverlay }
+    if (Get-Command 'Update-WatermarkSummary' -ErrorAction SilentlyContinue) { Update-WatermarkSummary }
+    Add-Log "Đã nạp cài đặt đã lưu: $Path" '#94A3B8'
+    return $true
+}
+
+function Initialize-UserSettings {
+    # Chi cho phep luu khi nap thanh cong hoac chua co file (file hong da duoc doi ten .corrupt).
+    # Import nem loi giua chung -> khong luu trong phien nay de khong ghi de settings.json bang trang thai do.
+    $script:settingsReady = $false
+    try {
+        [void](Import-UserSettings)
+        $script:settingsReady = $true
+    } catch {
+        $script:settingsLoading = $false
+        Write-FileLog "ERR  Import-UserSettings: $($_.Exception.Message)`r`n$($_.ScriptStackTrace)" -Immediate
+        Add-Log "Không nạp được cài đặt đã lưu: $($_.Exception.Message). Phiên này sẽ không ghi đè settings.json." '#FBBF24'
+    }
+    return $script:settingsReady
+}
+
+function Save-UserSettings {
+    if ($SelfTest -or -not $script:settingsReady) { return }
+    if ($script:tSettings) { $script:tSettings.Stop() }
+    try { Write-KidSettings -Path $script:settingsPath -Data (Get-CurrentSettings) }
+    catch { Add-Log "Không lưu được cài đặt '$($script:settingsPath)': $($_.Exception.Message)" '#FBBF24' }
+}
+
+function Request-SaveSettings {
+    # Debounce 1 s: gom nhieu thay doi (keo slider, keo logo) thanh mot lan ghi.
+    if ($SelfTest -or $script:settingsLoading -or -not $script:settingsReady) { return }
+    if (-not $script:tSettings) {
+        $script:tSettings = New-Object Windows.Threading.DispatcherTimer
+        $script:tSettings.Interval = [TimeSpan]::FromSeconds(1)
+        $script:tSettings.Add_Tick({ Save-UserSettings })
+    }
+    $script:tSettings.Stop(); $script:tSettings.Start()
+}
 
 # ------------------------------------------------------------- ham luu trang thai TikTok ----
 function Get-ReupMetadata {
@@ -1438,6 +1741,12 @@ function Clear-LogBatch {
 }
 
 function Flush-LogBatch {
+    Flush-FileLog
+    if ($script:fileLogError -and -not $script:fileLogErrorReported -and $script:logPendingText) {
+        # Bao mot lan; khong goi Add-Log de tranh vong lap ghi file.
+        $script:fileLogErrorReported = $true
+        [void]$script:logPendingText.Append("Không ghi được file log trong '$($script:logDir)': $($script:fileLogError)`r`n")
+    }
     if (-not $ui.TxtLog) { Clear-LogBatch; return }
     if (-not $script:logPendingText -or $script:logPendingText.Length -eq 0) {
         if ($script:logFlushTimer) { try { $script:logFlushTimer.Stop() } catch { } }
@@ -1455,6 +1764,8 @@ function Flush-LogBatch {
 
 function Add-Log {
     param([string]$Text, [string]$Mau = '#CBD5E1')
+    $level = switch ($Mau) { { $_ -in @('#F87171','#EF4444') } { 'ERR ' } { $_ -in @('#FBBF24','#F59E0B') } { 'WARN' } default { 'INFO' } }
+    Write-FileLog "$level $Text"
     if (-not $ui.TxtLog) { return }
     if (-not $script:logPendingText) { $script:logPendingText = [System.Text.StringBuilder]::new() }
     $entry = $Text + "`r`n"
@@ -1480,8 +1791,55 @@ function Add-Log {
     if (-not $script:logFlushTimer.IsEnabled) { $script:logFlushTimer.Start() }
 }
 
+function ConvertFrom-EngineEventLine {
+    # '@@KIDFBY_<TYPE> {json}' -> @{ Type='STAGE'|'RESULT'|...; Data=<object>; Error=<string> } ; khong phai su kien -> $null
+    param([string]$Line)
+    if ($null -eq $Line) { return $null }
+    $t = $Line.TrimStart()
+    if (-not $t.StartsWith('@@KIDFBY_')) { return $null }
+    $m = [regex]::Match($t, '^@@KIDFBY_([A-Z_]+)\s*(.*)$')
+    if (-not $m.Success) { return @{ Type = ''; Data = $null; Error = 'Dòng sự kiện không đúng định dạng.' } }
+    $evt = @{ Type = $m.Groups[1].Value; Data = $null; Error = $null }
+    $json = $m.Groups[2].Value.Trim()
+    if ($json) {
+        try { $evt.Data = ConvertFrom-Json -InputObject $json -ErrorAction Stop }
+        catch { $evt.Error = "JSON sự kiện lỗi: $($_.Exception.Message)" }
+    }
+    return $evt
+}
+
+function Set-StageFromEngine {
+    # Anh xa buoc engine (1-7, Write-Step) sang 5 the giai doan cua GUI.
+    param([int]$Step)
+    switch ($Step) {
+        1 { Set-Stage 1 "Đang kiểm tra..." "#38BDF8" }
+        2 { Set-Stage 1 "Đang kiểm tra thiết bị..." "#38BDF8" }
+        3 { Set-Stage 1 "Sẵn sàng ✔" "#10B981"; Set-Stage 2 "Đang đọc thông tin..." "#38BDF8" }
+        4 { Set-Stage 2 "Đã đọc thông tin ✔" "#10B981" "Chưa tải hình; kiểm tra bản dịch trước"; Set-Stage 3 "Đang cấu hình AI..." "#38BDF8" }
+        5 { Set-Stage 4 "Đang thu âm (Live)..." "#38BDF8" "Đang ghi audio AAC từ Android qua scrcpy..." }
+        6 { Set-Stage 4 "Đang cắt & chuẩn hóa..." "#38BDF8" "Đã thu xong; đang cắt điểm đầu và chuẩn hóa âm lượng" }
+        7 { Set-Stage 5 "Đang ghép & xuất MP4..." "#38BDF8" }
+    }
+}
+
+function Invoke-EngineEvent {
+    param([string]$Line)
+    Write-FileLog "EVT  $Line"
+    $evt = ConvertFrom-EngineEventLine $Line
+    if (-not $evt) { return }
+    if ($evt.Error) { Write-FileLog "WARN $($evt.Error)"; return }
+    if ($evt.Type -eq 'STAGE' -and $evt.Data) {
+        $step = 0
+        if ([int]::TryParse([string]$evt.Data.step, [ref]$step)) { Set-StageFromEngine $step }
+    } elseif ($evt.Type -eq 'RESULT' -and $evt.Data) {
+        $script:currentResult = $evt.Data
+    }
+}
+
 function Add-Line {
     param([string]$L)
+    # Dong su kien may doc: an khoi log hien thi, van ghi file log.
+    if ($null -ne $L -and $L.TrimStart().StartsWith('@@KIDFBY_')) { Invoke-EngineEvent $L; return }
     $script:runLog += $L + "
 "
 
@@ -1500,9 +1858,8 @@ function Add-Line {
     if ($L -match 'Da chap nhan lua chon Tieng Viet tu UI Meta; bat dau tai phan hinh HD') { Set-Stage 5 "Đang tải hình HD..." "#38BDF8" }
     if ($L -match 'REEL_REJECTED:') { Set-Stage 5 "Đã loại · không tải lại" "#F59E0B" "Video không có bản dịch tiếng Việt phù hợp" }
     if ($L -match '(\d+x\d+)\s+([a-zA-Z0-9]+)\s+\|\s+([\d.]+)\s+giay\s+\|\s+([\d.]+)\s+MB') {
+        # Nhan do phan giai chi do MediaOpened ghi (mot nguon duy nhat cho TxtRes).
         Set-Stage 5 "Đã tải hình HD" "#38BDF8" "$($Matches[1]) $($Matches[2]) · $($Matches[3])s · $($Matches[4]) MB"
-        $ui.TxtRes.Text = "$($Matches[1]) · $($Matches[4]) MB"
-        $ui.BadgeRes.Visibility = 'Visible'
     }
 
     if ($L -match '\[4\]\s+Kiem tra che do long tieng') {
@@ -1517,8 +1874,11 @@ function Add-Line {
         Set-Stage 4 "Đang thu âm (Live)..." "#38BDF8" "Đang ghi audio AAC từ Android qua scrcpy..."
     }
     if ($L -match '\[6\]\s+Xac dinh diem khoi dau') {
-        Set-Stage 4 "Đã thu xong ✔" "#10B981" "Đã kết thúc bước thu âm; tiếp tục cắt và chuẩn hóa"
-        Set-Stage 5 "Đang chuẩn hóa audio..." "#38BDF8"
+        # Cat/chuan hoa audio thuoc the 4; khong ghi de trang thai tai hinh cua the 5.
+        Set-Stage 4 "Đang cắt & chuẩn hóa..." "#38BDF8" "Đã thu xong; đang cắt điểm đầu và chuẩn hóa âm lượng"
+    }
+    if ($L -match '\[7\]\s+Ghep video') {
+        Set-Stage 5 "Đang ghép & xuất MP4..." "#38BDF8"
     }
 
     if ($L -match 'Am thanh da cat va chuan hoa xong\s*\(([\d.]+)s,\s*muc am\s*([-\d.]+)\s*dB\)') {
@@ -1608,6 +1968,8 @@ function Clear-Player {
     try { $ui.Player.Stop() }  catch { }
     try { $ui.Player.Close() } catch { }
     $ui.Player.Source = $null
+    $script:pauseOnOpen = $false
+    $ui.Player.IsMuted = $false
     $ui.PanelPlay.Visibility = 'Collapsed'
     $ui.TxtNoVid.Visibility  = 'Visible'
     $ui.BadgeRes.Visibility  = 'Collapsed'
@@ -1625,8 +1987,10 @@ if ($ui.BadgePreviewMode) { $ui.BadgePreviewMode.Visibility = 'Collapsed' }
 }
 
 function Load-Player {
-    param([string]$Path)
+    param([string]$Path, [switch]$NoAutoPlay)
     if ($script:deleteRestoreGenerationState) { $script:deleteRestoreGenerationState.Token = [Guid]::NewGuid().ToString('N') }
+    $script:pauseOnOpen = $false
+    try { $ui.Player.IsMuted = $false } catch { Write-FileLog "WARN Player.IsMuted: $($_.Exception.Message)" }
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
         Clear-Player
         return
@@ -1642,8 +2006,16 @@ if ($ui.BadgePreviewMode) { $ui.BadgePreviewMode.Visibility = 'Collapsed' }
         $full = [System.IO.Path]::GetFullPath($Path)
         $ui.Player.Source = New-Object Uri($full)
         $ui.PanelPlay.Visibility = 'Visible'
-        $ui.Player.Play()
-        $ui.BtnPlay.Content = '⏸ Tạm dừng'
+        if ($NoAutoPlay) {
+            # Manual LoadedBehavior can need Play() to open media; mute and pause on MediaOpened at frame 0.
+            $script:pauseOnOpen = $true
+            $ui.Player.IsMuted = $true
+            $ui.Player.Play()
+            $ui.BtnPlay.Content = '▶ Phát'
+        } else {
+            $ui.Player.Play()
+            $ui.BtnPlay.Content = '⏸ Tạm dừng'
+        }
 
         # Dat mac dinh Track B (Tieng Viet)
         $ui.BtnTrackB.Background = (New-Object Windows.Media.BrushConverter).ConvertFromString('#064E3B')
@@ -1659,8 +2031,25 @@ if ($ui.BadgePreviewMode) { $ui.BadgePreviewMode.Visibility = 'Collapsed' }
     }
 }
 
+function Get-ResolutionLabel {
+    # Phan hang theo canh NGAN de video doc (1080x1920) khong bi goi la 2K.
+    param([int]$Width, [int]$Height)
+    $s = [Math]::Min($Width, $Height)
+    if ($s -ge 2160) { return '4K UHD' }
+    if ($s -ge 1440) { return '2K QHD' }
+    if ($s -ge 1080) { return 'Full HD' }
+    if ($s -ge 720)  { return 'HD' }
+    return 'SD'
+}
+
 $ui.Player.Add_MediaOpened({
     $ui.TxtNoVid.Visibility = 'Collapsed'
+    if ($script:pauseOnOpen) {
+        $script:pauseOnOpen = $false
+        try { $ui.Player.Pause(); $ui.Player.Position = [TimeSpan]::Zero } catch { Write-FileLog "WARN Pause on open: $($_.Exception.Message)" }
+        $ui.Player.IsMuted = $false
+        $ui.BtnPlay.Content = '▶ Phát'
+    }
     if ($ui.Player.NaturalDuration.HasTimeSpan) {
         $tot = $ui.Player.NaturalDuration.TimeSpan.TotalSeconds
         $ui.Seek.Maximum = $tot
@@ -1668,10 +2057,7 @@ $ui.Player.Add_MediaOpened({
     if ($ui.Player.NaturalVideoWidth -gt 0) {
         $w = $ui.Player.NaturalVideoWidth
         $h = $ui.Player.NaturalVideoHeight
-        $tag = if ($w -ge 2160 -or $h -ge 2160) { "4K UHD" }
-               elseif ($w -ge 1440 -or $h -ge 1440) { "2K QHD" }
-               elseif ($w -ge 1080 -or $h -ge 1080) { "Full HD" }
-               else { "HD" }
+        $tag = Get-ResolutionLabel -Width $w -Height $h
         $ui.TxtRes.Text = "$tag · ${w}x${h}"
         $ui.BadgeRes.Visibility = 'Visible'
     }
@@ -1681,6 +2067,8 @@ $ui.Player.Add_MediaOpened({
 
 $ui.Player.Add_MediaFailed({
     param($s, $e)
+    $script:pauseOnOpen = $false
+    try { $ui.Player.IsMuted = $false } catch { Write-FileLog "WARN Player.IsMuted: $($_.Exception.Message)" }
     Clear-Player
     $err = if ($e.ErrorException) { $e.ErrorException.Message } else { 'Lỗi giải mã Windows Media Foundation' }
     Add-Log "Cảnh báo Video Player: $err" '#FBBF24'
@@ -1930,13 +2318,25 @@ function Test-GalleryActionsBusy {
     return [bool]($script:ps -or ($script:queue -and $script:queue.Count -gt 0))
 }
 
+function Get-DeleteConfirmText {
+    param([string]$FilePath)
+    $nm = Split-Path $FilePath -Leaf
+    $id = $nm -replace '-3-hoan-chinh\.mp4$', ''
+    $dir = Split-Path $FilePath -Parent
+    return ("Xóa vĩnh viễn 3 file của Reel #$id trong thư mục:`r`n$dir`r`n`r`n" +
+        "• $id-3-hoan-chinh.mp4 — video hoàn chỉnh`r`n" +
+        "• $id-1-video-goc.mp4 — video gốc sạch (đầu vào để sửa lại logo/GIF)`r`n" +
+        "• $id-2-am-thanh-tho.m4a — audio đã thu (đầu vào để sửa lại)`r`n`r`n" +
+        "Sau khi xóa sẽ không sửa lại hoặc khôi phục được video này; muốn có lại phải tải và ghi âm lại.`r`n`r`nXóa cả 3 file?")
+}
+
 function Confirm-GalleryDelete {
     param([string]$FilePath)
+    # Nut mac dinh la No: Enter/Space khong xoa nham.
     $answer = [System.Windows.MessageBox]::Show(
-        "Bạn có chắc chắn muốn xóa video này khỏi kho xuất?
-
-File: $(Split-Path $FilePath -Leaf)",
-        'Xác nhận xóa video', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning)
+        (Get-DeleteConfirmText -FilePath $FilePath),
+        'Xác nhận xóa video', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning,
+        [System.Windows.MessageBoxResult]::No)
     return ($answer -eq [System.Windows.MessageBoxResult]::Yes)
 }
 
@@ -2274,18 +2674,102 @@ function Start-GalleryBatch {
     $timer.Start()
 }
 
+function Get-RejectedReasonText {
+    param($Entry)
+    switch ([string]$Entry.Reason) {
+        'vietnamese-unavailable' { return 'Meta không có bản lồng tiếng Việt' }
+        'audio-not-vietnamese'   { return 'Audio không phải tiếng Việt' + $(if ($Entry.Language) { ': ' + $Entry.Language } else { '' }) }
+        ''                       { return 'Không rõ lý do' }
+        default                  { return [string]$Entry.Reason }
+    }
+}
+
+# Mot handler dung chung cho moi nut "Bo loai" (ID nam o Tag) -> khong tao closure moi moi dong.
+$script:unrejectClickHandler = [System.Windows.RoutedEventHandler]{
+    param($sender, $e)
+    Invoke-UnrejectReel -VideoId ([string]$sender.Tag)
+}
+
 function Update-RejectedDashboard {
     if (-not $ui.TxtRejectedDashboard) { return }
+    $panel = $ui.RejectedListPanel
     try {
         $entries = @(Get-RejectedReels -Root $root | Sort-Object RejectedAt -Descending)
-        $ui.RejectedDashboard.Header = 'Video đã loại · không tải lại ('+$entries.Count+')'
-        $lines = @($entries | Select-Object -First 100 | ForEach-Object {
-            $reason = if ($_.Reason -eq 'vietnamese-unavailable') { 'Meta không hỗ trợ tiếng Việt' } else { 'Audio không phải tiếng Việt: '+$_.Language }
-            $date = try { ([DateTime]::Parse($_.RejectedAt)).ToLocalTime().ToString('dd/MM/yyyy HH:mm') } catch { [string]$_.RejectedAt }
-            'Reel #'+$_.VideoId+' · '+$reason+' · '+$date
-        })
-        $ui.TxtRejectedDashboard.Text = if ($lines.Count) { $lines -join "`n" } else { 'Chưa có video bị loại.' }
-    } catch { $ui.TxtRejectedDashboard.Text = 'Không đọc được lịch sử loại. Dừng tải để tránh tải lại video đã loại.' }
+        $ui.RejectedDashboard.Header = 'Lịch sử đã loại · tổng ' + $entries.Count
+        if ($panel) {
+            # Giu TxtRejectedDashboard (phan tu 0) lam dong trang thai; xoa cac dong cu.
+            while ($panel.Children.Count -gt 1) { $panel.Children.RemoveAt($panel.Children.Count - 1) }
+        }
+        $shown = @($entries | Select-Object -First 100)
+        if (-not $entries.Count) {
+            $ui.TxtRejectedDashboard.Text = 'Chưa có video bị loại.'
+        } elseif ($entries.Count -gt $shown.Count) {
+            $ui.TxtRejectedDashboard.Text = "Hiển thị $($shown.Count) mục mới nhất / tổng $($entries.Count)."
+        } else {
+            $ui.TxtRejectedDashboard.Text = 'Bấm "Bỏ loại" để cho phép tải lại video đó.'
+        }
+        if (-not $panel) { return }
+        $bc = New-Object Windows.Media.BrushConverter
+        $canUnreject = [bool](Get-Command Remove-RejectedReel -ErrorAction SilentlyContinue)
+        foreach ($entry in $shown) {
+            $date = try { ([DateTime]::Parse([string]$entry.RejectedAt)).ToLocalTime().ToString('dd/MM/yyyy HH:mm') } catch { [string]$entry.RejectedAt }
+            $row = New-Object Windows.Controls.Grid
+            $row.Margin = New-Object Windows.Thickness(4, 2, 4, 2)
+            $c0 = New-Object Windows.Controls.ColumnDefinition; $c0.Width = [Windows.GridLength]::new(1, 'Star')
+            $c1 = New-Object Windows.Controls.ColumnDefinition; $c1.Width = [Windows.GridLength]::Auto
+            [void]$row.ColumnDefinitions.Add($c0); [void]$row.ColumnDefinitions.Add($c1)
+            $info = New-Object Windows.Controls.TextBlock
+            $info.Text = 'Reel #' + $entry.VideoId + ' · ' + $date + ' · ' + (Get-RejectedReasonText $entry)
+            $info.TextWrapping = 'Wrap'
+            $info.FontSize = 13
+            $info.VerticalAlignment = 'Center'
+            $info.Foreground = $bc.ConvertFromString('#CBD5E1')
+            [Windows.Controls.Grid]::SetColumn($info, 0)
+            $btn = New-Object Windows.Controls.Button
+            $btn.Content = 'Bỏ loại'
+            $btn.Padding = New-Object Windows.Thickness(8, 1, 8, 1)
+            $btn.Margin = New-Object Windows.Thickness(8, 0, 0, 0)
+            $btn.FontSize = 13
+            $btn.Tag = [string]$entry.VideoId
+            $btn.ToolTip = $(if ($canUnreject) { "Gỡ Reel #$($entry.VideoId) khỏi lịch sử loại để có thể tải lại." } else { 'Cần bản engine mới để bỏ loại.' })
+            $btn.Add_Click($script:unrejectClickHandler)
+            [Windows.Controls.Grid]::SetColumn($btn, 1)
+            [void]$row.Children.Add($info); [void]$row.Children.Add($btn)
+            [void]$panel.Children.Add($row)
+        }
+    } catch {
+        $ui.TxtRejectedDashboard.Text = 'Không đọc được lịch sử loại. Dừng tải để tránh tải lại video đã loại.'
+        Add-Log "Không đọc được lịch sử loại: $($_.Exception.Message)" '#F87171'
+    }
+}
+
+function Invoke-UnrejectReel {
+    param([string]$VideoId)
+    if ([string]::IsNullOrWhiteSpace($VideoId)) { return }
+    # Engine dang chay co the giu mutex lich su loai: khong cho UI thread cho toi 10 s.
+    if ($script:ps -or $script:stopping -or ($script:queue -and $script:queue.Count -gt 0)) {
+        Show-Toast 'Đang xử lý — thử lại sau khi dừng'
+        return
+    }
+    if (-not (Get-Command Remove-RejectedReel -ErrorAction SilentlyContinue)) {
+        Show-Toast 'Cần bản engine mới để bỏ loại video.'
+        Add-Log "Không bỏ loại được Reel #${VideoId}: thiếu hàm Remove-RejectedReel (cần bản engine mới)." '#FBBF24'
+        return
+    }
+    try {
+        $removed = [bool](Remove-RejectedReel -Root $root -VideoId $VideoId)
+        if ($removed) {
+            Add-Log "Đã bỏ loại Reel #$VideoId; lần tải sau sẽ xử lý lại video này." '#34D399'
+            Show-Toast "Đã bỏ loại Reel #$VideoId."
+        } else {
+            Show-Toast "Reel #$VideoId không còn trong lịch sử loại."
+        }
+    } catch {
+        Add-Log "Không bỏ loại được Reel #${VideoId}: $($_.Exception.Message)" '#F87171'
+        Show-Toast "Không bỏ loại được Reel #${VideoId}: $($_.Exception.Message)"
+    }
+    Update-RejectedDashboard
+    Update-LinkDuplicateWarning
 }
 
 function Update-Gallery {
@@ -2482,6 +2966,70 @@ function Update-ToolsStatus {
         $ui.BadgeStatusFfmpeg.BorderBrush = (New-Object Windows.Media.BrushConverter).ConvertFromString('#7F1D1D')
         $ui.BadgeStatusFfmpeg.Background = (New-Object Windows.Media.BrushConverter).ConvertFromString('#251417')
     }
+    # Chip header: chi dua tren file/lenh co san (nhe, khong goi adb). Thiet bi chi do ket qua -Check quyet dinh.
+    Set-HeaderChip -Chip 'Scrcpy' -State $(if ($hasScrcpy) { 'ok' } else { 'bad' }) -Text 'scrcpy' `
+        -Tip $(if ($hasScrcpy) { 'Đã tìm thấy scrcpy.' } else { 'Chưa có scrcpy — vào Bộ Thư Viện để cài.' })
+    $toolsOk = [bool]($hasFfmpeg -and $hasFfprobe -and $hasYtdlp)
+    $missing = @(); if (-not $hasFfmpeg) { $missing += 'ffmpeg' }; if (-not $hasFfprobe) { $missing += 'ffprobe' }; if (-not $hasYtdlp) { $missing += 'yt-dlp' }
+    Set-HeaderChip -Chip 'Tools' -State $(if ($toolsOk) { 'ok' } else { 'bad' }) -Text 'FFmpeg/yt-dlp' `
+        -Tip $(if ($toolsOk) { 'Đã có ffmpeg, ffprobe, yt-dlp.' } else { 'Thiếu: ' + ($missing -join ', ') + ' — vào Bộ Thư Viện để cài.' })
+}
+
+function Set-HeaderChip {
+    # State: ok (xanh) | bad (do) | unknown (xam, chua kiem)
+    param([ValidateSet('Device','Scrcpy','Tools')][string]$Chip, [ValidateSet('ok','bad','unknown')][string]$State, [string]$Text, [string]$Tip)
+    $dot = $ui["Chip${Chip}Dot"]; $txt = $ui["Chip${Chip}Text"]; $border = $ui["Chip$Chip"]
+    $color = switch ($State) { 'ok' { '#10B981' } 'bad' { '#F87171' } default { '#64748B' } }
+    if ($dot) { $dot.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString($color) }
+    if ($txt -and $Text) { $txt.Text = $Text }
+    if ($border -and $Tip) { $border.ToolTip = $Tip }
+    $script:headerChipState = if ($script:headerChipState) { $script:headerChipState } else { @{} }
+    $script:headerChipState[$Chip] = $State
+}
+
+function Get-CheckChipState {
+    # Doc output cua 'kid-fby.ps1 -Check' (dong v/x cua Test-Ready). Tra ve trang thai 3 chip.
+    param([string]$Text)
+    $r = @{
+        Device = @{ State = 'unknown'; Text = 'Thiết bị'; Tip = 'Chưa kiểm tra thiết bị Android.' }
+        Scrcpy = $null
+        Tools  = $null
+    }
+    if ([string]::IsNullOrEmpty($Text)) { return $r }
+    $toolState = @{}
+    foreach ($k in @('adb','scrcpy','ytdlp','ffmpeg','ffprobe')) {
+        if ($Text -match "(?m)^\s*v\s+$k\s*$") { $toolState[$k] = 'ok' }
+        elseif ($Text -match "(?m)^\s*x\s+$k\b") { $toolState[$k] = 'bad' }
+    }
+    if ($toolState.ContainsKey('scrcpy')) {
+        $r.Scrcpy = @{ State = $toolState['scrcpy']; Text = 'scrcpy'; Tip = $(if ($toolState['scrcpy'] -eq 'ok') { 'Kiểm tra máy: scrcpy sẵn sàng.' } else { 'Kiểm tra máy: thiếu scrcpy.' }) }
+    }
+    $media = @('ffmpeg','ffprobe','ytdlp' | Where-Object { $toolState.ContainsKey($_) })
+    if ($media.Count) {
+        $bad = @($media | Where-Object { $toolState[$_] -eq 'bad' })
+        $r.Tools = @{ State = $(if ($bad.Count) { 'bad' } else { 'ok' }); Text = 'FFmpeg/yt-dlp'
+                      Tip = $(if ($bad.Count) { 'Kiểm tra máy: thiếu ' + (($bad | ForEach-Object { if ($_ -eq 'ytdlp') { 'yt-dlp' } else { $_ } }) -join ', ') } else { 'Kiểm tra máy: ffmpeg, ffprobe, yt-dlp sẵn sàng.' }) }
+    }
+    $dev = [regex]::Match($Text, '(?m)^\s*v\s+(.*?)\s+\(Android\s+([^)]*)\)\s+\[([^\]]+)\]')
+    $ready = ($Text -match 'MAY DA SAN SANG')
+    if ($dev.Success -and $ready) {
+        $r.Device = @{ State = 'ok'; Text = 'Thiết bị'; Tip = "Sẵn sàng: $($dev.Groups[1].Value.Trim()) (Android $($dev.Groups[2].Value)) [$($dev.Groups[3].Value)]" }
+    } elseif ($Text -match '(?m)^\[2\]\s') {
+        $msg = [regex]::Match($Text, 'KHONG XONG\s+(\S[^\r\n]*)')
+        $tip = if ($msg.Success) { 'Chưa sẵn sàng: ' + $msg.Groups[1].Value.Trim() } else { 'Chưa sẵn sàng — xem Terminal Logs.' }
+        $r.Device = @{ State = 'bad'; Text = 'Thiết bị'; Tip = $tip }
+    } elseif ($toolState.Values -contains 'bad') {
+        $r.Device = @{ State = 'unknown'; Text = 'Thiết bị'; Tip = 'Chưa kiểm thiết bị vì thiếu công cụ.' }
+    }
+    return $r
+}
+
+function Update-HeaderChipsFromCheck {
+    param([string]$Text)
+    $st = Get-CheckChipState -Text $Text
+    Set-HeaderChip -Chip 'Device' -State $st.Device.State -Text $st.Device.Text -Tip $st.Device.Tip
+    if ($st.Scrcpy) { Set-HeaderChip -Chip 'Scrcpy' -State $st.Scrcpy.State -Text $st.Scrcpy.Text -Tip $st.Scrcpy.Tip }
+    if ($st.Tools)  { Set-HeaderChip -Chip 'Tools'  -State $st.Tools.State  -Text $st.Tools.Text  -Tip $st.Tools.Tip }
 }
 
 function Install-ToolGUI {
@@ -2518,6 +3066,7 @@ function Start-Engine {
     $script:cancelRequested = $false
     if ($XoaLog) { Clear-LogBatch; if ($ui.TxtLog) { $ui.TxtLog.Clear() }; $script:runLog = '' }
     $script:seen = 0; $script:mode = $Mode; $script:runLog = ''; $script:stopping = $false
+    $script:currentResult = $null
     $ui.PanelRev.Visibility = 'Collapsed'
     $candidate = $null
     try {
@@ -2548,6 +3097,8 @@ function Start-Engine {
                 Add-Log ("Chưa khởi động: $pendingUrl") '#FBBF24'
             }
             $script:queue = @()
+            $script:forceRetryRejected = $false
+            Restore-RedoOutDir
         }
         Set-Busy $false
         Add-Line ("LỖI KHỞI ĐỘNG: $startError")
@@ -2669,8 +3220,8 @@ function Start-Link {
     $ui.TxtStat.Text = "Đang xử lý Video ($n/$($script:queue.Count))..."
     $ui.TxtStat.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#38BDF8')
 
-    $posIdx = if ($ui.CmbLogoPosition -and $ui.CmbLogoPosition.SelectedIndex -ge 0 -and $ui.CmbLogoPosition.SelectedIndex -le 4) { $ui.CmbLogoPosition.SelectedIndex } else { 3 }
-    $gifPosIdx = if ($ui.CmbGifPosition -and $ui.CmbGifPosition.SelectedIndex -ge 0 -and $ui.CmbGifPosition.SelectedIndex -le 4) { $ui.CmbGifPosition.SelectedIndex } else { 1 }
+    $posIdx = if ($ui.CmbLogoPosition -and $ui.CmbLogoPosition.SelectedIndex -ge 0 -and $ui.CmbLogoPosition.SelectedIndex -le 4) { $ui.CmbLogoPosition.SelectedIndex } else { [int]$script:logoLastPresetIdx }
+    $gifPosIdx = if ($ui.CmbGifPosition -and $ui.CmbGifPosition.SelectedIndex -ge 0 -and $ui.CmbGifPosition.SelectedIndex -le 4) { $ui.CmbGifPosition.SelectedIndex } else { [int]$script:gifLastPresetIdx }
     $isFixedMode = ($ui.CmbLogoMode -and $ui.CmbLogoMode.SelectedIndex -eq 1)
     $logoCustX = if ($isFixedMode -and $null -ne $script:logoCustomX -and ([string]$script:logoCustomX).Trim().Length -gt 0 -and [double]$script:logoCustomX -ge 0.0) { [double]$script:logoCustomX } else { -1.0 }
     $logoCustY = if ($isFixedMode -and $null -ne $script:logoCustomY -and ([string]$script:logoCustomY).Trim().Length -gt 0 -and [double]$script:logoCustomY -ge 0.0) { [double]$script:logoCustomY } else { -1.0 }
@@ -2699,7 +3250,36 @@ function Start-Link {
         GifCustomWidth     = [double]$script:gifCustomWidth;
         GifCustomHeight    = [double]$script:gifCustomHeight
     }
+    if ($script:forceRetryRejected) {
+        if (Test-EngineParameter 'ForceRetryRejected') { $namedArgs['ForceRetryRejected'] = $true }
+        else { Add-Log 'Engine hiện tại chưa hỗ trợ -ForceRetryRejected (cần bản engine mới); video đã loại sẽ vẫn bị bỏ qua.' '#FBBF24' }
+    }
     Start-Engine -Links @($script:queue[$script:idx]) -Named $namedArgs -Mode 'run' -XoaLog $false
+}
+
+function Test-EngineParameter {
+    # Kiem tham so engine bang metadata script (khong chay engine). Ket qua duoc cache.
+    param([string]$Name)
+    # Parser::ParseFile nhan duong dan nguyen van (khong dien giai wildcard [] nhu Get-Command -Name).
+    $stamp = $null
+    try { $stamp = [System.IO.File]::GetLastWriteTimeUtc($engine) } catch { Write-FileLog "WARN Không đọc được thời gian sửa engine: $($_.Exception.Message)" }
+    if (-not $script:engineParamCache -or $script:engineParamCacheStamp -ne $stamp -or $script:engineParamCachePath -ne $engine) {
+        $cache = @{}
+        try {
+            $tokens = $null; $parseErrors = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($engine, [ref]$tokens, [ref]$parseErrors)
+            if ($parseErrors -and $parseErrors.Count) { throw "Engine có lỗi cú pháp: $($parseErrors[0].Message)" }
+            if ($ast.ParamBlock) {
+                foreach ($p in $ast.ParamBlock.Parameters) { $cache[$p.Name.VariablePath.UserPath] = $true }
+            }
+        } catch {
+            Add-Log "Không đọc được tham số engine: $($_.Exception.Message)" '#FBBF24'
+        }
+        $script:engineParamCache = $cache
+        $script:engineParamCacheStamp = $stamp
+        $script:engineParamCachePath = $engine
+    }
+    return $script:engineParamCache.ContainsKey($Name)
 }
 
 function Start-RecordingAgain {
@@ -2719,10 +3299,17 @@ function Start-RecordingAgain {
     }
     # The explicit retry is a one-item queue targeting the selected video's folder.
     # Existing files remain intact until the engine successfully publishes replacements.
-    $ui.TxtOut.Text = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($redoFile))
+    # Doi thu muc xuat TAM cho muc redo: khong luu vao settings, khoi phuc khi muc ket thuc (Restore-RedoOutDir).
+    $redoDir = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($redoFile))
+    if (-not $script:redoRestoreOutDir) { $script:redoRestoreOutDir = [string]$ui.TxtOut.Text }
+    $wasLoading = $script:settingsLoading
+    $script:settingsLoading = $true
+    try { $ui.TxtOut.Text = $redoDir } finally { $script:settingsLoading = $wasLoading }
     $script:queue = @('https://www.facebook.com/reel/' + $match.Groups[1].Value + '/')
-    $script:idx = 0; $script:giu = 0; $script:bo = 0; $script:loi = 0
+    $script:idx = 0; $script:giu = 0; $script:bo = 0; $script:loi = 0; $script:boTruoc = 0; $script:queueFinalizedIdx = -1
     $script:failedLinks = @(); $script:lastCompletedOut = $redoFile
+    # Ghi am lai la yeu cau ro rang cua nguoi dung: bo qua lich su loai cho link nay (CONTRACT §2).
+    $script:forceRetryRejected = $true
     Add-Log ('Ghi âm lại Reel #' + $match.Groups[1].Value + ' · giữ bản cũ nếu xử lý lỗi hoặc bị dừng.') '#38BDF8'
     Start-Link
 }
@@ -2734,8 +3321,8 @@ function Start-Reedit {
         return
     }
 
-    $posIdx = if ($ui.CmbLogoPosition -and $ui.CmbLogoPosition.SelectedIndex -ge 0 -and $ui.CmbLogoPosition.SelectedIndex -le 4) { $ui.CmbLogoPosition.SelectedIndex } else { 3 }
-    $gifPosIdx = if ($ui.CmbGifPosition -and $ui.CmbGifPosition.SelectedIndex -ge 0 -and $ui.CmbGifPosition.SelectedIndex -le 4) { $ui.CmbGifPosition.SelectedIndex } else { 1 }
+    $posIdx = if ($ui.CmbLogoPosition -and $ui.CmbLogoPosition.SelectedIndex -ge 0 -and $ui.CmbLogoPosition.SelectedIndex -le 4) { $ui.CmbLogoPosition.SelectedIndex } else { [int]$script:logoLastPresetIdx }
+    $gifPosIdx = if ($ui.CmbGifPosition -and $ui.CmbGifPosition.SelectedIndex -ge 0 -and $ui.CmbGifPosition.SelectedIndex -le 4) { $ui.CmbGifPosition.SelectedIndex } else { [int]$script:gifLastPresetIdx }
     $isFixedMode = ($ui.CmbLogoMode -and $ui.CmbLogoMode.SelectedIndex -eq 1)
     $logoCustX = if ($isFixedMode -and $null -ne $script:logoCustomX -and ([string]$script:logoCustomX).Trim().Length -gt 0 -and [double]$script:logoCustomX -ge 0.0) { [double]$script:logoCustomX } else { -1.0 }
     $logoCustY = if ($isFixedMode -and $null -ne $script:logoCustomY -and ([string]$script:logoCustomY).Trim().Length -gt 0 -and [double]$script:logoCustomY -ge 0.0) { [double]$script:logoCustomY } else { -1.0 }
@@ -2776,32 +3363,131 @@ if ($ui.BadgePreviewMode) { $ui.BadgePreviewMode.Visibility = 'Collapsed' }
     if ($ok) { Show-Toast 'Đã áp dụng logo và GIF mới vào video.' }
 }
 
+function Get-QueueItemOutcome {
+    # Phan loai ket qua mot muc. Uu tien @@KIDFBY_RESULT (CONTRACT §1); khong co RESULT -> regex log cu.
+    # Kind: saved | rejected | skipped (da loai truoc) | failed | cancelled
+    param($Result, [string]$Log)
+    if ($null -ne $Result) {
+        $status = ([string]$Result.status).ToLowerInvariant()
+        $reason = [string]$Result.reason
+        $message = [string]$Result.message
+        switch ($status) {
+            'ok' {
+                $video = [string]$Result.video
+                if ($video -and (Test-Path -LiteralPath $video -PathType Leaf)) {
+                    return @{ Kind = 'saved'; Video = $video; Reason = $reason; Message = $message; Source = 'result' }
+                }
+                return @{ Kind = 'failed'; Video = $video; Reason = 'missing-output'; Message = "Engine báo thành công nhưng không thấy file: $video"; Source = 'result' }
+            }
+            'rejected' {
+                $kind = if ($reason -eq 'already-rejected') { 'skipped' } else { 'rejected' }
+                return @{ Kind = $kind; Video = ''; Reason = $reason; Message = $message; Source = 'result' }
+            }
+            'cancelled' { return @{ Kind = 'cancelled'; Video = ''; Reason = $reason; Message = $message; Source = 'result' } }
+            default {
+                # unverified | failed | trang thai la -> loi kem message
+                $text = if ($message) { $message } elseif ($reason) { $reason } else { "Trạng thái engine: $status" }
+                if ($status -eq 'unverified') { $text = 'Chưa xác nhận được: ' + $text }
+                return @{ Kind = 'failed'; Video = ''; Reason = $reason; Message = $text; Source = 'result' }
+            }
+        }
+    }
+    if ($Log -match '(?m)REEL_REJECTED:') {
+        $reasonMatch = [regex]::Match($Log, '(?m)REEL_REJECTED:.*\breason=(\S+)')
+        $reason = if ($reasonMatch.Success) { $reasonMatch.Groups[1].Value } else { '' }
+        $kind = if ($reason -eq 'already-rejected') { 'skipped' } else { 'rejected' }
+        return @{ Kind = $kind; Video = ''; Reason = $reason; Message = ''; Source = 'log' }
+    }
+    $match = [regex]::Match([string]$Log, '(?m)^\s*Video\s*:\s*(.+\.mp4)\s*$')
+    $output = if ($match.Success) { $match.Groups[1].Value.Trim() } else { '' }
+    if ($output -and (Test-Path -LiteralPath $output -PathType Leaf)) {
+        return @{ Kind = 'saved'; Video = $output; Reason = ''; Message = ''; Source = 'log' }
+    }
+    return @{ Kind = 'failed'; Video = ''; Reason = ''; Message = ''; Source = 'log' }
+}
+
+function Format-QueueSummary {
+    return "Hoàn tất: $($script:giu) đã lưu · $($script:bo) bị loại · $($script:boTruoc) bỏ qua (đã loại trước) · $($script:loi) lỗi"
+}
+
+function Register-QueueOutcome {
+    # Cap nhat bo dem + log cho muc hien tai; dung chung cho ket thuc binh thuong va nhanh Dung.
+    param([hashtable]$Outcome)
+    $n = $script:idx + 1; $total = $script:queue.Count
+    $url = $script:queue[$script:idx]
+    $script:queueFinalizedIdx = $script:idx
+    switch ($Outcome.Kind) {
+        'saved' {
+            $script:lastCompletedOut = $Outcome.Video
+            $script:giu++
+            Add-Log ("Đã lưu ($n/$total): $($Outcome.Video)") '#34D399'
+        }
+        'rejected' {
+            $script:lastOut = ''; $script:activeTrack = $null
+            $script:bo++
+            $why = if ($Outcome.Message) { $Outcome.Message } elseif ($Outcome.Reason) { $Outcome.Reason } else { 'không có bản lồng tiếng Việt phù hợp' }
+            Add-Log "Video $n/$total bị loại ($why); tự chuyển video tiếp theo." '#FBBF24'
+            # Lich su loai vua doi: cap nhat tong ngay, khong doi Update-Gallery.
+            Update-RejectedDashboard
+        }
+        'skipped' {
+            $script:lastOut = ''; $script:activeTrack = $null
+            $script:boTruoc++
+            Add-Log "Video $n/$total đã bị loại trước đây — bỏ qua." '#FBBF24'
+        }
+        'cancelled' {
+            Add-Log "Video $n/$total đã dừng giữa chừng." '#FBBF24'
+        }
+        default {
+            $script:loi++
+            $script:failedLinks += $url
+            $detail = if ($Outcome.Message) { " — $($Outcome.Message)" } else { '' }
+            Add-Log ("Video $n/$total chưa hoàn tất$detail; đã ghi lỗi và tự chuyển tiếp: $url") '#F87171'
+        }
+    }
+}
+
 function Complete-QueueItem {
     param([string]$Log)
     if ($script:ps -or $script:stopping -or $script:cancelRequested -or $script:mode -ne 'run' -or
         -not $script:queue -or $script:idx -lt 0 -or $script:idx -ge $script:queue.Count) { return }
 
     $ui.PanelRev.Visibility = 'Collapsed'
-    if ($Log -match '(?m)REEL_REJECTED:') {
-        $script:lastOut = ''; $script:activeTrack = $null
-        $script:bo++
-        Add-Log 'Đã bỏ qua video trong danh sách loại; tự chuyển video tiếp theo.' '#FBBF24'
-        if ($Log -match 'REEL_CLEANUP_PENDING:') { Show-Toast 'Video đã bị chặn tải lại; có file đang khóa chưa xóa được. Xem Logs.' }
-    } else {
-        $match = [regex]::Match($Log, '(?m)^\s*Video\s*:\s*(.+\.mp4)\s*$')
-        $output = if ($match.Success) { $match.Groups[1].Value.Trim() } else { '' }
-        if ($output -and (Test-Path -LiteralPath $output -PathType Leaf)) {
-            $script:lastCompletedOut = $output
-            $script:giu++
-            Add-Log ("Đã lưu ($($script:idx + 1)/$($script:queue.Count)): $output") '#34D399'
-        } else {
-            $script:loi++
-            $script:failedLinks += $script:queue[$script:idx]
-            Add-Log ("Video $($script:idx + 1)/$($script:queue.Count) chưa hoàn tất; đã ghi lỗi và tự chuyển tiếp: $($script:queue[$script:idx])") '#F87171'
-        }
+    $outcome = Get-QueueItemOutcome -Result $script:currentResult -Log $Log
+    if ($script:queueFinalizedIdx -ne $script:idx) { Register-QueueOutcome $outcome }
+    if ($Log -match 'REEL_CLEANUP_PENDING:') { Show-Toast 'Có file tạm đang khóa chưa dọn được. Xem Logs.' }
+    if ($outcome.Kind -eq 'cancelled') {
+        # Engine tu bao huy: dung ca hang doi, khong chay muc sau.
+        Stop-QueueSummary -Stopped
+        Update-Gallery
+        return
     }
     # No preview playback between items: the next item captures Android audio.
     Next-Link
+}
+
+function Restore-RedoOutDir {
+    # Tra lai thu muc xuat cua nguoi dung sau "Ghi am lai" (thanh cong/loi/dung), khong kich hoat luu settings.
+    if ($null -eq $script:redoRestoreOutDir) { return }
+    $orig = $script:redoRestoreOutDir
+    $script:redoRestoreOutDir = $null
+    $wasLoading = $script:settingsLoading
+    $script:settingsLoading = $true
+    try { $ui.TxtOut.Text = $orig } finally { $script:settingsLoading = $wasLoading }
+}
+
+function Stop-QueueSummary {
+    param([switch]$Stopped)
+    Restore-RedoOutDir
+    Add-Log ''
+    Add-Log ((Format-QueueSummary) + $(if ($Stopped) { ' (đã dừng)' } else { '' })) '#34D399'
+    foreach ($failedUrl in $script:failedLinks) { Add-Log ("Link chưa hoàn tất: $failedUrl") '#FBBF24' }
+    $script:queue = @()
+    $script:forceRetryRejected = $false
+    $ui.PanelRev.Visibility = 'Collapsed'
+    $ui.TxtStat.Text = $(if ($Stopped) { 'Đã dừng · ' + (Format-QueueSummary) } else { Format-QueueSummary })
+    $ui.TxtStat.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString($(if ($script:loi -or $Stopped) { '#FBBF24' } else { '#10B981' }))
+    Set-Busy $false
 }
 
 function Next-Link {
@@ -2810,14 +3496,7 @@ function Next-Link {
     $script:idx++
     if ($script:idx -lt $script:queue.Count) { Start-Link }
     else {
-        Add-Log ''
-        Add-Log "Tổng kết hàng loạt: Đã lưu $($script:giu)  |  Bỏ qua $($script:bo)  |  Lỗi $($script:loi)" '#34D399'
-        foreach ($failedUrl in $script:failedLinks) { Add-Log ("Link chưa hoàn tất: $failedUrl") '#FBBF24' }
-        $script:queue = @()
-        $ui.PanelRev.Visibility = 'Collapsed'
-        $ui.TxtStat.Text = "Hoàn tất: $($script:giu) đã lưu · $($script:bo) bỏ qua · $($script:loi) lỗi"
-        $ui.TxtStat.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString($(if ($script:loi) { '#FBBF24' } else { '#10B981' }))
-        Set-Busy $false
+        Stop-QueueSummary
         Update-Gallery
         if ($script:lastCompletedOut -and (Test-Path -LiteralPath $script:lastCompletedOut -PathType Leaf)) {
             Load-Player $script:lastCompletedOut
@@ -2828,24 +3507,80 @@ function Next-Link {
 # ------------------------------------------------------------------ nhip ----
 $timer = New-Object Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromMilliseconds(200)
-$timer.Add_Tick({
+function Invoke-EngineTickError {
+    # Thay cho catch rong cu: ghi log (UI + file kem stack), giai phong hang doi neu chuoi chuyen muc bi gay,
+    # va bao dam timer khong dung vinh vien khi engine con chay.
+    param($ErrorRecord, [bool]$WasStopping = $false)
+    $msg = if ($ErrorRecord -and $ErrorRecord.Exception) { $ErrorRecord.Exception.Message } else { [string]$ErrorRecord }
+    $stack = if ($ErrorRecord -and $ErrorRecord.ScriptStackTrace) { [string]$ErrorRecord.ScriptStackTrace } else { '' }
     try {
-        Pump-Output
-        if ($script:stopping) {
+        $key = $msg + '|' + $stack
+        if ($key -eq $script:tickErrorKey) { $script:tickErrorRepeat++ } else { $script:tickErrorKey = $key; $script:tickErrorRepeat = 1 }
+        # Loi lap lai moi 200 ms: chi hien 3 lan dau va moi lan thu 50.
+        if ($script:tickErrorRepeat -le 3 -or ($script:tickErrorRepeat % 50) -eq 0) {
+            $suffix = if ($script:tickErrorRepeat -gt 1) { " (lần $($script:tickErrorRepeat))" } else { '' }
+            Add-Log "Lỗi nội bộ trong vòng xử lý hàng đợi: $msg$suffix" '#F87171'
+            Write-FileLog "ERR  tick stack:`r`n$stack" -Immediate
+        }
+    } catch { $script:fileLogError = $_.Exception.Message }
+
+    if ($script:ps) {
+        # Engine van chay (loi o Pump-Output/ve UI): giu timer chay de con nhan ket thuc.
+        if (-not $timer.IsEnabled) { $timer.Start() }
+        return
+    }
+    if ($script:mode -ne 'run' -or -not $script:queue -or $script:queue.Count -eq 0) { return }
+    if ($WasStopping -or $script:cancelRequested) {
+        try { Stop-QueueSummary -Stopped } catch { $script:queue = @(); Restore-RedoOutDir; Set-Busy $false }
+        return
+    }
+    $reason = $msg
+    $guard = 0
+    while (-not $script:ps -and -not $script:stopping -and $script:queue -and
+           $script:idx -ge 0 -and $script:idx -lt $script:queue.Count -and $guard -le $script:queue.Count) {
+        $guard++
+        if ($script:queueFinalizedIdx -ne $script:idx) {
+            Register-QueueOutcome @{ Kind = 'failed'; Video = ''; Reason = 'gui-exception'; Message = "lỗi nội bộ GUI: $reason" }
+        }
+        try { Next-Link; return }
+        catch {
+            $reason = $_.Exception.Message
+            Add-Log "Không chuyển được sang video tiếp theo: $reason" '#F87171'
+            Write-FileLog "ERR  Next-Link stack:`r`n$($_.ScriptStackTrace)" -Immediate
+        }
+    }
+    if (-not $script:ps -and $script:queue -and $script:queue.Count -gt 0) {
+        foreach ($pendingUrl in @($script:queue | Select-Object -Skip ($script:idx + 1))) { Add-Log ("Chưa khởi động: $pendingUrl") '#FBBF24' }
+        try { Stop-QueueSummary -Stopped } catch { $script:queue = @(); Restore-RedoOutDir; Set-Busy $false }
+    }
+}
+
+function Invoke-EngineTick {
+    Pump-Output
+    if ($script:stopping) {
             $stopDone = (-not $script:stopHandle -or $script:stopHandle.IsCompleted)
             $invokeDone = (-not $script:handle -or $script:handle.IsCompleted)
             if ($stopDone -and $invokeDone) {
-                if ($script:stopHandle) { try { $script:ps.EndStop($script:stopHandle) } catch { } }
+                if ($script:stopHandle) { try { $script:ps.EndStop($script:stopHandle) } catch { Write-FileLog "WARN EndStop: $($_.Exception.Message)" } }
                 Finish-Engine -Cancelled $true
                 if ($script:mode -eq 'reedit') {
                     Complete-Reedit -Cancelled $true
                     if ($script:closeAfterStop) { $script:closeAfterStop = $false; $win.Close() }
                     return
                 }
+                if ($script:mode -eq 'run' -and $script:queue -and $script:idx -ge 0 -and $script:idx -lt $script:queue.Count -and
+                    $script:queueFinalizedIdx -ne $script:idx) {
+                    # Dung dung luc muc vua xong: ket qua da xac dinh van duoc tinh (G15).
+                    $outcome = Get-QueueItemOutcome -Result $script:currentResult -Log $script:runLog
+                    if ($outcome.Kind -in @('saved','rejected','skipped')) { Register-QueueOutcome $outcome }
+                }
+                if ($script:mode -eq 'run' -and $script:queue -and $script:queue.Count -gt 0) { Stop-QueueSummary -Stopped }
                 $script:queue = @()
+                $script:forceRetryRejected = $false
+                Restore-RedoOutDir
                 try { Update-Gallery } catch { Add-Log 'Không cập nhật được kho sau khi dừng; các file đã lưu vẫn được giữ nguyên.' '#FBBF24' }
                 $ui.PanelRev.Visibility = 'Collapsed'
-                if ($ui.TxtStat) { $ui.TxtStat.Text = 'Đã dừng theo yêu cầu'; $ui.TxtStat.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#FBBF24') }
+                if ($ui.TxtStat -and $script:mode -ne 'run') { $ui.TxtStat.Text = 'Đã dừng theo yêu cầu'; $ui.TxtStat.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#FBBF24') }
                 if ($script:closeAfterStop) { $script:closeAfterStop = $false; $win.Close() }
             }
             return
@@ -2898,6 +3633,7 @@ $timer.Add_Tick({
             }
             if ($laCheck) {
                 Update-ToolsStatus
+                Update-HeaderChipsFromCheck -Text $txt
                 if ($txt -match 'SAN SANG') {
                     if ($ui.TxtStat) {
                         $ui.TxtStat.Text = 'Hệ thống đã sẵn sàng'
@@ -2916,7 +3652,16 @@ $timer.Add_Tick({
             if ($script:queue.Count -eq 0) { return }
             Complete-QueueItem -Log $txt
         }
-    } catch { }
+}
+
+$timer.Add_Tick({
+    $wasStopping = [bool]$script:stopping
+    try { Invoke-EngineTick }
+    catch {
+        $tickError = $_
+        try { Invoke-EngineTickError -ErrorRecord $tickError -WasStopping $wasStopping }
+        catch { Write-FileLog "ERR  Invoke-EngineTickError: $($_.Exception.Message)`r`n$($_.ScriptStackTrace)" -Immediate }
+    }
 })
 
 # Dong bo thanh tua va lop phu theo vi tri phat video.
@@ -2968,12 +3713,17 @@ $ui.BtnWinMin.Add_Click({ $win.WindowState = [System.Windows.WindowState]::Minim
 $ui.BtnWinMax.Add_Click({
     if ($win.WindowState -eq [System.Windows.WindowState]::Maximized) {
         $win.WindowState = [System.Windows.WindowState]::Normal
-        $ui.BtnWinMax.Content = '☐'
     } else {
         $win.WindowState = [System.Windows.WindowState]::Maximized
-        $ui.BtnWinMax.Content = '❐'
     }
 })
+function Update-MaxButtonGlyph {
+    # Dong bo ca khi phong to bang double-click thanh tieu de hoac Win+mui ten / snap.
+    if (-not $ui.BtnWinMax) { return }
+    $ui.BtnWinMax.Content = if ($win.WindowState -eq [System.Windows.WindowState]::Maximized) { '❐' } else { '☐' }
+    $ui.BtnWinMax.ToolTip = if ($win.WindowState -eq [System.Windows.WindowState]::Maximized) { 'Khôi phục' } else { 'Phóng to' }
+}
+$win.Add_StateChanged({ Update-MaxButtonGlyph })
 $ui.BtnWinClose.Add_Click({ $win.Close() })
 
 # TAB SWITCHING LOGIC: Tien trinh -> Kho Video -> Bo Thu Vien -> Terminal Logs (CUOI CUNG)
@@ -3146,10 +3896,14 @@ $ui.BtnCheckTools.Add_Click({      Update-ToolsStatus })
 $ui.BtnOpenUninstall.Add_Click({
     if ($script:ps) { Show-Toast 'Đang chạy tác vụ — không thể gỡ thư viện lúc này.'; return }
     $ans = [System.Windows.MessageBox]::Show(
-        "Bạn có muốn gỡ bỏ toàn bộ bộ thư viện trong thư mục 'tools' để giải phóng dung lượng không?",
+        ("Xóa vĩnh viễn toàn bộ thư mục:`r`n$(Join-Path $root 'tools')`r`n`r`n" +
+         "Bao gồm ADB, scrcpy, FFmpeg/ffprobe, yt-dlp và model Whisper đã tải.`r`n" +
+         "Sau khi gỡ, app không tải hoặc xử lý video được cho tới khi cài lại (cần mạng).`r`n" +
+         "Video đã xuất và lịch sử trong output/data KHÔNG bị xóa.`r`n`r`nGỡ thư viện?"),
         "Kid FB.Y - Gỡ cài đặt bộ thư viện",
         [System.Windows.MessageBoxButton]::YesNo,
-        [System.Windows.MessageBoxImage]::Question
+        [System.Windows.MessageBoxImage]::Warning,
+        [System.Windows.MessageBoxResult]::No
     )
     if ($ans -eq [System.Windows.MessageBoxResult]::Yes) {
         try {
@@ -3206,14 +3960,56 @@ if ($ui.BtnClearLog) {
     })
 }
 
+function Set-QueueCountText {
+    # Noi DUY NHAT ghi TxtQueueCount.
+    param([int]$Count)
+    if (-not $ui.TxtQueueCount) { return }
+    if ($Count -le 0) {
+        $ui.TxtQueueCount.Text = 'Chưa có liên kết nào'
+        $ui.TxtQueueCount.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#94A3B8')
+    } else {
+        $ui.TxtQueueCount.Text = "Đã nhận $Count video khác nhau"
+        $ui.TxtQueueCount.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#38BDF8')
+    }
+}
+
+function Get-InputLinkCount {
+    if (Get-Command Get-FacebookInputLinks -CommandType Function -ErrorAction SilentlyContinue) {
+        return @(Get-FacebookInputLinks -Text $ui.TxtLinks.Text).Count
+    }
+    return @($ui.TxtLinks.Text -split "`r?`n" | Where-Object { $_ -match '\S' }).Count
+}
+
+function Get-RejectedLinkMatches {
+    # Link trong danh sach trung lich su loai (theo ID hoac URL da ghi). Dung chung cho canh bao va nut Bat dau.
+    param([string[]]$Links, $Rejected)
+    # URL so sanh sau chuan hoa (ConvertTo-FacebookNormalizedUrl) neu ham co; ID luon uu tien.
+    $canNormalize = [bool](Get-Command ConvertTo-FacebookNormalizedUrl -ErrorAction SilentlyContinue)
+    $norm = { param($u) if ($canNormalize) { try { [string](ConvertTo-FacebookNormalizedUrl $u) } catch { [string]$u } } else { [string]$u } }
+    $ids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    $urls = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($r in @($Rejected)) {
+        if ($r.VideoId) { [void]$ids.Add([string]$r.VideoId) }
+        foreach ($u in @($r.Urls)) { if ($u) { [void]$urls.Add([string]$u); [void]$urls.Add((& $norm $u)) } }
+    }
+    return @($Links | Where-Object {
+        $id = Get-FacebookVideoId -Url $_
+        ($id -and $ids.Contains([string]$id)) -or $urls.Contains([string]$_) -or $urls.Contains((& $norm $_))
+    })
+}
+
 function Update-LinkDuplicateWarning {
-    if (-not $ui.TxtDuplicateWarning -or -not (Get-Command Get-FacebookLinkDuplicateReport -ErrorAction SilentlyContinue)) { return }
+    if (-not $ui.TxtDuplicateWarning) { return }
+    if (-not (Get-Command Get-FacebookLinkDuplicateReport -ErrorAction SilentlyContinue)) {
+        try { Set-QueueCountText (Get-InputLinkCount) } catch { Add-Log "Không đếm được link: $($_.Exception.Message)" '#FBBF24' }
+        return
+    }
     try {
         $report = Get-FacebookLinkDuplicateReport -Text $ui.TxtLinks.Text -OutDir $ui.TxtOut.Text
         $messages = @()
         $rejected = @(Get-RejectedReels -Root $root)
-        $blocked = @($report.Links | Where-Object { $id=Get-FacebookVideoId -Url $_; $url=$_; @($rejected | Where-Object { ($id -and $_.VideoId -eq $id) -or $url -cin @($_.Urls) }).Count -gt 0 })
-        if ($blocked.Count) { $messages += "$($blocked.Count) video đã loại vì không có tiếng Việt — sẽ tự bỏ qua." }
+        $blocked = @(Get-RejectedLinkMatches -Links @($report.Links) -Rejected $rejected)
+        if ($blocked.Count) { $messages += "$($blocked.Count) link trong danh sách đã bị loại trước đây — sẽ bỏ qua." }
         if ($report.DownloadedIds.Count -gt 0) {
             $ids = @($report.DownloadedIds | Select-Object -First 3 | ForEach-Object { "Reel #$_" }) -join ', '
             $messages += "$ids đã tải trong thư mục xuất ($($report.DownloadedIds.Count) video)."
@@ -3224,10 +4020,12 @@ function Update-LinkDuplicateWarning {
         }
         $ui.TxtDuplicateWarning.Text = $messages -join "`n"
         $ui.TxtDuplicateWarning.Visibility = if ($messages.Count) { 'Visible' } else { 'Collapsed' }
-        $ui.TxtQueueCount.Text = if ($report.Links.Count) { "Đã nhận $($report.Links.Count) video khác nhau" } else { 'Chưa có liên kết nào' }
+        Set-QueueCountText @($report.Links).Count
     } catch {
         $ui.TxtDuplicateWarning.Text = 'Không kiểm tra được video đã tải. Kiểm tra lại thư mục xuất.'
         $ui.TxtDuplicateWarning.Visibility = 'Visible'
+        Write-FileLog "WARN Update-LinkDuplicateWarning: $($_.Exception.Message)"
+        try { Set-QueueCountText (Get-InputLinkCount) } catch { Write-FileLog "WARN Get-InputLinkCount: $($_.Exception.Message)" }
     }
 }
 
@@ -3242,25 +4040,15 @@ function Confirm-DownloadedReels {
 
 # Debounce local checks while typing; check again synchronously before starting.
 $tLinkWarning = New-Object Windows.Threading.DispatcherTimer
-$tLinkWarning.Interval = [TimeSpan]::FromMilliseconds(350)
-$tLinkWarning.Add_Tick({ $tLinkWarning.Stop(); Update-LinkDuplicateWarning })
+$tLinkWarning.Interval = [TimeSpan]::FromMilliseconds(400)
+$tLinkWarning.Add_Tick({
+    $tLinkWarning.Stop()
+    try { Update-LinkDuplicateWarning } catch { Add-Log "Không kiểm tra được danh sách link: $($_.Exception.Message)" '#FBBF24' }
+})
 $ui.TxtOut.Add_TextChanged({ $tLinkWarning.Stop(); $tLinkWarning.Start() })
 
-# Dynamic Link Count Tracker
-$ui.TxtLinks.Add_TextChanged({
-    $tLinkWarning.Stop(); $tLinkWarning.Start()
-    $lines = if (Get-Command Get-FacebookInputLinks -CommandType Function -ErrorAction SilentlyContinue) {
-        @(Get-FacebookInputLinks -Text $ui.TxtLinks.Text)
-    } else { @($ui.TxtLinks.Text -split "`r?
-" | Where-Object { $_ -match '\S' }) }
-    if ($lines.Count -eq 0) {
-        $ui.TxtQueueCount.Text = "Chưa có liên kết nào"
-        $ui.TxtQueueCount.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#94A3B8')
-    } else {
-        $ui.TxtQueueCount.Text = "Đã nhận $($lines.Count) liên kết trong hàng đợi"
-        $ui.TxtQueueCount.Foreground = (New-Object Windows.Media.BrushConverter).ConvertFromString('#38BDF8')
-    }
-})
+# Debounce 400 ms: dem link, trung lap va lich su loai chi tinh khi nguoi dung ngung go.
+$ui.TxtLinks.Add_TextChanged({ $tLinkWarning.Stop(); $tLinkWarning.Start() })
 
 $ui.BtnPick.Add_Click({
     try {
@@ -3673,14 +4461,38 @@ $ui.SldLogoFade.Add_ValueChanged({
     if (Get-Command 'Enter-CleanPreviewMode' -ErrorAction SilentlyContinue) { Enter-CleanPreviewMode }
     if (Get-Command 'Update-WatermarkOverlay' -ErrorAction SilentlyContinue) { Update-WatermarkOverlay }
 })
+$script:positionCustomIndex = 5   # muc "Tuy chinh (keo tha)" trong CmbLogoPosition/CmbGifPosition
+
+function Set-PositionComboCustom {
+    # Goi khi keo/resize: hien "Tuy chinh" thay vi de combo trong (SelectedIndex=-1).
+    param([ValidateSet('logo','gif')][string]$Target)
+    $cmb = if ($Target -eq 'logo') { $ui.CmbLogoPosition } else { $ui.CmbGifPosition }
+    if ($cmb -and $cmb.SelectedIndex -ne $script:positionCustomIndex) { $cmb.SelectedIndex = $script:positionCustomIndex }
+}
+
+function Test-LogoHasCustomGeometry {
+    return [bool](($script:logoCustomX -ge 0.0 -and $script:logoCustomY -ge 0.0) -or ($script:logoCustomWidth -gt 0.0 -and $script:logoCustomHeight -gt 0.0))
+}
+function Test-GifHasCustomGeometry {
+    return [bool]($script:gifFullFrame -or ($script:gifCustomX -ge 0.0 -and $script:gifCustomY -ge 0.0) -or ($script:gifCustomWidth -gt 0.0 -and $script:gifCustomHeight -gt 0.0))
+}
+
 if ($ui.CmbLogoPosition) {
     $ui.CmbLogoPosition.Add_SelectionChanged({
-        if ($ui.CmbLogoPosition.SelectedIndex -ge 0) {
+        $idx = $ui.CmbLogoPosition.SelectedIndex
+        if ($idx -eq $script:positionCustomIndex) {
+            # Chon lai "Tuy chinh" khi chua co hinh hoc tuy chinh -> giu preset truoc do.
+            if (-not (Test-LogoHasCustomGeometry)) { $ui.CmbLogoPosition.SelectedIndex = [int]$script:logoLastPresetIdx }
+            return
+        }
+        if ($idx -ge 0) {
+            $script:logoLastPresetIdx = $idx
             $script:logoCustomX = -1.0
             $script:logoCustomY = -1.0
             if (Get-Command 'Enter-CleanPreviewMode' -ErrorAction SilentlyContinue) { Enter-CleanPreviewMode }
             if (Get-Command 'Update-WatermarkOverlay' -ErrorAction SilentlyContinue) { Update-WatermarkOverlay }
         }
+        Request-SaveSettings
     })
 }
 if ($ui.ChkWatermark) {
@@ -3943,7 +4755,7 @@ function Set-GifFullFrame {
         $script:gifCustomHeight = -1.0
         $script:gifCustomX = 0.0
         $script:gifCustomY = 0.0
-        if ($ui.CmbGifPosition) { $ui.CmbGifPosition.SelectedIndex = -1 }
+        Set-PositionComboCustom -Target gif
         if (Get-Command 'Enter-CleanPreviewMode' -ErrorAction SilentlyContinue) { Enter-CleanPreviewMode }
         if (Get-Command 'Update-WatermarkOverlay' -ErrorAction SilentlyContinue) { Update-WatermarkOverlay }
         if (Get-Command 'Update-WatermarkSummary' -ErrorAction SilentlyContinue) { Update-WatermarkSummary }
@@ -3991,13 +4803,20 @@ if ($ui.SldGifSize) {
 }
 if ($ui.CmbGifPosition) {
     $ui.CmbGifPosition.Add_SelectionChanged({
-        if ($ui.CmbGifPosition.SelectedIndex -ge 0) {
+        $idx = $ui.CmbGifPosition.SelectedIndex
+        if ($idx -eq $script:positionCustomIndex) {
+            if (-not (Test-GifHasCustomGeometry)) { $ui.CmbGifPosition.SelectedIndex = [int]$script:gifLastPresetIdx }
+            return
+        }
+        if ($idx -ge 0) {
+            $script:gifLastPresetIdx = $idx
             if ($script:gifFullFrame) { Reset-GifFullFrame }
             $script:gifCustomX = -1.0
             $script:gifCustomY = -1.0
             if (Get-Command 'Enter-CleanPreviewMode' -ErrorAction SilentlyContinue) { Enter-CleanPreviewMode }
             if (Get-Command 'Update-WatermarkOverlay' -ErrorAction SilentlyContinue) { Update-WatermarkOverlay }
         }
+        Request-SaveSettings
     })
 }
 if ($ui.ChkGif) {
@@ -4165,9 +4984,7 @@ if ($ui.BoxLogoOverlay) {
         if ($ui.CmbLogoMode -and $ui.CmbLogoMode.SelectedIndex -ne 1) {
             $ui.CmbLogoMode.SelectedIndex = 1
         }
-        if ($ui.CmbLogoPosition -and $ui.CmbLogoPosition.SelectedIndex -ne -1) {
-            $ui.CmbLogoPosition.SelectedIndex = -1
-        }
+        Set-PositionComboCustom -Target logo
         $ui.BoxLogoOverlay.CaptureMouse() | Out-Null
         $e.Handled = $true
     })
@@ -4198,9 +5015,7 @@ if ($ui.BoxGifOverlay) {
         $maxTop  = [Math]::Max(0.0, $frameH - $boxH)
         $script:gifCustomX = if ($maxLeft -gt 0) { [Math]::Round([Math]::Max(0.0, [Math]::Min($maxLeft, $curL)) / $maxLeft, 4) } else { 0.0 }
         $script:gifCustomY = if ($maxTop  -gt 0) { [Math]::Round([Math]::Max(0.0, [Math]::Min($maxTop,  $curT)) / $maxTop,  4) } else { 0.0 }
-        if ($ui.CmbGifPosition -and $ui.CmbGifPosition.SelectedIndex -ne -1) {
-            $ui.CmbGifPosition.SelectedIndex = -1
-        }
+        Set-PositionComboCustom -Target gif
         $ui.BoxGifOverlay.CaptureMouse() | Out-Null
         $e.Handled = $true
     })
@@ -4256,7 +5071,7 @@ $resizeGripMouseDownAction = {
         $script:logoCustomX = if ($maxLeft -gt 0.0) { [Math]::Round($left / $maxLeft, 6) } else { 0.0 }
         $script:logoCustomY = if ($maxTop -gt 0.0) { [Math]::Round($top / $maxTop, 6) } else { 0.0 }
         if ($ui.CmbLogoMode -and $ui.CmbLogoMode.SelectedIndex -ne 1) { $ui.CmbLogoMode.SelectedIndex = 1 }
-        if ($ui.CmbLogoPosition -and $ui.CmbLogoPosition.SelectedIndex -ne -1) { $ui.CmbLogoPosition.SelectedIndex = -1 }
+        Set-PositionComboCustom -Target logo
     } else {
         $maxLeft = [Math]::Max(0.0, $frameW - $width)
         $maxTop = [Math]::Max(0.0, $frameH - $height)
@@ -4267,7 +5082,7 @@ $resizeGripMouseDownAction = {
             $script:gifCustomHeight = [Math]::Round($height / $frameH, 6)
             Reset-GifFullFrame -PreserveCustomSize
         }
-        if ($ui.CmbGifPosition -and $ui.CmbGifPosition.SelectedIndex -ne -1) { $ui.CmbGifPosition.SelectedIndex = -1 }
+        Set-PositionComboCustom -Target gif
     }
     $sender.CaptureMouse() | Out-Null
     $e.Handled = $true
@@ -4305,7 +5120,7 @@ if ($ui.CanvasWatermark) {
                 [Windows.Controls.Canvas]::SetTop($ui.BoxLogoOverlay, [Math]::Round($top))
                 $script:logoCustomX = if ($maxLeft -gt 0.0) { [Math]::Round($left / $maxLeft, 6) } else { 0.0 }
                 $script:logoCustomY = if ($maxTop -gt 0.0) { [Math]::Round($top / $maxTop, 6) } else { 0.0 }
-                if ($ui.CmbLogoPosition -and $ui.CmbLogoPosition.SelectedIndex -ne -1) { $ui.CmbLogoPosition.SelectedIndex = -1 }
+                Set-PositionComboCustom -Target logo
                 if ($ui.CmbLogoMode -and $ui.CmbLogoMode.SelectedIndex -ne 1) { $ui.CmbLogoMode.SelectedIndex = 1 }
             } elseif ($script:dragMode -eq 'resize') {
                 $resize = $script:dragResizeState
@@ -4316,7 +5131,7 @@ if ($ui.CanvasWatermark) {
                 $script:logoCustomX = $layout.CustomX; $script:logoCustomY = $layout.CustomY
                 $script:logoCustomWidth = $layout.CustomWidth; $script:logoCustomHeight = $layout.CustomHeight
                 if ($ui.CmbLogoMode -and $ui.CmbLogoMode.SelectedIndex -ne 1) { $ui.CmbLogoMode.SelectedIndex = 1 }
-                if ($ui.CmbLogoPosition -and $ui.CmbLogoPosition.SelectedIndex -ne -1) { $ui.CmbLogoPosition.SelectedIndex = -1 }
+                Set-PositionComboCustom -Target logo
                 [Windows.Controls.Canvas]::SetLeft($ui.BoxLogoOverlay, $layout.Left)
                 [Windows.Controls.Canvas]::SetTop($ui.BoxLogoOverlay, $layout.Top)
                 if ($ui.TxtLogoSize) { $ui.TxtLogoSize.Text = '{0}%×{1}%' -f [int][Math]::Round($layout.CustomWidth * 100.0), [int][Math]::Round($layout.CustomHeight * 100.0) }
@@ -4337,7 +5152,7 @@ if ($ui.CanvasWatermark) {
                 [Windows.Controls.Canvas]::SetTop($ui.BoxGifOverlay, [Math]::Round($top))
                 $script:gifCustomX = if ($maxLeft -gt 0.0) { [Math]::Round($left / $maxLeft, 6) } else { 0.0 }
                 $script:gifCustomY = if ($maxTop -gt 0.0) { [Math]::Round($top / $maxTop, 6) } else { 0.0 }
-                if ($ui.CmbGifPosition -and $ui.CmbGifPosition.SelectedIndex -ne -1) { $ui.CmbGifPosition.SelectedIndex = -1 }
+                Set-PositionComboCustom -Target gif
             } elseif ($script:dragMode -eq 'resize') {
                 $resize = $script:dragResizeState
                 if (-not $resize) { return }
@@ -4347,7 +5162,7 @@ if ($ui.CanvasWatermark) {
                 $script:gifCustomX = $layout.CustomX; $script:gifCustomY = $layout.CustomY
                 $script:gifCustomWidth = $layout.CustomWidth; $script:gifCustomHeight = $layout.CustomHeight
                 if ($script:gifFullFrame) { Reset-GifFullFrame -PreserveCustomSize }
-                if ($ui.CmbGifPosition -and $ui.CmbGifPosition.SelectedIndex -ne -1) { $ui.CmbGifPosition.SelectedIndex = -1 }
+                Set-PositionComboCustom -Target gif
                 [Windows.Controls.Canvas]::SetLeft($ui.BoxGifOverlay, $layout.Left)
                 [Windows.Controls.Canvas]::SetTop($ui.BoxGifOverlay, $layout.Top)
                 if ($ui.TxtGifSize) { $ui.TxtGifSize.Text = '{0}%×{1}%' -f [int][Math]::Round($layout.CustomWidth * 100.0), [int][Math]::Round($layout.CustomHeight * 100.0) }
@@ -4556,7 +5371,8 @@ function Open-FolderSafe([string]$targetPath) {
         }
         $p = [System.IO.Path]::GetFullPath($targetPath)
         if (-not (Test-Path -LiteralPath $p)) {
-            New-Item -ItemType Directory -Path $p -Force -ErrorAction SilentlyContinue | Out-Null
+            # CreateDirectory khong dien giai wildcard [] nhu New-Item -Path.
+            [void][System.IO.Directory]::CreateDirectory($p)
         }
         [System.Diagnostics.Process]::Start("explorer.exe", "`"$p`"") | Out-Null
     } catch {
@@ -4568,14 +5384,19 @@ function Open-FolderSafe([string]$targetPath) {
 
 $ui.BtnOpenOut.Add_Click({ Open-FolderSafe $ui.TxtOut.Text })
 $ui.BtnFolder.Add_Click({  Open-FolderSafe $ui.TxtOut.Text })
-$ui.BtnCheck.Add_Click({
+function Invoke-DeviceCheck {
+    # ShowLogs: chi chuyen sang tab Logs khi nguoi dung bam nut; kiem tra nen luc khoi dong giu tab hien tai.
+    param([switch]$ShowLogs)
     try {
-        if ($ui.BtnTabLogs) {
+        if ($ShowLogs -and $ui.BtnTabLogs) {
             $ui.BtnTabLogs.RaiseEvent((New-Object Windows.RoutedEventArgs([Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
         }
         Start-Engine -Links @() -Named @{ Check = $true } -Mode 'check'
-    } catch { }
-})
+    } catch {
+        Add-Log "Không chạy được kiểm tra máy: $($_.Exception.Message)" '#F87171'
+    }
+}
+$ui.BtnCheck.Add_Click({ Invoke-DeviceCheck -ShowLogs })
 $ui.BtnStop.Add_Click({
     if (-not $script:ps) { return }
     Stop-Engine
@@ -4710,15 +5531,7 @@ $ui.BtnDeleteCurrent.Add_Click({
     if (Test-GalleryActionsBusy) { Show-Toast 'Hãy dừng hoặc đợi hàng đợi hoàn tất trước khi xóa video.'; return }
     if (-not $script:lastOut) { return }
     $delPath = $script:lastOut
-    $ans = [System.Windows.MessageBox]::Show(
-        "Bạn có chắc chắn muốn xóa bản video này không?
-
-File: $(Split-Path $delPath -Leaf)",
-        "Xác nhận xóa video",
-        [System.Windows.MessageBoxButton]::YesNo,
-        [System.Windows.MessageBoxImage]::Warning
-    )
-    if ($ans -eq [System.Windows.MessageBoxResult]::Yes) {
+    if (Confirm-GalleryDelete -FilePath $delPath) {
         $savedSource = $ui.Player.Source
         $savedPosition = [TimeSpan]::Zero
         try { $savedPosition = $ui.Player.Position } catch { }
@@ -4915,14 +5728,24 @@ $ui.BtnStart.Add_Click({
             'Kiểm tra lại link','YesNo','Warning')
         if ($r -ne 'Yes') { return }
     }
+    $preRejectedCount = 0
     try {
         $rejectedHistory = @(Get-RejectedReels -Root $root)
-        $links = @($links | Where-Object {
-            $id = Get-FacebookVideoId -Url $_; $url = $_
-            @($rejectedHistory | Where-Object { ($id -and $_.VideoId -eq $id) -or $url -cin @($_.Urls) }).Count -eq 0
-        })
-        if (-not $links.Count) { Update-RejectedDashboard; Show-Toast 'Tất cả video đã bị loại vì không có tiếng Việt; không tải lại.'; return }
-    } catch { Show-Toast 'Không đọc được lịch sử loại. Hãy kiểm tra file data/rejected-videos.json trước khi tải.'; return }
+        $blockedLinks = @(Get-RejectedLinkMatches -Links $links -Rejected $rejectedHistory)
+        # Dem theo video (ID hoac URL) de link lap khong bi tinh hai lan.
+        $preRejectedCount = @($blockedLinks | ForEach-Object { $bid = Get-FacebookVideoId -Url $_; if ($bid) { "id:$bid" } else { "url:$_" } } | Select-Object -Unique).Count
+        $links = @($links | Where-Object { $blockedLinks -cnotcontains $_ })
+        if (-not $links.Count) {
+            Update-RejectedDashboard
+            $ui.TxtStat.Text = "Không có video mới: $preRejectedCount bỏ qua (đã loại trước)"
+            Show-Toast 'Tất cả link đã bị loại trước đây; không tải lại. Bỏ loại trong Kho Video nếu muốn thử lại.'
+            return
+        }
+    } catch {
+        Add-Log "Không đọc được lịch sử loại: $($_.Exception.Message)" '#F87171'
+        Show-Toast 'Không đọc được lịch sử loại. Hãy kiểm tra file data/rejected-videos.json trước khi tải.'
+        return
+    }
     $duplicateReport = $null
     if (Get-Command Get-FacebookLinkDuplicateReport -ErrorAction SilentlyContinue) {
         try { $duplicateReport = Get-FacebookLinkDuplicateReport -Text ($links -join "`n") -OutDir $ui.TxtOut.Text }
@@ -4938,7 +5761,10 @@ $ui.BtnStart.Add_Click({
             if ($links.Count -eq 0) { Show-Toast 'Tất cả video trong danh sách đã tải — không có video mới.'; return }
         }
     }
-    if (-not (Test-Path -LiteralPath $ui.TxtOut.Text)) { New-Item -ItemType Directory -Path $ui.TxtOut.Text -Force | Out-Null }
+    if (-not (Test-Path -LiteralPath $ui.TxtOut.Text)) {
+        try { [void][System.IO.Directory]::CreateDirectory($ui.TxtOut.Text) }
+        catch { Show-Toast "Không tạo được thư mục xuất: $($_.Exception.Message)"; Add-Log "Không tạo được thư mục xuất '$($ui.TxtOut.Text)': $($_.Exception.Message)" '#F87171'; return }
+    }
     Clear-LogBatch
     if ($ui.TxtLog) { $ui.TxtLog.Clear() }; $script:runLog = ''
     if ($duplicateReport -and $duplicateReport.DuplicateIds.Count -gt 0) {
@@ -4946,6 +5772,8 @@ $ui.BtnStart.Add_Click({
     }
     $script:queue = $links; $script:idx = 0; $script:giu = 0; $script:bo = 0
     $script:loi = 0; $script:failedLinks = @(); $script:lastCompletedOut = ''
+    $script:boTruoc = $preRejectedCount; $script:queueFinalizedIdx = -1; $script:forceRetryRejected = $false
+    if ($preRejectedCount) { Add-Log "$preRejectedCount video đã bị loại trước đây — bỏ qua." '#FBBF24' }
     Add-Log 'Chế độ tự động: lưu từng video rồi chạy tiếp đến hết danh sách; bấm Dừng để kết thúc sớm.' '#38BDF8'
     Start-Link
 })
@@ -4955,6 +5783,11 @@ $script:updProc = $null; $script:updMode = ''; $script:updSilent = $false
 if ($ui.BtnUpdate) { $ui.BtnUpdate.ToolTip = "Phiên bản hiện tại: v$($script:verLocal) — bấm để kiểm tra bản mới" }
 $tUpd = New-Object Windows.Threading.DispatcherTimer
 $tUpd.Interval = [TimeSpan]::FromMilliseconds(400)
+
+function Test-AppBusy {
+    # Dang chay engine (hang doi, sua video, kiem tra, cai dat) hoac con muc trong hang doi.
+    return [bool]($script:ps -or $script:stopping -or ($script:queue -and $script:queue.Count -gt 0))
+}
 
 function Start-UpdateJob([string]$Mode, [bool]$Silent = $false) {
     if ($script:updProc) { return }
@@ -4992,7 +5825,7 @@ $err", 'Kid FB.Y - Cập nhật', 'OK', 'Warning') | Out-Null
         }
         if ($ui.BtnUpdate) { $ui.BtnUpdate.Content = "🔔 Có bản v$($st.remote)" }
         if ($script:updSilent -and -not $st.mandatory) { Add-Log "Có bản cập nhật mới v$($st.remote) — bấm nút Cập nhật để cài." '#34D399'; return }
-        if ($script:ps) { Show-Toast 'Đang chạy tác vụ — cập nhật sau khi xong'; return }
+        if (Test-AppBusy) { Show-Toast 'Đang xử lý — bấm Dừng trước khi cập nhật'; return }
         $log = (@($st.changelog) | ForEach-Object { "  • $_" }) -join "
 "
         $kb = [math]::Round(([double]$st.size) / 1KB, 0)
@@ -5001,17 +5834,25 @@ $err", 'Kid FB.Y - Cập nhật', 'OK', 'Warning') | Out-Null
 Thay đổi:
 $log
 
-Dung lượng: ~$kb KB. Cập nhật ngay?",
-            'Kid FB.Y - Cập nhật', 'YesNo', 'Question')
+Dung lượng: ~$kb KB. Tool sẽ khởi động lại sau khi tải xong. Cập nhật ngay?",
+            'Kid FB.Y - Cập nhật', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question,
+            [System.Windows.MessageBoxResult]::No)
         if ($r -eq 'Yes') { Start-UpdateJob 'download' $false }
         return
     }
     if ($script:updMode -eq 'download' -and $st.ready) {
+        if (Test-AppBusy) {
+            # Khong khoi dong lai giua luc dang xu ly; ban moi da tai, ap dung o lan mo sau.
+            Add-Log "Đã tải xong bản v$($st.remote) nhưng đang xử lý video; mở lại Kid-FB.Y.exe sau khi xong để áp dụng." '#FBBF24'
+            Show-Toast 'Đã tải bản mới — đang xử lý nên chưa khởi động lại.'
+            return
+        }
         [System.Windows.MessageBox]::Show("Đã tải xong bản v$($st.remote).
 Tool sẽ khởi động lại để áp dụng.", 'Kid FB.Y - Cập nhật', 'OK', 'Information') | Out-Null
         $exe = Join-Path $root 'Kid-FB.Y.exe'
         if (Test-Path -LiteralPath $exe) {
-            Start-Process -FilePath $exe -WorkingDirectory $root
+            # -AfterUpdate: launcher moi cho launcher cu nha khoa single-instance.
+            Start-Process -FilePath $exe -WorkingDirectory $root -ArgumentList '-AfterUpdate'
             $win.Close()
         } else {
             [System.Windows.MessageBox]::Show('Không tìm thấy Kid-FB.Y.exe. Hãy mở lại tool bằng Kid-FB.Y.exe để áp dụng bản mới.', 'Kid FB.Y', 'OK', 'Warning') | Out-Null
@@ -5021,7 +5862,7 @@ Tool sẽ khởi động lại để áp dụng.", 'Kid FB.Y - Cập nhật', 'O
 
 if ($ui.BtnUpdate) {
     $ui.BtnUpdate.Add_Click({
-        if ($script:ps) { Show-Toast 'Đang chạy tác vụ — hãy Dừng hoặc đợi xong rồi cập nhật'; return }
+        if (Test-AppBusy) { Show-Toast 'Đang xử lý — bấm Dừng trước khi cập nhật'; return }
         Start-UpdateJob 'check' $false
     })
 }
@@ -5051,7 +5892,9 @@ $win.Add_Closing({ param($sender,$eventArgs)
     try { if ($tPlay) { $tPlay.Stop() } } catch { }
     try { if ($timer) { $timer.Stop() } } catch { }
     try { if ($script:tToast) { $script:tToast.Stop() } } catch { }
+    try { Save-UserSettings } catch { Write-FileLog "WARN Save-UserSettings khi đóng: $($_.Exception.Message)" }
     try { Flush-LogBatch } catch { }
+    Flush-FileLog
     try { if ($script:logFlushTimer) { $script:logFlushTimer.Stop() } } catch { }
 })
 
@@ -5065,11 +5908,47 @@ $engine",
             'Thiếu file','OK','Error') | Out-Null
         return
     }
+    # Loi khong bat duoc trong handler WPF -> crash log + thong bao, khong dong app giua chung.
+    $win.Dispatcher.add_UnhandledException({
+        param($sender, $e)
+        $crashPath = Write-CrashLog -Source 'Dispatcher' -Exception $e.Exception
+        try { Add-Log "Lỗi giao diện không mong muốn: $($e.Exception.Message)" '#F87171' } catch { $script:fileLogError = $_.Exception.Message }
+        $e.Handled = $true
+        if (-not $script:crashDialogOpen) {
+            $script:crashDialogOpen = $true
+            try {
+                [System.Windows.MessageBox]::Show(("Đã xảy ra lỗi giao diện; app vẫn tiếp tục chạy.`r`n`r`n$($e.Exception.Message)" +
+                    $(if ($crashPath) { "`r`n`r`nChi tiết: $crashPath" } else { '' })), 'Kid FB.Y', 'OK', 'Error') | Out-Null
+            } finally { $script:crashDialogOpen = $false }
+        }
+    })
+    [AppDomain]::CurrentDomain.add_UnhandledException([UnhandledExceptionEventHandler]{
+        param($sender, $e)
+        [void](Write-CrashLog -Source ('AppDomain' + $(if ($e.IsTerminating) { ' (terminating)' } else { '' })) -Exception $e.ExceptionObject)
+    })
+    if ($script:gifAddTypeError) {
+        Add-Log "GIF tắt: không nạp được bộ phát GIF ($($script:gifAddTypeError))." '#F87171'
+        Write-FileLog "ERR  GIF Add-Type detail: $($script:gifAddTypeErrorDetail)"
+        Show-Toast "GIF tắt: $($script:gifAddTypeError)"
+    }
     # Prepare the shared row template before starting any playback.
     Initialize-GalleryTemplate
+    if (-not $SelfTest) {
+        [void](Initialize-UserSettings)
+        # Luu (debounce 1 s) khi nguoi dung doi cai dat.
+        foreach ($c in @($ui.ChkWatermark, $ui.ChkGif)) { if ($c) { $c.Add_Checked({ Request-SaveSettings }); $c.Add_Unchecked({ Request-SaveSettings }) } }
+        foreach ($s in @($ui.SldLogoSize, $ui.SldLogoFade, $ui.SldGifSize)) { if ($s) { $s.Add_ValueChanged({ Request-SaveSettings }) } }
+        $ui.CmbLogoMode.Add_SelectionChanged({ Request-SaveSettings })
+        foreach ($tb in @($ui.TxtOut, $ui.TxtLogoPath, $ui.TxtGifPath)) { if ($tb) { $tb.Add_TextChanged({ Request-SaveSettings }) } }
+        if ($ui.CanvasWatermark) { $ui.CanvasWatermark.Add_PreviewMouseLeftButtonUp({ Request-SaveSettings }) }
+        if ($ui.BtnGifFullFrame) { $ui.BtnGifFullFrame.Add_Click({ Request-SaveSettings }) }
+        $win.Add_SizeChanged({ Request-SaveSettings })
+        $win.Add_StateChanged({ Request-SaveSettings })
+    }
     # Auto scan gallery va tools on launch
     Update-Gallery
     Update-ToolsStatus
+    Update-MaxButtonGlyph
 
     if ($SelfTest) {
         foreach ($k in $ui.Keys) {
@@ -5087,7 +5966,8 @@ $engine",
     # Auto preview latest finished video if available
     $latestVid = Get-ChildItem -LiteralPath $ui.TxtOut.Text -Filter '*-3-hoan-chinh.mp4' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($latestVid -and (Test-Path -LiteralPath $latestVid.FullName)) {
-        Load-Player $latestVid.FullName
+        # Khong tu phat (co tieng) khi mo app: dung o khung dau.
+        Load-Player $latestVid.FullName -NoAutoPlay
         $ui.TxtRev.Text = "Đang xem lại tác phẩm hoàn tất gần nhất: $($latestVid.Name)"
         $ui.BtnRedo.Content = '🔄 Ghi âm lại'
         $ui.PanelRev.Visibility = 'Visible'
@@ -5110,12 +5990,9 @@ $engine",
             if (-not (Test-Path -LiteralPath $ud)) { New-Item -ItemType Directory -Path $ud -Force | Out-Null }
             [System.IO.File]::WriteAllText((Join-Path $ud 'BOOT_OK'), $(if ($env:KID_FBY_UPDATE_TOKEN) { $env:KID_FBY_UPDATE_TOKEN } else { (Get-Date).ToString('o') }))
         } catch { }
-        try {
-            if ($ui.BtnCheck) {
-                $ui.BtnCheck.RaiseEvent((New-Object Windows.RoutedEventArgs([Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
-            }
-        } catch { }
-        try { Start-UpdateJob 'check' $true } catch { }
+        # Kiem tra may nen nhu cu nhung giu nguyen tab dang mo (khong nhay sang Logs).
+        Invoke-DeviceCheck
+        try { Start-UpdateJob 'check' $true } catch { Add-Log "Không kiểm tra được bản cập nhật: $($_.Exception.Message)" '#FBBF24' }
     })
     # SourceInitialized fits to the monitor under the pointer, using physical coordinates.
     [void]$win.ShowDialog()

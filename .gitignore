@@ -2,6 +2,7 @@ tools/
 data/
 output/
 diagnostics/
+logs/
 core/_update/
 core/_backup/
 *.log
@@ -9,3 +10,5 @@ core/_backup/
 *.old
 *.old.*
 *.candidate.*
+*.private.xml
+update-signing-*.xml

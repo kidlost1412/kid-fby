@@ -6,8 +6,12 @@
   Viec THAY FILE do Kid-FB.Y.exe lam luc khoi dong (khi khong co script nao dang chay).
 #>
 param(
-    [ValidateSet('check','download')][string]$Mode = 'check'
+    [ValidateSet('check','download')][string]$Mode = 'check',
+    [string]$LauncherVersion = ''
 )
+# Khoa cong khai RSA (XML) dung de xac minh chu ky version.json. Tao bang new-signing-key.ps1.
+# Ban build phai thay placeholder nay bang noi dung update-signing-public.xml.
+$UpdatePublicKeyXml = '<<PUBLIC_KEY_PLACEHOLDER>>'
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
@@ -39,9 +43,9 @@ function Get-Mirrors([string]$url) {
     @($url, "https://ghproxy.net/$url", "https://gh-proxy.com/$url")
 }
 
-function Get-Bytes([string]$url) {
+function Get-BytesFromUrls([string[]]$urls, [string]$label, [long]$maxBytes) {
     $lastErr = $null
-    foreach ($u in (Get-Mirrors $url)) {
+    foreach ($u in $urls) {
         try {
             $sep = if ($u.Contains('?')) { '&' } else { '?' }
             $fullUrl = "$u$($sep)t=$([DateTime]::UtcNow.Ticks)"
@@ -52,16 +56,54 @@ function Get-Bytes([string]$url) {
             $req.Headers.Add('Cache-Control', 'no-cache')
             $resp = $req.GetResponse()
             try {
+                if ($maxBytes -gt 0 -and $resp.ContentLength -gt $maxBytes) { throw "Phan hoi qua lon ($($resp.ContentLength) byte)." }
                 $stream = $resp.GetResponseStream()
                 $ms = New-Object System.IO.MemoryStream
                 $stream.CopyTo($ms)
+                if ($maxBytes -gt 0 -and $ms.Length -gt $maxBytes) { throw "Phan hoi qua lon ($($ms.Length) byte)." }
                 return $ms.ToArray()
             } finally {
                 if ($resp) { $resp.Close() }
             }
         } catch { $lastErr = $_ }
     }
-    throw "Khong tai duoc $url : $($lastErr.Exception.Message)"
+    throw "Khong tai duoc $label : $($lastErr.Exception.Message)"
+}
+
+# Manifest/chu ky/payload: nguon goc truoc, mirror chi la du phong. Toan ven duoc bao dam boi
+# chu ky RSA tren manifest (manifest) va SHA256 trong manifest da xac thuc (payload).
+function Get-Bytes([string]$url) {
+    Get-BytesFromUrls (Get-Mirrors $url) $url 0
+}
+
+function Write-UpdLog([string]$msg) {
+    try {
+        $logDir = Join-Path $root 'logs'
+        New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+        $line = '{0} {1}' -f (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'), $msg
+        [System.IO.File]::AppendAllText((Join-Path $logDir ('updater-' + (Get-Date).ToString('yyyyMMdd') + '.log')), $line + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+    } catch { Write-Warning "Khong ghi duoc log updater: $($_.Exception.Message)" }
+}
+
+# Xac minh chu ky RSA-SHA256 tren DUNG cac byte manifest da tai. Nem loi neu that bai; tra $true neu hop le.
+function Test-ManifestSignature([byte[]]$manifestBytes, [string]$sigBase64, [string]$publicKeyXml) {
+    if ([string]::IsNullOrWhiteSpace($publicKeyXml) -or $publicKeyXml -match 'PUBLIC_KEY_PLACEHOLDER') {
+        throw 'ban build chua cau hinh khoa ky'
+    }
+    if ($null -eq $manifestBytes -or $manifestBytes.Length -eq 0) { throw 'Manifest rong, tu choi cap nhat.' }
+    if ([string]::IsNullOrWhiteSpace($sigBase64)) { throw 'Thieu chu ky version.json.sig, tu choi cap nhat.' }
+    $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider
+    try {
+        $rsa.PersistKeyInCsp = $false
+        try { $rsa.FromXmlString($publicKeyXml) } catch { throw "Khoa cong khai khong hop le: $($_.Exception.Message)" }
+        try { $sig = [Convert]::FromBase64String($sigBase64.Trim()) } catch { throw 'Chu ky version.json.sig khong phai Base64 hop le, tu choi cap nhat.' }
+        $ok = $false
+        try { $ok = $rsa.VerifyData($manifestBytes, 'SHA256', $sig) } catch { $ok = $false }
+        if (-not $ok) { throw 'Chu ky manifest KHONG khop, tu choi cap nhat.' }
+        return $true
+    } finally {
+        $rsa.Dispose()
+    }
 }
 
 function Get-Sha([byte[]]$b) {
@@ -143,6 +185,7 @@ try {
             throw 'Dang co ban cap nhat cho khoi dong/phuc hoi. Hay khoi dong lai ung dung truoc khi tai tiep.'
         }
     }
+    if ($UpdatePublicKeyXml -match 'PUBLIC_KEY_PLACEHOLDER') { throw 'ban build chua cau hinh khoa ky' }
     $cfg  = Get-Config
     $ref  = if ($cfg.branch) { $cfg.branch } else { 'main' }
     try {
@@ -157,19 +200,44 @@ try {
     } catch { }
 
     $base = "https://raw.githubusercontent.com/$($cfg.repo)/$ref"
-    $man  = [System.Text.Encoding]::UTF8.GetString((Get-Bytes "$base/version.json")).TrimStart([char]0xFEFF) | ConvertFrom-Json
+    # Manifest + chu ky: thu nguon goc truoc, loi mang moi thu mirror. Chu ky RSA van bat buoc,
+    # nen mirror khong the gia mao manifest. Loi ca hai -> khong cap nhat.
+    $manBytes = Get-BytesFromUrls (Get-Mirrors "$base/version.json") "$base/version.json" 1048576
+    $sigBytes = Get-BytesFromUrls (Get-Mirrors "$base/version.json.sig") "$base/version.json.sig" 8192
+    $sigText = [System.Text.Encoding]::ASCII.GetString($sigBytes)
+    [void](Test-ManifestSignature $manBytes $sigText $UpdatePublicKeyXml)
+    $man  = [System.Text.Encoding]::UTF8.GetString($manBytes).TrimStart([char]0xFEFF) | ConvertFrom-Json
     $local = Get-LocalVersion
+
+    $newer = ([version]$man.version -gt [version]$local)
+    $failedFlag = Join-Path $updDir ("failed-$($man.version).flag")
+    $skipFailed = $false
+    if ($newer -and (Test-Path -LiteralPath $failedFlag)) {
+        $skipFailed = $true
+        Write-UpdLog "Bo qua phien ban $($man.version): da danh dau khoi dong loi truoc do ($failedFlag). Xoa file flag de thu lai."
+    }
+    if ($newer -and -not $skipFailed -and $man.minLauncher) {
+        $curLauncher = $LauncherVersion
+        if (-not $curLauncher) {
+            $exe = Join-Path $root 'Kid-FB.Y.exe'
+            if (Test-Path -LiteralPath $exe) { $curLauncher = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe).FileVersion }
+        }
+        if ($curLauncher -and ([version]$curLauncher -lt [version]$man.minLauncher)) {
+            Write-UpdLog "Launcher $curLauncher < minLauncher $($man.minLauncher) cua ban $($man.version)."
+            throw "Ban $($man.version) can Kid-FB.Y.exe tu $($man.minLauncher) tro len (hien tai $curLauncher). Hay tai ban day du moi, khong cap nhat tu dong."
+        }
+    }
 
     # Tim file khac SHA256 (chi can tim khi ban moi lon hon ban hien tai)
     $changed = @()
-    if ([version]$man.version -gt [version]$local) {
+    if ($newer -and -not $skipFailed) {
         foreach ($f in @($man.files)) {
             if (-not (Test-SafePath $f.path)) { continue }
             $lp = Join-Path $root ($f.path -replace '/', '\')
             if ((Get-FileSha $lp) -ne $f.sha256.ToUpper()) { $changed += $f }
         }
     }
-    $hasNew = ([version]$man.version -gt [version]$local)
+    $hasNew = $newer -and -not $skipFailed
     if ($hasNew -and $changed.Count -eq 0) {
         $changed = @($man.files | Where-Object { Test-SafePath $_.path })
     }
@@ -178,6 +246,7 @@ try {
         Save-Status @{
             ok = $true; hasUpdate = $hasNew; local = $local; remote = $man.version
             mandatory = [bool]$man.mandatory; changelog = @($man.changelog)
+            skippedFailed = $skipFailed; signed = $true
             files = if ($hasNew) { @($changed | ForEach-Object { $_.path }) } else { @() }
             size = if ($hasNew) { ($changed | Measure-Object -Property size -Sum).Sum } else { 0 }
         }
@@ -185,6 +254,7 @@ try {
     }
 
     # ---- download ----
+    if ($skipFailed) { throw "Phien ban $($man.version) da khoi dong loi tren may nay va bi bo qua (xem logs\updater-*.log)." }
     $stageFull = [IO.Path]::GetFullPath($stage)
     $updateBoundary = [IO.Path]::GetFullPath($updDir).TrimEnd('\') + '\'
     if (-not $stageFull.StartsWith($updateBoundary, [StringComparison]::OrdinalIgnoreCase) -or
