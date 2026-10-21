@@ -172,13 +172,13 @@
                   </StackPanel>
                   <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <Button x:Name="BtnPasteLinks" Style="{DynamicResource BtnButter}" Margin="0,0,10,0" ToolTip="Dán link từ clipboard" AutomationProperties.Name="Dán link">
-                      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE77F;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><AccessText Text="_Dán"/></StackPanel>
+                      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE77F;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><AccessText Text="_Dán" VerticalAlignment="Center"/></StackPanel>
                     </Button>
                     <Button x:Name="BtnImportLinks" Margin="0,0,10,0" ToolTip="Nhập link từ file .txt" AutomationProperties.Name="Nhập file txt">
-                      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8E5;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Nhập .txt"/></StackPanel>
+                      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8E5;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Nhập .txt" VerticalAlignment="Center"/></StackPanel>
                     </Button>
                     <Button x:Name="BtnClearLinks" Style="{DynamicResource BtnGhost}" ToolTip="Xóa toàn bộ link (Ctrl+Z để hoàn tác)" AutomationProperties.Name="Xóa danh sách link">
-                      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Xóa"/></StackPanel>
+                      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Xóa" VerticalAlignment="Center"/></StackPanel>
                     </Button>
                   </WrapPanel>
                 </WrapPanel>
@@ -315,23 +315,26 @@
                       <ColumnDefinition Width="*"/>
                       <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <Grid Width="70" Height="70" Margin="0,0,14,0">
-                      <Border Margin="3,3,0,0" CornerRadius="16" Background="{DynamicResource StickerShadow}"/>
-                      <Border Margin="0,0,3,3" CornerRadius="16" Background="{DynamicResource PinkSoft}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" Padding="6">
+                    <Grid.RowDefinitions>
+                      <RowDefinition Height="Auto"/>
+                      <RowDefinition Height="Auto"/>
+                      <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock x:Name="TxtLogoName" Grid.ColumnSpan="3" Text="Đang dùng: Logo Kid" Style="{DynamicResource TextLabel}" FontWeight="Bold" TextTrimming="CharacterEllipsis" Margin="0,0,0,8"/>
+                    <Grid Grid.Row="1" Width="68" Height="68" Margin="0,0,12,0" VerticalAlignment="Center">
+                      <Border Margin="4,4,0,0" CornerRadius="16" Background="{DynamicResource StickerShadow}"/>
+                      <Border Margin="0,0,4,4" CornerRadius="16" Background="{DynamicResource PinkSoft}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" Padding="6">
                         <Image x:Name="ImgLogoPreview" Stretch="Uniform"/>
                       </Border>
                     </Grid>
-                    <StackPanel Grid.Column="1" Margin="0,0,12,0" VerticalAlignment="Center">
-                      <TextBlock x:Name="TxtLogoName" Text="Đang dùng: Logo Kid" Style="{DynamicResource TextLabel}" FontWeight="Bold" TextTrimming="CharacterEllipsis" Margin="0,0,0,6"/>
-                      <Grid>
-                        <TextBox x:Name="TxtLogoPath" IsReadOnly="True" FontSize="13" MinHeight="40" ToolTip="Đường dẫn đầy đủ của logo PNG đã chọn." AutomationProperties.Name="Đường dẫn logo"/>
-                        <TextBlock x:Name="TxtLogoDefaultHint" Text="Logo Kid mặc định" FontSize="13" Foreground="{DynamicResource TextSubtle}" Margin="16,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
-                      </Grid>
-                      <WrapPanel Margin="0,8,0,0">
-                        <Button x:Name="BtnPickLogo" Content="Chọn PNG…" Style="{DynamicResource BtnLavender}" Margin="0,0,8,0"/>
-                        <Button x:Name="BtnDefaultLogo" Content="Logo Kid" Style="{DynamicResource BtnGhost}"/>
-                      </WrapPanel>
+                    <Grid Grid.Row="1" Grid.Column="1" Height="68" Margin="0,0,12,0" VerticalAlignment="Center">
+                      <TextBox x:Name="TxtLogoPath" IsReadOnly="True" FontSize="13" Height="64" MinHeight="64" VerticalAlignment="Top" ToolTip="Đường dẫn đầy đủ của logo PNG đã chọn." AutomationProperties.Name="Đường dẫn logo"/>
+                      <TextBlock x:Name="TxtLogoDefaultHint" Text="Logo Kid mặc định" FontSize="13" Foreground="{DynamicResource TextSubtle}" Margin="16,0,16,4" VerticalAlignment="Center" IsHitTestVisible="False"/>
+                    </Grid>
+                    <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                      <Button x:Name="BtnPickLogo" Content="Chọn PNG…" Style="{DynamicResource BtnLavender}"/>
                     </StackPanel>
+                    <Button x:Name="BtnDefaultLogo" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Content="Logo Kid" Style="{DynamicResource BtnGhost}" HorizontalAlignment="Left" Margin="0,6,0,0"/>
                   </Grid>
                   <Grid Margin="0,16,0,0">
                     <Grid.ColumnDefinitions>
@@ -392,18 +395,22 @@
                       <ColumnDefinition Width="*"/>
                       <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <Grid Width="70" Height="70" Margin="0,0,14,0">
-                      <Border Margin="3,3,0,0" CornerRadius="16" Background="{DynamicResource StickerShadow}"/>
-                      <Border Margin="0,0,3,3" CornerRadius="16" Background="{DynamicResource MintSoft}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" Padding="6">
+                    <Grid.RowDefinitions>
+                      <RowDefinition Height="Auto"/>
+                      <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock x:Name="TxtGifName" Grid.ColumnSpan="3" Text="Chưa chọn file GIF" Style="{DynamicResource TextLabel}" FontWeight="Bold" TextTrimming="CharacterEllipsis" Margin="0,0,0,8"/>
+                    <Grid Grid.Row="1" Width="68" Height="68" Margin="0,0,12,0" VerticalAlignment="Center">
+                      <Border Margin="4,4,0,0" CornerRadius="16" Background="{DynamicResource StickerShadow}"/>
+                      <Border Margin="0,0,4,4" CornerRadius="16" Background="{DynamicResource MintSoft}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" Padding="6">
                         <Image x:Name="ImgGifPreview" Stretch="Uniform"/>
                       </Border>
                     </Grid>
-                    <StackPanel Grid.Column="1" Margin="0,0,12,0" VerticalAlignment="Center">
-                      <TextBlock x:Name="TxtGifName" Text="Chưa chọn file GIF" Style="{DynamicResource TextLabel}" FontWeight="Bold" TextTrimming="CharacterEllipsis" Margin="0,0,0,6"/>
-                      <TextBox x:Name="TxtGifPath" IsReadOnly="True" FontSize="13" MinHeight="40" ToolTip="Đường dẫn file GIF (.gif) đã chọn." AutomationProperties.Name="Đường dẫn GIF"/>
-                      <WrapPanel Margin="0,8,0,0">
-                        <Button x:Name="BtnPickGif" Content="Chọn GIF…" Style="{DynamicResource BtnMint}"/>
-                      </WrapPanel>
+                    <Grid Grid.Row="1" Grid.Column="1" Height="68" Margin="0,0,12,0" VerticalAlignment="Center">
+                      <TextBox x:Name="TxtGifPath" IsReadOnly="True" FontSize="13" Height="64" MinHeight="64" VerticalAlignment="Top" ToolTip="Đường dẫn file GIF (.gif) đã chọn." AutomationProperties.Name="Đường dẫn GIF"/>
+                    </Grid>
+                    <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                      <Button x:Name="BtnPickGif" Content="Chọn GIF…" Style="{DynamicResource BtnMint}"/>
                     </StackPanel>
                   </Grid>
                   <Grid Margin="0,16,0,0">
@@ -450,7 +457,7 @@
                     <Button x:Name="BtnSelectGif" Content="GIF" Margin="0,0,16,10" IsEnabled="False" ToolTip="Đưa GIF lên trước để kéo hoặc chỉnh kích thước."/>
                     <Button x:Name="BtnReedit" Style="{DynamicResource BtnPrimary}" Margin="0,0,0,10" IsEnabled="False" AutomationProperties.Name="Áp dụng logo và GIF lên video đang xem"
                             ToolTip="Dùng lại video gốc sạch và âm thanh đã lưu (trong .cache) để áp dụng logo/GIF mới, không tải hoặc ghi âm lại.">
-                      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE70F;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Áp dụng lên video đang xem"/></StackPanel>
+                      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE70F;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Áp dụng lên video đang xem" VerticalAlignment="Center"/></StackPanel>
                     </Button>
                   </WrapPanel>
                 </StackPanel>
@@ -626,7 +633,7 @@
               <TextBox x:Name="TxtGallerySearch" Padding="40,6,14,6" AutomationProperties.Name="Tìm theo ID">
                 <TextBox.Template>
                   <ControlTemplate TargetType="TextBox">
-                    <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="2" CornerRadius="999">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="2" CornerRadius="24">
                       <ScrollViewer x:Name="PART_ContentHost" Focusable="False" Margin="{TemplateBinding Padding}" VerticalAlignment="Center"/>
                     </Border>
                     <ControlTemplate.Triggers>
@@ -717,7 +724,7 @@
                 <TextBlock x:Name="TxtGalleryStateTitle" Text="Kho trống" Style="{DynamicResource TextHeading}" FontSize="24" HorizontalAlignment="Center" Margin="0,10,0,4"/>
                 <TextBlock x:Name="TxtGalleryStateText" Text="Chưa có video nào — dán link ở trang Nguồn nhé!" Style="{DynamicResource TextMutedStyle}" FontSize="15" HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="440"/>
                 <Button x:Name="BtnGalleryRetry" Style="{DynamicResource BtnButter}" HorizontalAlignment="Center" Margin="0,14,0,0" Visibility="Collapsed" AutomationProperties.Name="Thử quét lại kho">
-                  <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE72C;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Thử lại"/></StackPanel>
+                  <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE72C;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Thử lại" VerticalAlignment="Center"/></StackPanel>
                 </Button>
               </StackPanel>
             </Viewbox>
@@ -797,10 +804,10 @@
                   <DockPanel>
                     <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
                       <Button x:Name="BtnCheck" Style="{DynamicResource BtnSky}" Margin="0,0,10,0" ToolTip="Kiểm tra công cụ và thiết bị Android" AutomationProperties.Name="Kiểm tra máy">
-                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8EA;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Kiểm tra máy"/></StackPanel>
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8EA;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Kiểm tra máy" VerticalAlignment="Center"/></StackPanel>
                       </Button>
                       <Button x:Name="BtnInstallAllTools" Style="{DynamicResource BtnPrimary}" AutomationProperties.Name="Tải và cài tất cả công cụ" ToolTip="Cài ADB, scrcpy, FFmpeg/ffprobe, yt-dlp. Whisper là tùy chọn, cài riêng ở thẻ của nó.">
-                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE896;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Tải và cài tất cả"/></StackPanel>
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE896;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Tải và cài tất cả" VerticalAlignment="Center"/></StackPanel>
                       </Button>
                     </WrapPanel>
                     <StackPanel Margin="0,0,16,0">
@@ -945,11 +952,11 @@
                     <WrapPanel>
                       <Button x:Name="BtnCleanLegacy" Style="{DynamicResource BtnButter}" Margin="0,0,10,8" AutomationProperties.Name="Dọn file trung gian cũ"
                               ToolTip="File -1/-2 của bản cũ đang nằm lẫn ở thư mục xuất: chuyển vào .cache hoặc xóa.">
-                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8B7;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Dọn file trung gian cũ…"/></StackPanel>
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8B7;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Dọn file trung gian cũ…" VerticalAlignment="Center"/></StackPanel>
                       </Button>
                       <Button x:Name="BtnClearCache" Style="{DynamicResource BtnDanger}" Margin="0,0,10,8" AutomationProperties.Name="Dọn cache sửa lại"
                               ToolTip="Xóa toàn bộ .cache: video cũ sẽ không sửa lại logo/GIF được nữa.">
-                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Dọn cache sửa lại…"/></StackPanel>
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Dọn cache sửa lại…" VerticalAlignment="Center"/></StackPanel>
                       </Button>
                     </WrapPanel>
                   </StackPanel>
@@ -968,13 +975,13 @@
                     </StackPanel>
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
                       <Button x:Name="BtnCopyLog" Style="{DynamicResource BtnSky}" Margin="0,0,10,0" ToolTip="Sao chép toàn bộ nhật ký" AutomationProperties.Name="Sao chép nhật ký">
-                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8C8;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Sao chép"/></StackPanel>
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8C8;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Sao chép" VerticalAlignment="Center"/></StackPanel>
                       </Button>
                       <Button x:Name="BtnOpenLogFolder" Margin="0,0,10,0" ToolTip="Mở thư mục logs" AutomationProperties.Name="Mở thư mục nhật ký">
-                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE838;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Thư mục logs"/></StackPanel>
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE838;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Thư mục logs" VerticalAlignment="Center"/></StackPanel>
                       </Button>
                       <Button x:Name="BtnClearLog" Style="{DynamicResource BtnGhost}" ToolTip="Xóa nhật ký đang hiển thị (file log vẫn giữ)" AutomationProperties.Name="Xóa nhật ký hiển thị">
-                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Xóa"/></StackPanel>
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Xóa" VerticalAlignment="Center"/></StackPanel>
                       </Button>
                     </StackPanel>
                   </DockPanel>
@@ -1122,9 +1129,9 @@
                   </Border>
                   <Button x:Name="BtnPreviewExpand" Style="{DynamicResource BtnOverlayIcon}" Content="&#xE740;" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,4,4,0" Panel.ZIndex="31"
                           ToolTip="Xem lớn (F)" AutomationProperties.Name="Xem lớn"/>
-                  <Border x:Name="BadgePreviewMode" Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" CornerRadius="999" Padding="12,4"
+                  <Border x:Name="BadgePreviewMode" Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" CornerRadius="16" Height="32" Padding="12,0"
                           HorizontalAlignment="Center" VerticalAlignment="Top" Margin="8,50,8,0" Panel.ZIndex="25" Visibility="Collapsed" Cursor="Hand" ToolTip="Bấm để quay lại video hoàn chỉnh">
-                    <TextBlock x:Name="TxtPreviewMode" Text="Xem trước chỉnh sửa · video gốc sạch" FontSize="13" FontWeight="Bold" Foreground="{DynamicResource TextPrimary}" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock x:Name="TxtPreviewMode" Text="Xem trước chỉnh sửa · video gốc sạch" VerticalAlignment="Center" FontSize="13" FontWeight="Bold" Foreground="{DynamicResource TextPrimary}" TextTrimming="CharacterEllipsis"/>
                   </Border>
 
                   <!-- thanh dieu khien phu o day video: cao 44, nen nau mo 55%, chu trang, tu an sau 2 s -->
@@ -1204,8 +1211,8 @@
             <RowDefinition Height="Auto"/>
           </Grid.RowDefinitions>
           <DockPanel LastChildFill="True">
-            <Border DockPanel.Dock="Left" Background="{DynamicResource ButterSoft}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" CornerRadius="999" Padding="10,0" Margin="0,0,10,0" VerticalAlignment="Center">
-              <TextBlock x:Name="TxtProgress" Text="0/0" FontWeight="ExtraBold" FontSize="14"/>
+            <Border DockPanel.Dock="Left" Background="{DynamicResource ButterSoft}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" CornerRadius="16" Height="32" Padding="12,0" Margin="0,0,10,0" VerticalAlignment="Center">
+              <TextBlock x:Name="TxtProgress" Text="0/0" FontWeight="ExtraBold" FontSize="14" VerticalAlignment="Center"/>
             </Border>
             <TextBlock x:Name="TxtStat" DockPanel.Dock="Right" Text="" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource TextMuted}" Margin="12,0,0,0"
                        VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="320" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>

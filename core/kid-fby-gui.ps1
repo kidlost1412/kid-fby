@@ -1361,9 +1361,9 @@ function Update-ToastMoreChip {
         $txt.FontSize = 13; $txt.FontWeight = [Windows.FontWeights]::Bold; $txt.Foreground = Get-Brush 'TextPrimary'
         $more = New-Object Windows.Controls.Border
         $more.Name = 'ToastMore'; $more.Child = $txt
-        $more.CornerRadius = [Windows.CornerRadius]::new(999); $more.BorderThickness = [Windows.Thickness]::new(2)
+        $more.CornerRadius = [Windows.CornerRadius]::new(15); $more.Height = 30; $more.BorderThickness = [Windows.Thickness]::new(2)
         $more.BorderBrush = Get-Brush 'Ink'; $more.Background = Get-Brush 'ButterSoft'
-        $more.Padding = [Windows.Thickness]::new(12, 3, 12, 3); $more.Margin = [Windows.Thickness]::new(0, 8, 8, 0)
+        $more.Padding = [Windows.Thickness]::new(12, 0, 12, 0); $txt.VerticalAlignment = 'Center'; $more.Margin = [Windows.Thickness]::new(0, 8, 8, 0)
         $more.HorizontalAlignment = 'Right'
         $hostPanel.Children.Insert(0, $more)
     }

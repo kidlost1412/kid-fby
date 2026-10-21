@@ -204,11 +204,73 @@
   <TranslateTransform x:Key="NoShift" X="0" Y="0"/>
 
   <!-- ============================================================ focus -->
+  <!-- Vien focus ban phim: lien, 2 px Accent, cach mat nut 3 px, cung bo goc (ban kinh = nua chieu cao). Khung focus WPF = vung cua nut (gom ca bong) nen Margin bu bong. -->
+  <!-- o vuong/hang chu chung (CheckBox, Radio, cong tac, nav): bo goc 12 -->
   <Style x:Key="FocusRing">
     <Setter Property="Control.Template">
       <Setter.Value>
         <ControlTemplate>
-          <Rectangle Margin="-3" RadiusX="16" RadiusY="16" Stroke="{StaticResource AccentPressed}" StrokeThickness="2" StrokeDashArray="2 1.5" SnapsToDevicePixels="True"/>
+          <Rectangle Margin="-2" RadiusX="12" RadiusY="12" Stroke="{StaticResource Accent}" StrokeThickness="2" SnapsToDevicePixels="True"/>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+  <!-- nut sticker chuan: nut cao 48 = mat 44 + bong 4 -> vien ngoai cao 52, ban kinh 26 -->
+  <Style x:Key="FocusRingPill">
+    <Setter Property="Control.Template">
+      <Setter.Value>
+        <ControlTemplate>
+          <Rectangle Margin="-4,-4,0,0" RadiusX="26" RadiusY="26" Stroke="{StaticResource Accent}" StrokeThickness="2" SnapsToDevicePixels="True"/>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+  <!-- nut sticker nho: nut cao 45 = mat 42 + bong 3 -> vien ngoai cao 50, ban kinh 25 -->
+  <Style x:Key="FocusRingPillSm">
+    <Setter Property="Control.Template">
+      <Setter.Value>
+        <ControlTemplate>
+          <Rectangle Margin="-4,-4,-1,-1" RadiusX="25" RadiusY="25" Stroke="{StaticResource Accent}" StrokeThickness="2" SnapsToDevicePixels="True"/>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+  <!-- o chon cao 48 khong bong -> vien ngoai cao 56, ban kinh 28 -->
+  <Style x:Key="FocusRingCombo">
+    <Setter Property="Control.Template">
+      <Setter.Value>
+        <ControlTemplate>
+          <Rectangle Margin="-4" RadiusX="28" RadiusY="28" Stroke="{StaticResource Accent}" StrokeThickness="2" SnapsToDevicePixels="True"/>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+  <!-- chip cao 44 (mat 36 o giua) -> vien cao 44, ban kinh 22 -->
+  <Style x:Key="FocusRingChip">
+    <Setter Property="Control.Template">
+      <Setter.Value>
+        <ControlTemplate>
+          <Rectangle RadiusX="22" RadiusY="22" Stroke="{StaticResource Accent}" StrokeThickness="2" SnapsToDevicePixels="True"/>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+  <!-- nut tron vung bam 44 (nut tron 30) -> vien 38 -->
+  <Style x:Key="FocusRingDot">
+    <Setter Property="Control.Template">
+      <Setter.Value>
+        <ControlTemplate>
+          <Rectangle Margin="3" RadiusX="19" RadiusY="19" Stroke="{StaticResource Accent}" StrokeThickness="2" SnapsToDevicePixels="True"/>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+  <!-- nut tron phu tren video (dia 34 trong vung 44) -> vien 42 -->
+  <Style x:Key="FocusRingOverlay">
+    <Setter Property="Control.Template">
+      <Setter.Value>
+        <ControlTemplate>
+          <Rectangle Margin="1" RadiusX="21" RadiusY="21" Stroke="{StaticResource Accent}" StrokeThickness="2" SnapsToDevicePixels="True"/>
         </ControlTemplate>
       </Setter.Value>
     </Setter>
@@ -315,8 +377,9 @@
     </Setter>
   </Style>
   <Style x:Key="Badge" TargetType="Border">
-    <Setter Property="CornerRadius" Value="999"/>
-    <Setter Property="Padding" Value="12,4"/>
+    <Setter Property="CornerRadius" Value="16"/>
+    <Setter Property="Height" Value="32"/>
+    <Setter Property="Padding" Value="12,0"/>
     <Setter Property="Background" Value="{StaticResource NeutralSubtle}"/>
     <Setter Property="BorderBrush" Value="{StaticResource Neutral}"/>
     <Setter Property="BorderThickness" Value="2"/>
@@ -324,6 +387,7 @@
     <Setter Property="HorizontalAlignment" Value="Left"/>
     <Setter Property="TextElement.Foreground" Value="{StaticResource TextPrimary}"/>
     <Setter Property="TextElement.FontWeight" Value="SemiBold"/>
+    <Style.Resources><Style TargetType="TextBlock"><Setter Property="VerticalAlignment" Value="Center"/></Style></Style.Resources>
   </Style>
   <Style x:Key="Divider" TargetType="Border">
     <Setter Property="Height" Value="2"/>
@@ -344,18 +408,21 @@
   </Style>
 
   <!-- ============================================================ nut sticker -->
+  <!-- Nut chuan: Button cao toi thieu 48 = mat 44 + bong 4 -> ban kinh mat 22 (= nua chieu cao). KHONG dung 999: WPF ep ban kinh theo tung truc rieng -> hinh bau duc. -->
   <ControlTemplate x:Key="ButtonBaseTemplate" TargetType="ButtonBase">
     <Grid x:Name="Root" SnapsToDevicePixels="True" Background="Transparent">
-      <Border x:Name="Shadow" Margin="3,3,0,0" CornerRadius="999" Background="{StaticResource StickerShadow}"/>
-      <Border x:Name="Face" Margin="0,0,3,3" CornerRadius="999" Background="{TemplateBinding Background}"
+      <Border x:Name="Shadow" Margin="4,4,0,0" CornerRadius="22" Background="{StaticResource StickerShadow}"/>
+      <Border x:Name="Face" Margin="0,0,4,4" CornerRadius="22" Background="{TemplateBinding Background}"
               BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
         <Grid>
-          <Border x:Name="Glow" CornerRadius="999" Background="{StaticResource WhiteGlow}" Visibility="Hidden"/>
+          <Border x:Name="Glow" CornerRadius="20" Background="{StaticResource WhiteGlow}" Visibility="Hidden"/>
           <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                             VerticalAlignment="{TemplateBinding VerticalContentAlignment}" RecognizesAccessKey="True"
                             TextElement.Foreground="{TemplateBinding Foreground}"/>
         </Grid>
       </Border>
+      <Rectangle x:Name="DisabledRing" Margin="1,1,5,5" RadiusX="21" RadiusY="21" Stroke="{StaticResource InkSoft}" StrokeThickness="2"
+                 StrokeDashArray="3 2" Fill="Transparent" Visibility="Collapsed" IsHitTestVisible="False"/>
     </Grid>
     <ControlTemplate.Triggers>
       <Trigger Property="IsMouseOver" Value="True">
@@ -367,10 +434,49 @@
         <Setter TargetName="Shadow" Property="Visibility" Value="Hidden"/>
       </Trigger>
       <Trigger Property="IsEnabled" Value="False">
-        <Setter TargetName="Face" Property="Background" Value="{StaticResource NeutralSubtle}"/>
-        <Setter TargetName="Face" Property="BorderBrush" Value="{StaticResource InkFaint}"/>
+        <Setter TargetName="Face" Property="Background" Value="{StaticResource SurfaceAlt}"/>
+        <Setter TargetName="Face" Property="BorderBrush" Value="Transparent"/>
+        <Setter TargetName="DisabledRing" Property="Visibility" Value="Visible"/>
+        <Setter TargetName="Glow" Property="Visibility" Value="Hidden"/>
         <Setter TargetName="Shadow" Property="Visibility" Value="Hidden"/>
-        <Setter Property="Foreground" Value="{StaticResource TextDisabled}"/>
+        <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
+        <Setter TargetName="Root" Property="RenderTransform" Value="{StaticResource NoShift}"/>
+      </Trigger>
+    </ControlTemplate.Triggers>
+  </ControlTemplate>
+
+  <!-- Nut nho: Button cao toi thieu 45 = mat 42 + bong 3 -> ban kinh mat 21 -->
+  <ControlTemplate x:Key="ButtonBaseTemplateSm" TargetType="ButtonBase">
+    <Grid x:Name="Root" SnapsToDevicePixels="True" Background="Transparent">
+      <Border x:Name="Shadow" Margin="3,3,0,0" CornerRadius="21" Background="{StaticResource StickerShadow}"/>
+      <Border x:Name="Face" Margin="0,0,3,3" CornerRadius="21" Background="{TemplateBinding Background}"
+              BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+        <Grid>
+          <Border x:Name="Glow" CornerRadius="19" Background="{StaticResource WhiteGlow}" Visibility="Hidden"/>
+          <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                            VerticalAlignment="{TemplateBinding VerticalContentAlignment}" RecognizesAccessKey="True"
+                            TextElement.Foreground="{TemplateBinding Foreground}"/>
+        </Grid>
+      </Border>
+      <Rectangle x:Name="DisabledRing" Margin="1,1,4,4" RadiusX="20" RadiusY="20" Stroke="{StaticResource InkSoft}" StrokeThickness="2"
+                 StrokeDashArray="3 2" Fill="Transparent" Visibility="Collapsed" IsHitTestVisible="False"/>
+    </Grid>
+    <ControlTemplate.Triggers>
+      <Trigger Property="IsMouseOver" Value="True">
+        <Setter TargetName="Root" Property="RenderTransform" Value="{StaticResource LiftUp}"/>
+        <Setter TargetName="Glow" Property="Visibility" Value="Visible"/>
+      </Trigger>
+      <Trigger Property="IsPressed" Value="True">
+        <Setter TargetName="Root" Property="RenderTransform" Value="{StaticResource PressDown}"/>
+        <Setter TargetName="Shadow" Property="Visibility" Value="Hidden"/>
+      </Trigger>
+      <Trigger Property="IsEnabled" Value="False">
+        <Setter TargetName="Face" Property="Background" Value="{StaticResource SurfaceAlt}"/>
+        <Setter TargetName="Face" Property="BorderBrush" Value="Transparent"/>
+        <Setter TargetName="DisabledRing" Property="Visibility" Value="Visible"/>
+        <Setter TargetName="Glow" Property="Visibility" Value="Hidden"/>
+        <Setter TargetName="Shadow" Property="Visibility" Value="Hidden"/>
+        <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
         <Setter TargetName="Root" Property="RenderTransform" Value="{StaticResource NoShift}"/>
       </Trigger>
     </ControlTemplate.Triggers>
@@ -389,7 +495,7 @@
     <Setter Property="HorizontalContentAlignment" Value="Center"/>
     <Setter Property="VerticalContentAlignment" Value="Center"/>
     <Setter Property="Cursor" Value="Hand"/>
-    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
+    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRingPill}"/>
     <Setter Property="Template" Value="{StaticResource ButtonBaseTemplate}"/>
   </Style>
   <Style TargetType="Button" BasedOn="{StaticResource BtnSecondary}"/>
@@ -433,12 +539,14 @@
       <Setter.Value>
         <ControlTemplate TargetType="Button">
           <Grid x:Name="Root" Background="Transparent">
-            <Border x:Name="Face" CornerRadius="999" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
-                    BorderThickness="2" Margin="0,0,3,3">
+            <Border x:Name="Face" CornerRadius="22" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="2" Margin="0,0,4,4">
               <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                                 VerticalAlignment="{TemplateBinding VerticalContentAlignment}" RecognizesAccessKey="True"
                                 TextElement.Foreground="{TemplateBinding Foreground}"/>
             </Border>
+            <Rectangle x:Name="DisabledRing" Margin="1,1,5,5" RadiusX="21" RadiusY="21" Stroke="{StaticResource InkSoft}" StrokeThickness="2"
+                       StrokeDashArray="3 2" Fill="Transparent" Visibility="Collapsed" IsHitTestVisible="False"/>
           </Grid>
           <ControlTemplate.Triggers>
             <Trigger Property="IsMouseOver" Value="True">
@@ -450,9 +558,11 @@
               <Setter TargetName="Root" Property="RenderTransform" Value="{StaticResource PressDown}"/>
             </Trigger>
             <Trigger Property="IsEnabled" Value="False">
-              <Setter TargetName="Face" Property="Background" Value="{StaticResource NeutralSubtle}"/>
-              <Setter TargetName="Face" Property="BorderBrush" Value="{StaticResource InkFaint}"/>
-              <Setter Property="Foreground" Value="{StaticResource TextDisabled}"/>
+              <Setter TargetName="Face" Property="Background" Value="{StaticResource SurfaceAlt}"/>
+              <Setter TargetName="Face" Property="BorderBrush" Value="Transparent"/>
+              <Setter TargetName="DisabledRing" Property="Visibility" Value="Visible"/>
+              <Setter TargetName="Root" Property="RenderTransform" Value="{StaticResource NoShift}"/>
+              <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
             </Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate>
@@ -591,22 +701,24 @@
     <Setter Property="BorderBrush" Value="{StaticResource InkSoft}"/>
     <Setter Property="Cursor" Value="Hand"/>
     <Setter Property="Padding" Value="18,0"/>
-    <Setter Property="MinHeight" Value="46"/>
+    <Setter Property="MinHeight" Value="45"/>
     <Setter Property="Margin" Value="0,0,8,0"/>
     <Setter Property="FontFamily" Value="{DynamicResource FontUi}"/>
     <Setter Property="FontWeight" Value="Bold"/>
     <Setter Property="FontSize" Value="15"/>
-    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
+    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRingPillSm}"/>
     <Setter Property="Template">
       <Setter.Value>
         <ControlTemplate TargetType="RadioButton">
           <Grid x:Name="Root" Background="Transparent">
-            <Border x:Name="Shadow" Margin="3,3,0,0" CornerRadius="999" Background="{StaticResource StickerShadow}" Visibility="Hidden"/>
-            <Border x:Name="Bd" Margin="0,0,3,3" CornerRadius="999" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+            <Border x:Name="Shadow" Margin="3,3,0,0" CornerRadius="21" Background="{StaticResource StickerShadow}" Visibility="Hidden"/>
+            <Border x:Name="Bd" Margin="0,0,3,3" CornerRadius="21" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
                     BorderThickness="2" Padding="{TemplateBinding Padding}">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="True"
                                 TextElement.Foreground="{TemplateBinding Foreground}"/>
             </Border>
+            <Rectangle x:Name="DisabledRing" Margin="1,1,4,4" RadiusX="20" RadiusY="20" Stroke="{StaticResource InkSoft}" StrokeThickness="2"
+                       StrokeDashArray="3 2" Fill="Transparent" Visibility="Collapsed" IsHitTestVisible="False"/>
           </Grid>
           <ControlTemplate.Triggers>
             <Trigger Property="IsMouseOver" Value="True">
@@ -620,7 +732,12 @@
               <Setter Property="FontWeight" Value="ExtraBold"/>
             </Trigger>
             <Trigger Property="IsEnabled" Value="False">
-              <Setter TargetName="Root" Property="Opacity" Value="0.45"/>
+              <Setter TargetName="Bd" Property="Background" Value="{StaticResource SurfaceAlt}"/>
+              <Setter TargetName="Bd" Property="BorderBrush" Value="Transparent"/>
+              <Setter TargetName="Shadow" Property="Visibility" Value="Hidden"/>
+              <Setter TargetName="DisabledRing" Property="Visibility" Value="Visible"/>
+              <Setter TargetName="Root" Property="RenderTransform" Value="{StaticResource NoShift}"/>
+              <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
             </Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate>
@@ -634,8 +751,8 @@
       <Setter.Value>
         <ControlTemplate TargetType="Button">
           <Grid x:Name="Root" Background="Transparent">
-            <Border x:Name="Shadow" Margin="3,3,0,0" CornerRadius="999" Background="{StaticResource StickerShadow}"/>
-            <Border x:Name="Face" Margin="0,0,3,3" CornerRadius="999" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+            <Border x:Name="Shadow" Margin="4,4,0,0" CornerRadius="22" Background="{StaticResource StickerShadow}"/>
+            <Border x:Name="Face" Margin="0,0,4,4" CornerRadius="22" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
                     BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}">
               <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
                 <TextBlock x:Name="Glyph" Text="&#xE768;" FontFamily="{StaticResource FontIcon}" FontSize="14" Margin="0,0,8,0"
@@ -670,13 +787,15 @@
     <Setter Property="Background" Value="{StaticResource Surface1}"/>
     <Setter Property="BorderBrush" Value="{StaticResource Ink}"/>
     <Setter Property="BorderThickness" Value="2"/>
-    <Setter Property="CornerRadius" Value="999"/>
-    <Setter Property="Padding" Value="12,5"/>
+    <Setter Property="CornerRadius" Value="18"/>
+    <Setter Property="Height" Value="36"/>
+    <Setter Property="Padding" Value="12,0"/>
     <Setter Property="Margin" Value="0,0,10,0"/>
     <Setter Property="Cursor" Value="Hand"/>
     <Setter Property="VerticalAlignment" Value="Center"/>
     <Setter Property="TextElement.FontWeight" Value="Bold"/>
     <Setter Property="TextElement.Foreground" Value="{StaticResource TextPrimary}"/>
+    <Style.Resources><Style TargetType="TextBlock"><Setter Property="VerticalAlignment" Value="Center"/></Style></Style.Resources>
   </Style>
 
   <Style x:Key="ChipButton" TargetType="Button">
@@ -690,7 +809,7 @@
     <Setter Property="MinHeight" Value="44"/>
     <Setter Property="Cursor" Value="Hand"/>
     <Setter Property="VerticalAlignment" Value="Center"/>
-    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
+    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRingChip}"/>
     <Setter Property="Template">
       <Setter.Value>
         <ControlTemplate TargetType="Button">
@@ -747,7 +866,7 @@
     <Setter Property="Width" Value="44"/>
     <Setter Property="Height" Value="44"/>
     <Setter Property="Cursor" Value="Hand"/>
-    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
+    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRingDot}"/>
     <Setter Property="Template">
       <Setter.Value>
         <ControlTemplate TargetType="Button">
@@ -776,7 +895,7 @@
     <Setter Property="Width" Value="44"/>
     <Setter Property="Height" Value="44"/>
     <Setter Property="Cursor" Value="Hand"/>
-    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
+    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRingOverlay}"/>
     <Setter Property="Template">
       <Setter.Value>
         <ControlTemplate TargetType="Button">
@@ -802,7 +921,7 @@
     <Setter Property="Width" Value="44"/>
     <Setter Property="Height" Value="44"/>
     <Setter Property="Cursor" Value="Hand"/>
-    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
+    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRingOverlay}"/>
     <Setter Property="Template">
       <Setter.Value>
         <ControlTemplate TargetType="Button">
@@ -911,18 +1030,21 @@
 
   <!-- Pill dem o day (Border): chu nau; bang 0 chi doi sang chu TextMuted + vien nhat (code), KHONG lam mo -->
   <Style x:Key="CountPill" TargetType="Border">
-    <Setter Property="CornerRadius" Value="999"/>
+    <Setter Property="CornerRadius" Value="16"/>
+    <Setter Property="Height" Value="32"/>
     <Setter Property="BorderThickness" Value="2"/>
-    <Setter Property="Padding" Value="12,4"/>
+    <Setter Property="Padding" Value="12,0"/>
     <Setter Property="Margin" Value="0,0,8,0"/>
     <Setter Property="VerticalAlignment" Value="Center"/>
     <Setter Property="TextElement.Foreground" Value="{StaticResource TextPrimary}"/>
+    <Style.Resources><Style TargetType="TextBlock"><Setter Property="VerticalAlignment" Value="Center"/></Style></Style.Resources>
   </Style>
 
   <!-- Badge trang thai dong hang doi (DataContext = dong; truong Status): pill nen Soft + vien 2 px dam + chu nau -->
   <Style x:Key="StatusBadge" TargetType="Border">
-    <Setter Property="CornerRadius" Value="999"/>
-    <Setter Property="Padding" Value="12,3"/>
+    <Setter Property="CornerRadius" Value="15"/>
+    <Setter Property="Height" Value="30"/>
+    <Setter Property="Padding" Value="12,0"/>
     <Setter Property="BorderThickness" Value="2"/>
     <Setter Property="HorizontalAlignment" Value="Left"/>
     <Setter Property="VerticalAlignment" Value="Center"/>
@@ -936,8 +1058,10 @@
       <DataTrigger Binding="{Binding Status}" Value="unverified"><Setter Property="Background" Value="{StaticResource SkySoft}"/><Setter Property="BorderBrush" Value="{StaticResource SkyLine}"/></DataTrigger>
       <DataTrigger Binding="{Binding Status}" Value="failed"><Setter Property="Background" Value="{StaticResource CoralSoft}"/><Setter Property="BorderBrush" Value="{StaticResource CoralLine}"/></DataTrigger>
     </Style.Triggers>
+    <Style.Resources><Style TargetType="TextBlock"><Setter Property="VerticalAlignment" Value="Center"/></Style></Style.Resources>
   </Style>
   <Style x:Key="StatusBadgeText" TargetType="TextBlock">
+    <Setter Property="VerticalAlignment" Value="Center"/>
     <Setter Property="FontFamily" Value="{DynamicResource FontUi}"/>
     <Setter Property="FontWeight" Value="Bold"/>
     <Setter Property="FontSize" Value="13"/>
@@ -1034,8 +1158,10 @@
 
   <!-- Nut hanh dong trong the hang doi (an khi ActionKind rong): pill tron, mau theo hanh dong -->
   <Style x:Key="RowActionButton" TargetType="Button" BasedOn="{StaticResource BtnSecondary}">
-    <Setter Property="Padding" Value="16,0"/>
-    <Setter Property="MinHeight" Value="46"/>
+    <Setter Property="Template" Value="{StaticResource ButtonBaseTemplateSm}"/>
+    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRingPillSm}"/>
+    <Setter Property="Padding" Value="18,0"/>
+    <Setter Property="MinHeight" Value="45"/>
     <Setter Property="FontSize" Value="14"/>
     <Style.Triggers>
       <DataTrigger Binding="{Binding ActionKind}" Value=""><Setter Property="Visibility" Value="Collapsed"/></DataTrigger>
@@ -1047,8 +1173,10 @@
 
   <!-- Nut trang thai TikTok trong Kho (truong Posted): pill, da dang = Mint -->
   <Style x:Key="BtnTikTok" TargetType="Button" BasedOn="{StaticResource BtnSecondary}">
-    <Setter Property="Padding" Value="14,0"/>
-    <Setter Property="MinHeight" Value="44"/>
+    <Setter Property="Template" Value="{StaticResource ButtonBaseTemplateSm}"/>
+    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRingPillSm}"/>
+    <Setter Property="Padding" Value="18,0"/>
+    <Setter Property="MinHeight" Value="45"/>
     <Setter Property="FontSize" Value="13"/>
     <Setter Property="Background" Value="{StaticResource LavenderSoft}"/>
     <Style.Triggers>
@@ -1141,20 +1269,24 @@
     </Setter>
   </Style>
 
-  <!-- ============================================================ ComboBox (pill trang, popup sticker) -->
+  <!-- ============================================================ ComboBox (vien thuoc cao 48 = ban kinh 24, popup sticker) -->
   <ControlTemplate x:Key="ComboBoxToggleButton" TargetType="ToggleButton">
-    <Border x:Name="Bd" Background="{StaticResource Surface1}" BorderBrush="{StaticResource InkSoft}" BorderThickness="2" CornerRadius="999" SnapsToDevicePixels="True">
-      <Border Width="30" Height="30" CornerRadius="15" Background="{StaticResource ButterSoft}" HorizontalAlignment="Right" Margin="0,0,7,0" VerticalAlignment="Center">
-        <TextBlock x:Name="Arrow" Text="&#xE70D;" FontFamily="{StaticResource FontIcon}" FontSize="10" Foreground="{StaticResource TextPrimary}"
-                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
-      </Border>
+    <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{StaticResource InkSoft}" BorderThickness="2" CornerRadius="24" SnapsToDevicePixels="True">
+      <TextBlock x:Name="Arrow" Text="&#xE70D;" FontFamily="{StaticResource FontIcon}" FontSize="12" Foreground="{StaticResource TextMuted}"
+                 HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,16,0"/>
     </Border>
     <ControlTemplate.Triggers>
       <Trigger Property="IsMouseOver" Value="True">
         <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource Ink}"/>
+        <Setter TargetName="Bd" Property="Background" Value="{StaticResource ButterSoft}"/>
       </Trigger>
       <Trigger Property="IsChecked" Value="True">
         <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentPressed}"/>
+        <Setter TargetName="Arrow" Property="Foreground" Value="{StaticResource TextPrimary}"/>
+      </Trigger>
+      <Trigger Property="IsEnabled" Value="False">
+        <Setter TargetName="Bd" Property="Background" Value="{StaticResource SurfaceAlt}"/>
+        <Setter TargetName="Bd" Property="BorderBrush" Value="Transparent"/>
       </Trigger>
     </ControlTemplate.Triggers>
   </ControlTemplate>
@@ -1162,7 +1294,7 @@
   <Style TargetType="ComboBoxItem">
     <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
     <Setter Property="Background" Value="Transparent"/>
-    <Setter Property="Padding" Value="14,8"/>
+    <Setter Property="Padding" Value="16,0"/>
     <Setter Property="FontFamily" Value="{DynamicResource FontUi}"/>
     <Setter Property="FontWeight" Value="SemiBold"/>
     <Setter Property="FontSize" Value="15"/>
@@ -1170,8 +1302,8 @@
     <Setter Property="Template">
       <Setter.Value>
         <ControlTemplate TargetType="ComboBoxItem">
-          <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="12" Padding="{TemplateBinding Padding}" Margin="2,1">
-            <ContentPresenter TextElement.Foreground="{TemplateBinding Foreground}"/>
+          <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="20" Height="40" Padding="{TemplateBinding Padding}" Margin="2,1" SnapsToDevicePixels="True">
+            <ContentPresenter VerticalAlignment="Center" TextElement.Foreground="{TemplateBinding Foreground}"/>
           </Border>
           <ControlTemplate.Triggers>
             <Trigger Property="IsHighlighted" Value="True">
@@ -1181,7 +1313,7 @@
               <Setter TargetName="Bd" Property="Background" Value="{StaticResource PinkSoft}"/>
             </Trigger>
             <Trigger Property="IsEnabled" Value="False">
-              <Setter Property="Foreground" Value="{StaticResource TextSubtle}"/>
+              <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
             </Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate>
@@ -1194,20 +1326,22 @@
     <Setter Property="FontFamily" Value="{DynamicResource FontUi}"/>
     <Setter Property="FontWeight" Value="Bold"/>
     <Setter Property="FontSize" Value="15"/>
-    <Setter Property="MinHeight" Value="48"/>
+    <Setter Property="Height" Value="48"/>
     <Setter Property="Cursor" Value="Hand"/>
-    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
+    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRingCombo}"/>
     <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
     <Setter Property="Template">
       <Setter.Value>
         <ControlTemplate TargetType="ComboBox">
           <Grid x:Name="Root">
-            <ToggleButton x:Name="ToggleButton" Template="{StaticResource ComboBoxToggleButton}" Focusable="False" ClickMode="Press"
+            <ToggleButton x:Name="ToggleButton" Template="{StaticResource ComboBoxToggleButton}" Background="{StaticResource Surface1}" Focusable="False" ClickMode="Press"
                           IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"/>
-            <ContentPresenter x:Name="ContentSite" IsHitTestVisible="False" Margin="18,4,44,4"
+            <ContentPresenter x:Name="ContentSite" IsHitTestVisible="False" Margin="20,0,44,0"
                               Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
                               ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
                               VerticalAlignment="Center" HorizontalAlignment="Left" TextElement.Foreground="{TemplateBinding Foreground}"/>
+            <Rectangle x:Name="DisabledRing" Margin="1" RadiusX="23" RadiusY="23" Stroke="{StaticResource InkSoft}" StrokeThickness="2"
+                       StrokeDashArray="3 2" Fill="Transparent" Visibility="Collapsed" IsHitTestVisible="False"/>
             <Popup x:Name="PART_Popup" AllowsTransparency="True" Focusable="False" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" PopupAnimation="Fade">
               <Grid Margin="0,6,6,6">
                 <Border Margin="4,4,0,0" CornerRadius="16" Background="{StaticResource StickerShadow}"/>
@@ -1220,14 +1354,15 @@
               </Grid>
             </Popup>
           </Grid>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsEnabled" Value="False">
+              <Setter TargetName="DisabledRing" Property="Visibility" Value="Visible"/>
+              <Setter TargetName="ContentSite" Property="TextElement.Foreground" Value="{StaticResource TextMuted}"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
         </ControlTemplate>
       </Setter.Value>
     </Setter>
-    <Style.Triggers>
-      <Trigger Property="IsEnabled" Value="False">
-        <Setter Property="Opacity" Value="0.45"/>
-      </Trigger>
-    </Style.Triggers>
   </Style>
 
   <!-- ============================================================ CheckBox / cong tac / RadioButton -->
