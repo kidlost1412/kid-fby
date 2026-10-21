@@ -113,7 +113,7 @@ function Get-Sha([byte[]]$b) {
 
 function Get-NormalizedHash([byte[]]$bytes, [string]$path) {
     $ext = [System.IO.Path]::GetExtension($path).ToLower()
-    if ($ext -in '.ico','.exe','.dll','.zip') {
+    if ($ext -in '.ico','.exe','.dll','.zip','.ttf','.otf') {
         return Get-Sha $bytes
     }
     $txt = [System.Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xFEFF)
@@ -125,7 +125,7 @@ function Get-NormalizedHash([byte[]]$bytes, [string]$path) {
 function Get-FileSha([string]$p) {
     if (-not (Test-Path -LiteralPath $p)) { return '' }
     $ext = [System.IO.Path]::GetExtension($p).ToLower()
-    if ($ext -in '.ico','.exe','.dll','.zip') {
+    if ($ext -in '.ico','.exe','.dll','.zip','.ttf','.otf') {
         return (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash
     }
     $txt = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8).TrimStart([char]0xFEFF)
@@ -153,7 +153,7 @@ function Publish-Ready([string]$directory, [string[]]$paths) {
 
 function Save-FileWithBom([string]$dst, [byte[]]$bytes) {
     $ext = [System.IO.Path]::GetExtension($dst).ToLower()
-    if ($ext -in '.ico','.exe','.dll','.zip') {
+    if ($ext -in '.ico','.exe','.dll','.zip','.ttf','.otf') {
         Write-DurableBytes $dst $bytes
         return
     }

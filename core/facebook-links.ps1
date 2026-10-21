@@ -274,16 +274,11 @@ function Get-FacebookLinkDuplicateReport {
     $downloadedIds = New-Object 'System.Collections.Generic.List[string]'
     if (-not [string]::IsNullOrWhiteSpace($OutDir)) {
         foreach ($videoId in $allIds) {
-            # Dot 4: "da co" = -3 o goc; hoac -1 trong .cache / o goc (file cu).
-            foreach ($rel in @(($videoId + '-3-hoan-chinh.mp4'), ('.cache\' + $videoId + '-1-video-goc.mp4'), ($videoId + '-1-video-goc.mp4'))) {
-                $candidate = Join-Path $OutDir $rel
-                if (Test-Path -LiteralPath $candidate -PathType Leaf -ErrorAction Stop) {
-                    $file = Get-Item -LiteralPath $candidate -ErrorAction Stop
-                    if ($file -and $file.Length -gt 0) {
-                        $downloadedIds.Add($videoId)
-                        break
-                    }
-                }
+            # Dot 4 (F2): "da co trong kho" CHI khi co -3 o goc thu muc xuat. Chi con -1 (trong .cache hoac o goc) = cache-only, khong tinh.
+            $candidate = Join-Path $OutDir ($videoId + '-3-hoan-chinh.mp4')
+            if (Test-Path -LiteralPath $candidate -PathType Leaf -ErrorAction Stop) {
+                $file = Get-Item -LiteralPath $candidate -ErrorAction Stop
+                if ($file -and $file.Length -gt 0) { $downloadedIds.Add($videoId) }
             }
         }
     }

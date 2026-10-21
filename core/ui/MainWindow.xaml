@@ -158,7 +158,7 @@
                   <TextBox x:Name="TxtLinks" Style="{DynamicResource NotePaper}" AcceptsReturn="True" AcceptsTab="False" TextWrapping="NoWrap"
                            VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" MinHeight="180" Padding="18,8,14,8"
                            AutomationProperties.Name="Danh sách link Facebook"/>
-                  <StackPanel x:Name="PanelLinksHint" IsHitTestVisible="False" Margin="22,10,16,12">
+                  <StackPanel IsHitTestVisible="False" Margin="22,10,16,12">
                     <TextBlock x:Name="TxtLinksPlaceholder" FontFamily="{DynamicResource FontMono}" FontSize="14" LineHeight="28" LineStackingStrategy="BlockLineHeight"
                                Foreground="{DynamicResource TextSubtle}" TextWrapping="Wrap"
                                Text="https://www.facebook.com/reel/1234567890&#x0a;https://www.facebook.com/share/r/AbCdEf/&#x0a;https://fb.watch/xyz/&#x0a;&#x0a;Mỗi dòng một link nhé. Link trùng hoặc đã loại sẽ được đếm ở thẻ Tóm tắt."/>
@@ -772,7 +772,7 @@
                       <Button x:Name="BtnCheck" Style="{DynamicResource BtnSky}" Margin="0,0,10,0" ToolTip="Kiểm tra công cụ và thiết bị Android" AutomationProperties.Name="Kiểm tra máy">
                         <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8EA;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Kiểm tra máy"/></StackPanel>
                       </Button>
-                      <Button x:Name="BtnInstallAllTools" Style="{DynamicResource BtnPrimary}" AutomationProperties.Name="Tải và cài tất cả công cụ">
+                      <Button x:Name="BtnInstallAllTools" Style="{DynamicResource BtnPrimary}" AutomationProperties.Name="Tải và cài tất cả công cụ" ToolTip="Cài ADB, scrcpy, FFmpeg/ffprobe, yt-dlp. Whisper là tùy chọn, cài riêng ở thẻ của nó.">
                         <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE896;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Tải và cài tất cả"/></StackPanel>
                       </Button>
                     </WrapPanel>
@@ -852,7 +852,7 @@
                       </Border>
                       <StackPanel Grid.Column="1" Margin="0,0,12,0" VerticalAlignment="Center">
                         <TextBlock Text="Whisper tiny (tùy chọn)" Style="{DynamicResource TextLabel}" FontWeight="ExtraBold"/>
-                        <TextBlock Text="Công cụ chẩn đoán dòng lệnh; không dùng để quyết định tải video." Style="{DynamicResource TextMutedStyle}"/>
+                        <TextBlock Text="Tùy chọn — chỉ để chẩn đoán, không cần cho việc tải. Không nằm trong &quot;Tải và cài tất cả&quot;." Style="{DynamicResource TextMutedStyle}"/>
                       </StackPanel>
                       <Border x:Name="BadgeStatusWhisper" Grid.Column="2" Style="{DynamicResource Badge}" Margin="0,0,12,0">
                         <TextBlock x:Name="TxtStatusWhisper" Text="Đang kiểm tra…" FontSize="13"/>
@@ -894,6 +894,10 @@
                         <TextBlock Text="Cho phép đồng bộ theo âm thanh khi thiết bị không thu được hình" FontWeight="ExtraBold" FontSize="16" TextWrapping="Wrap"/>
                         <TextBlock Text="Kém chính xác, có thể lệch 0,5–1,2 s. Mặc định tắt: video không thu được hình sẽ báo chưa xác nhận để bạn thử lại."
                                    Style="{DynamicResource TextMutedStyle}" Margin="0,4,0,0"/>
+                        <Border Background="{DynamicResource WarningSubtle}" BorderBrush="{DynamicResource PeachLine}" BorderThickness="2" CornerRadius="12" Padding="10,6" Margin="0,8,0,0" HorizontalAlignment="Left">
+                          <TextBlock x:Name="TxtOnsetSyncNote" Style="{DynamicResource TextMutedStyle}" Foreground="{DynamicResource TextPrimary}" FontWeight="SemiBold"
+                                     Text="Chỉ dùng khi thiết bị không ghi được hình; video quá tối/ít chuyển động mà không khớp được hình vẫn sẽ không xuất."/>
+                        </Border>
                       </StackPanel>
                     </CheckBox>
                   </StackPanel>

@@ -10,10 +10,23 @@ namespace KidFBY
 {
     static class Program
     {
-        const string SingleInstanceMutexName = @"Local\KidFBY.SingleInstance";
+        const string SingleInstanceMutexPrefix = @"Local\KidFBY.SingleInstance.";
         const int BootWaitHalfSeconds = 240; // 240 x 500 ms = 120 s
 
         static bool noUi;
+
+        // Mutex per install folder: dev copy and installed copy can run side by side; same folder is blocked.
+        static string MutexNameFor(string baseDir)
+        {
+            string norm;
+            try { norm = Path.GetFullPath(baseDir).TrimEnd('\\', '/').ToLowerInvariant(); }
+            catch (Exception) { norm = (baseDir ?? "").TrimEnd('\\', '/').ToLowerInvariant(); }
+            using (System.Security.Cryptography.SHA256 sha = System.Security.Cryptography.SHA256.Create())
+            {
+                byte[] h = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(norm));
+                return SingleInstanceMutexPrefix + BitConverter.ToString(h, 0, 4).Replace("-", "").ToLowerInvariant();
+            }
+        }
         static string logDir;
         static string currentBackupDir;
 
@@ -64,6 +77,7 @@ namespace KidFBY
                 args = kept.ToArray();
             }
             Mutex single = null;
+            string SingleInstanceMutexName = MutexNameFor(baseDir);
             try
             {
                 // First thing: one launcher per user session. KID_FBY_ALLOW_MULTI is for build/test checks only.

@@ -7,3 +7,5 @@
 *.exe binary
 version.json -text
 version.json.sig -text
+*.ttf binary
+*.otf binary

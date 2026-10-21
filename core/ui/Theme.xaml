@@ -11,29 +11,18 @@
   -->
 
   <!-- ============================================================ mau nen / be mat -->
-  <Color x:Key="Surface0Color">#FFFFFAF0</Color>
-  <Color x:Key="Surface1Color">#FFFFFFFF</Color>
-  <Color x:Key="Surface2Color">#FFFFF5F7</Color>
-  <Color x:Key="InkColor">#FF5B3A29</Color>
-  <Color x:Key="PinkColor">#FFFED7E2</Color>
-  <Color x:Key="PeachColor">#FFFEEBC8</Color>
-  <Color x:Key="AccentColor">#FFFF69B4</Color>
 
   <SolidColorBrush x:Key="Surface0" Color="#FFFFFAF0"/>
   <SolidColorBrush x:Key="Surface1" Color="#FFFFFFFF"/>
   <SolidColorBrush x:Key="Surface2" Color="#FFFFF5F7"/>
   <SolidColorBrush x:Key="SurfaceAlt" Color="#FFFFF5F7"/>
-  <SolidColorBrush x:Key="Surface3" Color="#FFFFEFF4"/>
   <SolidColorBrush x:Key="SurfaceInput" Color="#FFFFFFFF"/>
   <SolidColorBrush x:Key="Ink" Color="#E65B3A29"/>
   <SolidColorBrush x:Key="InkStrong" Color="#FF5B3A29"/>
   <SolidColorBrush x:Key="InkSoft" Color="#665B3A29"/>
   <SolidColorBrush x:Key="InkFaint" Color="#245B3A29"/>
   <SolidColorBrush x:Key="Border" Color="#E65B3A29"/>
-  <SolidColorBrush x:Key="BorderStrong" Color="#FF5B3A29"/>
   <SolidColorBrush x:Key="StickerShadow" Color="#2E5B3A29"/>
-  <SolidColorBrush x:Key="PaperDot" Color="#FFF4E6D2"/>
-  <SolidColorBrush x:Key="NoteLine" Color="#33D9A441"/>
 
   <!-- chu: nau muc, khong dung den/xam lanh -->
   <SolidColorBrush x:Key="TextPrimary" Color="#FF4A3428"/>
@@ -68,26 +57,18 @@
   <SolidColorBrush x:Key="Accent" Color="#FFFF69B4"/>
   <SolidColorBrush x:Key="AccentHover" Color="#FFFF86C3"/>
   <SolidColorBrush x:Key="AccentPressed" Color="#FFF0529F"/>
-  <SolidColorBrush x:Key="AccentSubtle" Color="#FFFED7E2"/>
-  <SolidColorBrush x:Key="AccentText" Color="#FFD53F8C"/>
   <SolidColorBrush x:Key="Success" Color="#FFC6F6D5"/>
-  <SolidColorBrush x:Key="SuccessSubtle" Color="#FFEAFBF0"/>
   <SolidColorBrush x:Key="SuccessText" Color="#FF2F855A"/>
   <SolidColorBrush x:Key="Warning" Color="#FFFEEBC8"/>
   <SolidColorBrush x:Key="WarningSubtle" Color="#FFFFF6E6"/>
   <SolidColorBrush x:Key="WarningText" Color="#FFB7791F"/>
   <SolidColorBrush x:Key="Danger" Color="#FFFF6B6B"/>
-  <SolidColorBrush x:Key="DangerHover" Color="#FFFF8787"/>
   <SolidColorBrush x:Key="DangerSubtle" Color="#FFFFE4E4"/>
   <SolidColorBrush x:Key="DangerText" Color="#FFD64545"/>
   <SolidColorBrush x:Key="Info" Color="#FFA8D8EA"/>
-  <SolidColorBrush x:Key="InfoSubtle" Color="#FFE7F5FA"/>
-  <SolidColorBrush x:Key="InfoText" Color="#FF2B7A99"/>
   <SolidColorBrush x:Key="Neutral" Color="#FFD8C6B5"/>
   <SolidColorBrush x:Key="NeutralSubtle" Color="#FFF6EEE4"/>
-  <SolidColorBrush x:Key="NeutralText" Color="#FF8A6E5C"/>
 
-  <SolidColorBrush x:Key="Scrim" Color="#D94A3428"/>
   <SolidColorBrush x:Key="MediaBackground" Color="#FF3B2A20"/>
   <SolidColorBrush x:Key="HitTestFill" Color="#01000000"/>
   <SolidColorBrush x:Key="OverlayLogo" Color="#FFFF69B4"/>
@@ -203,21 +184,6 @@
   <FontFamily x:Key="FontUiBold">Segoe UI Black</FontFamily>
   <FontFamily x:Key="FontMono">Cascadia Mono, Consolas, Courier New</FontFamily>
   <FontFamily x:Key="FontIcon">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
-  <sys:Double x:Key="FontSizeXs">13</sys:Double>
-  <sys:Double x:Key="FontSizeSm">14</sys:Double>
-  <sys:Double x:Key="FontSizeMd">16</sys:Double>
-  <sys:Double x:Key="FontSizeLg">20</sys:Double>
-  <sys:Double x:Key="FontSizeXl">32</sys:Double>
-  <CornerRadius x:Key="RadiusMd">14</CornerRadius>
-  <CornerRadius x:Key="RadiusLg">20</CornerRadius>
-  <CornerRadius x:Key="RadiusPill">999</CornerRadius>
-  <sys:Double x:Key="Space4">4</sys:Double>
-  <sys:Double x:Key="Space8">8</sys:Double>
-  <sys:Double x:Key="Space12">12</sys:Double>
-  <sys:Double x:Key="Space16">16</sys:Double>
-  <sys:Double x:Key="Space24">24</sys:Double>
-  <Thickness x:Key="PadCard">20</Thickness>
-  <Thickness x:Key="PadPage">24,8,24,12</Thickness>
 
   <!-- bien doi dung chung cho nut sticker (hover nhich len 1 px, nhan xuong 2 px) -->
   <TranslateTransform x:Key="LiftUp" X="0" Y="-1"/>
@@ -296,9 +262,6 @@
         <DropShadowEffect ShadowDepth="4" Direction="315" BlurRadius="0" Color="#5B3A29" Opacity="0.18"/>
       </Setter.Value>
     </Setter>
-  </Style>
-  <Style x:Key="CardRaised" TargetType="Border" BasedOn="{StaticResource Card}">
-    <Setter Property="Background" Value="{StaticResource Surface2}"/>
   </Style>
   <!-- The trong (khong bong): o ben trong the lon -->
   <Style x:Key="CardInset" TargetType="Border">
@@ -1174,8 +1137,6 @@
       </Setter.Value>
     </Setter>
   </Style>
-  <!-- Khoa cu giu tuong thich -->
-  <Style x:Key="LogoSlider" TargetType="Slider" BasedOn="{StaticResource {x:Type Slider}}"/>
 
   <!-- ============================================================ ScrollBar tron be -->
   <Style x:Key="ScrollThumb" TargetType="Thumb">

@@ -1875,6 +1875,7 @@ function Invoke-GalleryDelete {
                 $restore.OpenHandler=[System.Windows.RoutedEventHandler]$opened
                 $restore.FailHandler=[System.EventHandler[System.Windows.ExceptionRoutedEventArgs]]$failed
                 $timer = [Windows.Threading.DispatcherTimer]::new(); $timer.Interval=[TimeSpan]::FromMilliseconds(50); $restore.Timer=$timer
+                $restoreFileLog = ${function:Write-FileLog}
                 $tick = {
                     $current = if ($Controls.Player.Source) { $Controls.Player.Source.ToString() } else { '' }
                     if ($restore.Done -or $generationState.Token -ne $restore.Token -or $current -ne $restore.SourceText -or $restore.Failed -or [DateTime]::UtcNow -gt $restore.Expires) {
@@ -1886,9 +1887,9 @@ function Invoke-GalleryDelete {
                     }
                     if (-not $restore.Opened) { return }
                     $restore.Done=$true; $restore.Timer.Stop()
-                    try { $Controls.Player.Position=$savedPosition } catch { }
-                    if ($savedWasPlaying) { try { $Controls.Player.Play(); $Controls.BtnPlay.Content='Tạm dừng' } catch { } }
-                    else { try { $Controls.Player.Pause(); $Controls.BtnPlay.Content='Phát' } catch { } }
+                    try { $Controls.Player.Position=$savedPosition } catch { & $restoreFileLog "WARN khôi phục vị trí phát sau xóa lỗi: $($_.Exception.Message)" }
+                    if ($savedWasPlaying) { try { $Controls.Player.Play(); $Controls.BtnPlay.Content='Tạm dừng' } catch { & $restoreFileLog "WARN khôi phục phát sau xóa lỗi: $($_.Exception.Message)" } }
+                    else { try { $Controls.Player.Pause(); $Controls.BtnPlay.Content='Phát' } catch { & $restoreFileLog "WARN khôi phục tạm dừng sau xóa lỗi: $($_.Exception.Message)" } }
                     try { $Controls.Player.Remove_MediaOpened($restore.OpenHandler) } catch { }
                     try { $Controls.Player.Remove_MediaFailed($restore.FailHandler) } catch { }
                     try { $restore.Timer.Remove_Tick($restore.TickHandler) } catch { }
@@ -2661,6 +2662,12 @@ function Update-ToolsStatus {
     }
     Set-ToolCard $ui.TxtStatusWhisper $ui.BadgeStatusWhisper $ui.BtnInstallWhisper $hasWhisper $hasWhisper
     if ($hasWhisper -and $ui.BtnInstallWhisper) { $ui.BtnInstallWhisper.Content = 'Kiểm tra' }
+    if (-not $hasWhisper -and $ui.TxtStatusWhisper) {
+        # Whisper chi de chan doan: chua cai khong phai loi (badge trung tinh, khong do).
+        $ui.TxtStatusWhisper.Text = 'Không bắt buộc'
+        $ui.BadgeStatusWhisper.Background = Get-Brush 'NeutralSubtle'; $ui.BadgeStatusWhisper.BorderBrush = Get-Brush 'Neutral'
+        if ($ui.BtnInstallWhisper) { $ui.BtnInstallWhisper.Content = 'Cài (tùy chọn)' }
+    }
     if ($hasFfmpeg -and -not $hasFfprobe) {
         $ui.TxtStatusFfmpeg.Text = 'Thiếu ffprobe'
         $ui.TxtStatusFfmpeg.Foreground = Get-Brush 'TextPrimary'
@@ -3114,7 +3121,6 @@ $script:reasonText = @{
     'start-missing'          = 'Reel không phát từ giây 0 trong bản thu (đã thử 2 lần)'
     'low-confidence'         = 'Khớp hình chưa đủ chắc chắn (đã thử 2 lần)'
     'no-video-sync'          = 'Không thu được hình màn hình để đồng bộ (có thể bật đồng bộ theo âm thanh ở Cài đặt › Tùy chọn)'
-    'sync-drift'             = 'Hình màn hình bị trễ giữa các đoạn'
     'download-failed'        = 'Tải video thất bại (đã thử 3 lần)'
     'metadata-failed'        = 'Không đọc được video từ link Facebook'
     'invalid-link'           = 'Link Facebook không hợp lệ'
@@ -3685,7 +3691,7 @@ $ui.BtnInstallFfmpeg.Add_Click({   Install-ToolGUI 'ffmpeg' })
 $ui.BtnInstallWhisper.Add_Click({  Install-ToolGUI 'whisper' })
 $ui.BtnCheckTools.Add_Click({      Update-ToolsStatus })
 $ui.BtnOpenUninstall.Add_Click({
-    if ($script:ps) { Show-Toast 'Đang chạy tác vụ — không thể gỡ thư viện lúc này.' -Kind warning; return }
+    if (Test-AppBusy) { Show-Toast 'Đang chạy tác vụ hoặc hàng đợi — không thể gỡ thư viện lúc này.' -Kind warning; return }
     $confirmed = Show-ConfirmDialog -Title 'Gỡ thư viện công cụ?' -ConfirmText 'Gỡ thư viện' -Danger -Message (
         "Xóa vĩnh viễn toàn bộ thư mục:`r`n$(Join-Path $root 'tools')`r`n`r`n" +
         "Bao gồm ADB, scrcpy, FFmpeg/ffprobe, yt-dlp và model Whisper đã tải.`r`n" +
@@ -5802,7 +5808,7 @@ function Start-UpdateJob([string]$Mode, [bool]$Silent = $false) {
     $script:updMode = $Mode; $script:updSilent = $Silent
     Set-UpdateButtonText $(if ($Mode -eq 'check') { 'Đang kiểm tra…' } else { 'Đang tải bản mới…' }) $false
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = 'powershell.exe'
+    $psi.FileName = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$upd`" -Mode $Mode"
     $psi.CreateNoWindow = $true; $psi.UseShellExecute = $false
     $script:updProc = [System.Diagnostics.Process]::Start($psi)
@@ -5964,10 +5970,14 @@ $engine" -Title 'Thiếu file' | Out-Null
         $refs = [regex]::Matches($selfText, '\$ui\.([A-Za-z][A-Za-z0-9]+)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
         $missingRefs = @($refs | Where-Object { $_ -notin @('Keys', 'Values', 'Count', 'ContainsKey') -and -not $ui.ContainsKey($_) })
         if ($missingRefs.Count) { throw ('Code tham chieu control khong co trong MainWindow.xaml: ' + ($missingRefs -join ', ')) }
-        foreach ($token in @('Surface0','Surface1','Surface2','Border','TextPrimary','TextMuted','Accent','AccentHover','Success','Warning','Danger','Info')) {
+        $brushLiterals = @([regex]::Matches($selfText, "Get-Brush\s+(?:\$\(if[^)]*\)\s*\{\s*)?'([A-Za-z]+)'") | ForEach-Object { $_.Groups[1].Value })
+        $brushLiterals += @([regex]::Matches($selfText, "\{\s*'([A-Z][A-Za-z]+(?:Subtle|Soft|Line|Text))'\s*\}") | ForEach-Object { $_.Groups[1].Value })
+        $tokenList = @('Surface0','Surface1','Surface2','SurfaceAlt','Ink','InkStrong','StickerShadow','TextPrimary','TextMuted','TextSubtle','Accent','AccentHover',
+                       'Success','Warning','Danger','Info','Neutral','Pink','Mint','MintLine','Coral','OverlayLogo','OverlayLogoDim','OverlayGif','OverlayGifDim') + $brushLiterals
+        foreach ($token in @($tokenList | Sort-Object -Unique)) {
             if (-not ($win.TryFindResource($token) -is [System.Windows.Media.SolidColorBrush])) { throw "Thieu token mau: $token" }
         }
-        foreach ($styleKey in @('BtnPrimary','BtnSecondary','BtnGhost','BtnDanger','BtnDangerSolid','NavButton','SegButton','Icon','StatusBadge')) {
+        foreach ($styleKey in @('BtnPrimary','BtnSecondary','BtnGhost','BtnDanger','BtnDangerSolid','BtnIcon','NavButton','SegButton','Icon','StatusBadge','StickerCard','ToggleSwitch','NotePaper')) {
             if (-not ($win.TryFindResource($styleKey) -is [System.Windows.Style])) { throw "Thieu style: $styleKey" }
         }
         if ($ui.TxtOut.Text -ne (Join-Path $root 'output')) { throw 'Thu muc xuat khoi tao khong dung.' }
