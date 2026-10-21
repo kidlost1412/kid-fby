@@ -38,7 +38,7 @@ if ($signingFull.StartsWith(([IO.Path]::GetFullPath($root).TrimEnd('\') + '\'), 
     throw "Khoa rieng nam trong repo ($signingFull). Chuyen ra ngoai repo roi chay lai."
 }
 
-if ([System.IO.File]::ReadAllText((Join-Path $root 'core\updater.ps1')) -match 'PUBLIC_KEY_PLACEHOLDER') {
+if ([System.IO.File]::ReadAllText((Join-Path $root 'core\updater.ps1')) -match '<<PUBLIC_KEY_PLACEHOLDER>>') {
     throw 'core\updater.ps1 van la placeholder khoa ky: ban phat hanh se lam khach mat tu cap nhat. Chay .\new-signing-key.ps1, dan chuoi khoa cong khai vao $UpdatePublicKeyXml trong core\updater.ps1, roi phat hanh lai (ke ca -NoPush).'
 }
 
@@ -170,7 +170,7 @@ Write-Host "    -> Da tao version.json.sig" -ForegroundColor Green
 
 # Khoa cong khai nhung trong updater.ps1 phai khop khoa ky, neu khong khach se tu choi moi ban cap nhat.
 $updaterText = [System.IO.File]::ReadAllText((Join-Path $root 'core\updater.ps1'))
-if ($updaterText -match 'PUBLIC_KEY_PLACEHOLDER') {
+if ($updaterText -match '<<PUBLIC_KEY_PLACEHOLDER>>') {
     throw 'core\updater.ps1 van la placeholder khoa ky: ban phat hanh se lam khach mat tu cap nhat. Chay .\new-signing-key.ps1, dan chuoi khoa cong khai vao $UpdatePublicKeyXml trong core\updater.ps1, roi phat hanh lai (ke ca -NoPush).'
 } else {
     $modulusOf = { param($t) if ($t -match '<Modulus>([^<]+)</Modulus>') { $matches[1] } else { '' } }

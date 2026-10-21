@@ -1,69 +1,81 @@
 {
-  "version": "2.0.1",
-  "releasedAt": "2026-10-19 19:19",
-  "minLauncher": "1.0.0",
-  "mandatory": false,
-  "changelog": [
-    "Don luong duyet tung video va GIF MediaElement cu; giao dien mo ta audio/video theo hanh vi dang co.",
-    "Bo co lang khong tac dung va duong dan may phat trien; su dung phan hoi UI Meta lam dieu kien tai.",
-    "Downloader giu kiem tra chung chi TLS; curl co timeout; bo cai xet ca cong cu phu.",
-    "Metadata EXE lay tu core/version.txt; them ban do ma nguon va tai lieu ban giao."
-  ],
-  "files": [
-    {
-      "path": "core/facebook-links.ps1",
-      "sha256": "EBCF686A158906B3B0BB181C986423343D4D1F9D07C19D6AC7D08201D4492644",
-      "size": 15487
-    },
-    {
-      "path": "core/fix-ket-noi.ps1",
-      "sha256": "67105CCB1E7E44BF98D48F6E57108F16F2B3F64624D547C26B182BC9F42C9555",
-      "size": 5796
-    },
-    {
-      "path": "core/Kid-FB.Y.ico",
-      "sha256": "40EEC8AD60D232AF4ED5436D3B3F005A460E622A2C21C589D2BF561713C5F1A7",
-      "size": 2686
-    },
-    {
-      "path": "core/kid-fby-gui.ps1",
-      "sha256": "0997F865C64442E9AC1470217B1AE4442ADCD2D0C6982059C6EC41EFFC155577",
-      "size": 345393
-    },
-    {
-      "path": "core/kid-fby.ps1",
-      "sha256": "A06F338FF7316B7D053737EE7B823ECF0E0110E78EBD48AEE53FF952D6D9D44A",
-      "size": 124046
-    },
-    {
-      "path": "core/kid-logo.zip",
-      "sha256": "04CC321E27BD14418AAEB2AFEA9E6E9D04D76C9E67C71B3668004FDB4D5611FD",
-      "size": 1897044
-    },
-    {
-      "path": "core/update.json",
-      "sha256": "F32DCCFF34D3183A8ED519F0269421D7DC8B2F095A3DB1F10F00E5BE68137F55",
-      "size": 56
-    },
-    {
-      "path": "core/updater.ps1",
-      "sha256": "D754769F181293CC9834A8CCAEC76C5A1CBD66577CBECB4C80EFC80EA79C53F7",
-      "size": 10272
-    },
-    {
-      "path": "core/version.txt",
-      "sha256": "FE840F52FB5578D3F77EB497115EB02C6036601C3A53E60DF7995C7276BAA77A",
-      "size": 7
-    },
-    {
-      "path": "core/whisper-language.ps1",
-      "sha256": "B3875E5A13FFE4925CE4B88CDE49EA4E962B588FB514709A33E153DEE6CE93BC",
-      "size": 24261
-    },
-    {
-      "path": "Kid-FB.Y.exe",
-      "sha256": "2E7357DEFE5D01BCAFE72C324CA9BF1B66D0A2ACDBE844DC40304E766B0C2D5B",
-      "size": 2433536
-    }
-  ]
+    "version":  "2.1.0",
+    "releasedAt":  "2026-10-21 17:42",
+    "minLauncher":  "1.0.0",
+    "mandatory":  false,
+    "changelog":  [
+                      "Dong bo tieng-hinh theo khung hinh,Giao dien moi phong cach cute, video xem truoc lon,Chi xuat 1 file hoan chinh, file trung gian trong .cache,Sua nhieu loi on dinh va bao mat cap nhat"
+                  ],
+    "files":  [
+                  {
+                      "path":  "core/facebook-links.ps1",
+                      "sha256":  "EFFB974E8007E348AF0B0A297D7BA2B3A3CEFA8CC764526BDEE20EB4957C43B3",
+                      "size":  22122
+                  },
+                  {
+                      "path":  "core/fix-ket-noi.ps1",
+                      "sha256":  "2504E17076A2ED72F52707DCDF7EA87F3EBA4BB3535EF43D30EED0EC31186F84",
+                      "size":  7696
+                  },
+                  {
+                      "path":  "core/Kid-FB.Y.ico",
+                      "sha256":  "40EEC8AD60D232AF4ED5436D3B3F005A460E622A2C21C589D2BF561713C5F1A7",
+                      "size":  2686
+                  },
+                  {
+                      "path":  "core/kid-fby-gui.ps1",
+                      "sha256":  "C04BC1C6F8544C2F1058906DACA271D5A9957179B0EEB53E858E2CE9D1CA1167",
+                      "size":  440705
+                  },
+                  {
+                      "path":  "core/kid-fby.ps1",
+                      "sha256":  "EEFFFE7A20549553D915D2A0B70D2E7FA74E6FF6A485BB75C9DD00A50741F9C2",
+                      "size":  201251
+                  },
+                  {
+                      "path":  "core/kid-logo.zip",
+                      "sha256":  "04CC321E27BD14418AAEB2AFEA9E6E9D04D76C9E67C71B3668004FDB4D5611FD",
+                      "size":  1897044
+                  },
+                  {
+                      "path":  "core/update.json",
+                      "sha256":  "F32DCCFF34D3183A8ED519F0269421D7DC8B2F095A3DB1F10F00E5BE68137F55",
+                      "size":  56
+                  },
+                  {
+                      "path":  "core/updater.ps1",
+                      "sha256":  "7C5D91F6C5C715AB64C350C276791896578A99D9BF59041DD56ED158878B6F0A",
+                      "size":  15558
+                  },
+                  {
+                      "path":  "core/version.txt",
+                      "sha256":  "8248F7772687AFF0B103B36898908DEB82126337F933E49A5AC04829093C58FF",
+                      "size":  5
+                  },
+                  {
+                      "path":  "core/whisper-language.ps1",
+                      "sha256":  "B3875E5A13FFE4925CE4B88CDE49EA4E962B588FB514709A33E153DEE6CE93BC",
+                      "size":  24261
+                  },
+                  {
+                      "path":  "core/ui/MainWindow.xaml",
+                      "sha256":  "6FF5C15A3818982B286BBDF4EBE82F2324609179C50CE0AE4C196A7EDEE01B07",
+                      "size":  114038
+                  },
+                  {
+                      "path":  "core/ui/Theme.xaml",
+                      "sha256":  "05A1577F821F6CAACA7258D01601C4C39DB6262691FE497BCD4ED0B9F4099191",
+                      "size":  109821
+                  },
+                  {
+                      "path":  "core/ui/fonts/OFL.txt",
+                      "sha256":  "580DF76C95A1EC5AB878CEB25BB3D85C6A076804E9C970C8C6972AEA775FDF65",
+                      "size":  4478
+                  },
+                  {
+                      "path":  "Kid-FB.Y.exe",
+                      "sha256":  "7D3A7908A0E92AD32F1A8C0B3D49A5996F891E64C793C3F94CF668146584621F",
+                      "size":  3250688
+                  }
+              ]
 }

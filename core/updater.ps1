@@ -11,7 +11,7 @@ param(
 )
 # Khoa cong khai RSA (XML) dung de xac minh chu ky version.json. Tao bang new-signing-key.ps1.
 # Ban build phai thay placeholder nay bang noi dung update-signing-public.xml.
-$UpdatePublicKeyXml = '<<PUBLIC_KEY_PLACEHOLDER>>'
+$UpdatePublicKeyXml = '<RSAKeyValue><Modulus>r2ol3PekKnODgdxRGtU6IHQ0o4i8ZErFdTetATWBtt8FqCCSidnO87B56axA6x5rDiU+eH1AFoXGWk5e+nijTwvb6o1Pi+REtm61WluVtGjO5thHFSnzjV8PQCoY9m/q37Rnzf5BKtPnr+6snb/ljetWK2/mdgJf2PxjPebAJ3hYL39GL3J1kwomLjEfV2pXVpXoY46UKeZLSjsosmIaF7YZgfeWX9QquyqZg4FyXiwAseFiXP/MzL4V2Zr2BNgt17Jfu57H4OotSGuZqPtJQN1UUZ1Ont6JW0mryKUzlhex+5cEuC1OPAvY134tb3aQ/35F9GzXSj/Od02TTAfzBHh9pHpqp7jfPJIK4txIzdClTL8H0gXVbLU2Hrnjd8ok/xRCMxB6xEaw9IcwroH330uSNsHTPF6/N6qunkvaXZTHx2C1COSqGAZyjyiuvvNoWqsApj1nlFuBY3DybtSUqj8K80KySZI27/cXVdB7twLEMY5Z/aZNXN7oOmzPzbnx</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { <# bo qua: .NET khong ho tro dat giao thuc, dung mac dinh he thong #> }
