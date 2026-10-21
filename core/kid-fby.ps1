@@ -1192,41 +1192,83 @@ $script:KidSyncSource = @'
 using System;
 using System.IO;
 
+// Co huy dung chung: PowerShell dat Flag = true khi pipeline bi dung; cac vong lap C# thoat som (OperationCanceledException).
+public class KidCancel { public volatile bool Flag; }
+
 public class KidFrameSync
 {
     int N;
     float[][] Ref;
     float[][] Scr;
+    KidCancel Tok;
     public int RefCount { get { return Ref.Length; } }
     public int ScrCount { get { return Scr.Length; } }
 
-    // Moi khung: tru trung binh, chia do lech chuan (null neu gan den hoac phang).
-    static float[][] LoadFrames(string path, int n)
+    // Doc raw gray tuan tu (khong nap ca file vao RAM). Moi khung: tru trung binh, chia do lech chuan (null neu gan den hoac phang).
+    // maxFrames > 0: chi doc toi da ngan nay khung (gioi han bo nho). segStart/segCount != null: file chua cac doan lien tiep;
+    // khung thu j cua doan i la chi so segStart[i]+j trong mang tra ve (do dai total), cac khung ngoai doan = null.
+    static float[][] LoadFrames(string path, int n, int maxFrames, int[] segStart, int[] segCount, int total, KidCancel tok)
     {
-        byte[] b = File.ReadAllBytes(path);
-        int cnt = b.Length / n;
-        float[][] fr = new float[cnt][];
-        for (int f = 0; f < cnt; f++)
+        long len = new FileInfo(path).Length;
+        int cnt = (int)(len / n);
+        if (maxFrames > 0 && cnt > maxFrames) cnt = maxFrames;
+        float[][] fr;
+        int[] map = null;
+        if (segStart != null)
         {
-            double sum = 0; int o = f * n;
-            for (int k = 0; k < n; k++) sum += b[o + k];
-            double mean = sum / n, ss = 0;
-            for (int k = 0; k < n; k++) { double d = b[o + k] - mean; ss += d * d; }
-            double sd = Math.Sqrt(ss / n);
-            if (sd < 3.0 || mean < 6.0) { fr[f] = null; continue; }
-            float[] v = new float[n];
-            double inv = 1.0 / (sd * Math.Sqrt(n));
-            for (int k = 0; k < n; k++) v[k] = (float)((b[o + k] - mean) * inv);
-            fr[f] = v;
+            fr = new float[total][];
+            map = new int[cnt]; int pos = 0;
+            for (int s = 0; s < segStart.Length && pos < cnt; s++)
+                for (int j = 0; j < segCount[s] && pos < cnt; j++) { int idx = segStart[s] + j; map[pos++] = (idx < total) ? idx : -1; }
+            for (; pos < cnt; pos++) map[pos] = -1;
+        }
+        else fr = new float[cnt][];
+        byte[] b = new byte[n];
+        using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16))
+        {
+            for (int f = 0; f < cnt; f++)
+            {
+                if ((f & 63) == 0 && tok != null && tok.Flag) throw new OperationCanceledException();
+                int got = 0;
+                while (got < n) { int r = fs.Read(b, got, n - got); if (r <= 0) break; got += r; }
+                if (got < n) break;
+                int slot = (map != null) ? map[f] : f;
+                if (slot < 0) continue;
+                double sum = 0;
+                for (int k = 0; k < n; k++) sum += b[k];
+                double mean = sum / n, ss = 0;
+                for (int k = 0; k < n; k++) { double d = b[k] - mean; ss += d * d; }
+                double sd = Math.Sqrt(ss / n);
+                if (sd < 3.0 || mean < 6.0) { fr[slot] = null; continue; }
+                float[] v = new float[n];
+                double inv = 1.0 / (sd * Math.Sqrt(n));
+                for (int k = 0; k < n; k++) v[k] = (float)((b[k] - mean) * inv);
+                fr[slot] = v;
+            }
         }
         return fr;
     }
 
     public KidFrameSync(string refPath, string scrPath, int w, int h)
+        : this(refPath, scrPath, w, h, null, null, 0, 0, null) { }
+
+    // refSegStart/refSegCount: video goc dai chi lay vai doan (xem Find-VideoSyncOffset); refTotal = tong so khung 30 fps cua video goc.
+    public KidFrameSync(string refPath, string scrPath, int w, int h, int[] refSegStart, int[] refSegCount, int refTotal, int scrMaxFrames, KidCancel tok)
     {
-        N = w * h;
-        Ref = LoadFrames(refPath, N);
-        Scr = LoadFrames(scrPath, N);
+        N = w * h; Tok = tok;
+        Ref = LoadFrames(refPath, N, 0, refSegStart, refSegCount, refTotal, tok);
+        Scr = LoadFrames(scrPath, N, scrMaxFrames, null, null, 0, tok);
+    }
+
+    public static System.Threading.Tasks.Task<KidFrameSync> CreateAsync(string refPath, string scrPath, int w, int h, int[] refSegStart, int[] refSegCount, int refTotal, int scrMaxFrames, KidCancel tok)
+    {
+        return System.Threading.Tasks.Task.Factory.StartNew<KidFrameSync>(delegate { return new KidFrameSync(refPath, scrPath, w, h, refSegStart, refSegCount, refTotal, scrMaxFrames, tok); });
+    }
+
+    // Match chay tren luong rieng de PowerShell tham do/dung duoc (Wait-KidTask).
+    public System.Threading.Tasks.Task<double[]> MatchAsync(int r0, int count, int dMin, int dMax, int minUsed, int excl, int stride)
+    {
+        return System.Threading.Tasks.Task.Factory.StartNew<double[]>(delegate { return Match(r0, count, dMin, dMax, minUsed, excl, stride); });
     }
 
     public int ValidRef(int r0, int count)
@@ -1242,6 +1284,7 @@ public class KidFrameSync
     {
         double dot = 0; used = 0;
         float[] sa = new float[N]; float[] sb = new float[N];
+        if (Tok != null && Tok.Flag) throw new OperationCanceledException();
         for (int i = 0; i < count; i += stride)
         {
             int ri = r0 + i; int sj = ri + d;
@@ -1295,6 +1338,7 @@ public class KidFrameSync
 # Hinh hoc khung: Scr/Ref la bo loc crop (ty le theo iw/ih). 'fit' = vung giua man hinh Facebook Reel (bo thanh tren/duoi, cot nut ben phai);
 # video hien tren man hinh 720x1280 lech len ~4% so voi video goc (do thuc nghiem tren LDPlayer), nen vung Ref doi xuong 0.04.
 # 'mid' = cung vung crop hai ben; 'full' = khong crop. Thu lan luot, lay hinh hoc dau tien dat nguong.
+$script:KidSyncLongRefSec = 300.0
 $script:KidSyncGeoms = @(
     @{ Name = 'fit';  W = 24; H = 42; Scr = 'crop=iw*0.80:ih*0.60:iw*0.02:ih*0.10'; Ref = 'crop=iw*0.80:ih*0.60:iw*0.02:ih*0.14' },
     @{ Name = 'mid';  W = 24; H = 42; Scr = 'crop=iw*0.80:ih*0.60:iw*0.02:ih*0.10'; Ref = 'crop=iw*0.80:ih*0.60:iw*0.02:ih*0.10' },
@@ -1303,8 +1347,10 @@ $script:KidSyncGeoms = @(
 
 # Mot lan giai ma, tao raw gray 30 fps cho moi hinh hoc. Khung k = thoi diem k/30 s tren truc pts cua file vao
 # (fps start_time=0 dem khung dau neu video bat dau muon; rawvideo khong doi pts).
+# StartSec/DurSec > 0: chi giai ma doan [StartSec, StartSec+DurSec) (video goc dai: lay vai doan 6 s). Tag dat ten file rieng cho tung doan.
 function New-FrameSignatures {
-    param($T, [string]$File, [string]$Side, $Geoms, [string]$Work)
+    param($T, [string]$File, [string]$Side, $Geoms, [string]$Work, [double]$StartSec = 0, [double]$DurSec = 0, [string]$Tag = '')
+    $inv = [cultureinfo]::InvariantCulture
     $n = $Geoms.Count
     $labels = ''
     for ($i = 0; $i -lt $n; $i++) { $labels += "[s$i]" }
@@ -1315,9 +1361,12 @@ function New-FrameSignatures {
         $crop = [string]$g[$Side]
         $chain = if ($crop) { $crop + ',' } else { '' }
         $fc += (";[s$i]" + $chain + 'scale=' + $g.W + ':' + $g.H + ':flags=area,format=gray' + "[o$i]")
-        $paths += (Join-Path $Work ("sig-$Side-" + $g.Name + '.raw'))
+        $paths += (Join-Path $Work ("sig-$Side-" + $g.Name + $Tag + '.raw'))
     }
-    $a = @('-hide_banner','-loglevel','error','-y','-i',$File,'-an','-filter_complex',$fc)
+    $a = @('-hide_banner','-loglevel','error','-y')
+    if ($StartSec -gt 0) { $a += @('-ss', $StartSec.ToString('0.###', $inv)) }
+    if ($DurSec -gt 0) { $a += @('-t', $DurSec.ToString('0.###', $inv)) }
+    $a += @('-i',$File,'-an','-filter_complex',$fc)
     for ($i = 0; $i -lt $n; $i++) { $a += @('-map',"[o$i]",'-f','rawvideo',$paths[$i]) }
     $r = Invoke-Exe $T.ffmpeg $a -TimeoutMs 600000
     if ($r.Code -ne 0) { return @{ Ok = $false; Err = [string]$r.Err } }
@@ -1327,11 +1376,32 @@ function New-FrameSignatures {
     return @{ Ok = $true; Paths = $paths }
 }
 
+# Doi mot Task C# (Match/CreateAsync) bang vong tham do 100 ms de PowerShell van dung duoc (Stop). Khi pipeline dung giua chung
+# (finally) dat co huy de luong C# thoat som. Loi trong task duoc nem lai thanh loi goc.
+function Wait-KidTask {
+    param($Task, $Tok)
+    try {
+        while (-not $Task.Wait(100)) { }
+    } catch {
+        # PowerShell boc loi .NET trong MethodInvocationException/AggregateException: lay loi goc.
+        $ex = $_.Exception
+        while ($null -ne $ex.InnerException -and ($ex -is [System.Management.Automation.MethodInvocationException] -or $ex -is [System.AggregateException])) { $ex = $ex.InnerException }
+        throw $ex
+    } finally {
+        if (-not $Task.IsCompleted) {
+            if ($null -ne $Tok) { $Tok.Flag = $true }
+            try { [void]$Task.Wait(3000) } catch { Write-Warn2 'Tac vu khop hinh da bi huy.' }
+        }
+    }
+    return $Task.Result
+}
+
 # Danh gia mot hinh hoc: khop toan bo video goc -> d toan cuc (do tin cay), cac cua so 1.5 s -> cac "bac" d (player Facebook co the
 # dung hinh vai tram ms trong khi audio van chay => d tang theo bac), kiem tra dau video co tren man hinh.
 # D tra ve = bac thap nhat dang tin (audio la dong ho chu, hinh chi co the tre them), khong co bac => d toan cuc.
 function Measure-FrameSync {
-    param($K)
+    # MaxOffsetFrames > 0: chi tim d trong [0, MaxOffsetFrames] khung (Reel chi co the mo trong khoang vai chuc giay dau cua ban thu).
+    param($K, [int]$MaxOffsetFrames = 0, $Tok = $null)
     $inv = [cultureinfo]::InvariantCulture
     $o = @{ Ok = $false; Reason = ''; Geometry = ''; D = $null; DGlobal = $null; Peak = $null; Ratio = $null; StartPeak = $null; StartVisible = $null; DriftMs = $null; SegText = ''; Plateaus = '' }
     $refN = $K.RefCount; $scrN = $K.ScrCount
@@ -1340,7 +1410,10 @@ function Measure-FrameSync {
     if ($validRef -lt 45) { $o.Reason = 'ref-no-signal'; return $o }
     $minUsed = [int][Math]::Max(30, [Math]::Floor(0.5 * $validRef))
     # Tho (buoc 3 khung) toan khoang, roi tinh chinh +-4 khung buoc 1.
-    $coarse = $K.Match(0, $refN, 0, ($scrN - 1), [int][Math]::Max(10, [Math]::Floor($minUsed / 3)), 10, 3)
+    $dMaxCoarse = $scrN - 1
+    if ($MaxOffsetFrames -gt 0) { $dMaxCoarse = [int][Math]::Min($dMaxCoarse, $MaxOffsetFrames) }
+    $coarseMinUsed = [int][Math]::Max(10, [Math]::Floor($minUsed / 3))
+    $coarse = if ($null -ne $Tok) { Wait-KidTask -Task $K.MatchAsync(0, $refN, 0, $dMaxCoarse, $coarseMinUsed, 10, 3) -Tok $Tok } else { $K.Match(0, $refN, 0, $dMaxCoarse, $coarseMinUsed, 10, 3) }
     if ($coarse[1] -le 0) { $o.Reason = 'no-match'; $o.Peak = [Math]::Round($coarse[1], 3); return $o }
     $dc = [int]$coarse[3]
     $fine = $K.Match(0, $refN, ($dc - 4), ($dc + 4), $minUsed, 2, 1)
@@ -1357,6 +1430,7 @@ function Measure-FrameSync {
     $startConf = 0
     if ($wl -ge 30) {
         for ($r0 = 0; $r0 -le ($refN - $wl); $r0 += 15) {
+            if ($K.ValidRef($r0, $wl) -lt [int]($wl * 0.5)) { continue }
             $m = $K.Match($r0, $wl, ($dg - 30), ($dg + 30), [int]($wl * 0.5), 8, 1)
             if ($m[1] -ge 0.65 -and ($m[1] / [Math]::Max(0.01, $m[2])) -ge 1.25) {
                 $locals.Add([double]$m[0])
@@ -1411,24 +1485,80 @@ function Measure-FrameSync {
 # Ok=$true khi dinh >= 0.6 va ty le >= 1.15 va dau video hien tren man hinh.
 # Reason='start-missing' khi khop tin cay nhung dau video khong co trong ban thu (Reel chay tiep tu giua).
 function Find-VideoSyncOffset {
-    param($T, [string]$RefVideo, [string]$RecFile, [string]$Work)
+    # MaxOffsetSec > 0: gioi han tim t0 trong [0, MaxOffsetSec] giay cua ban thu (= tOpen - tRec + 20 s); 0 = khong gioi han.
+    # Video goc dai hon $script:KidSyncLongRefSec (300 s): chi lay chu ky 3 doan 6 s (dau/giua/cuoi) de nhanh va nhe bo nho.
+    param($T, [string]$RefVideo, [string]$RecFile, [string]$Work, [double]$MaxOffsetSec = 0, [double]$RefDuration = 0)
     $sw = [Diagnostics.Stopwatch]::StartNew()
-    $out = @{ Ok = $false; Reason = 'unknown'; T0 = $null; Peak = $null; Ratio = $null; Geometry = ''; StartPeak = $null; DriftMs = $null; SegText = ''; Plateaus = ''; DGlobalSec = $null; ElapsedSec = 0.0 }
+    $inv = [cultureinfo]::InvariantCulture
+    $out = @{ Ok = $false; Reason = 'unknown'; T0 = $null; Peak = $null; Ratio = $null; Geometry = ''; StartPeak = $null; DriftMs = $null; SegText = ''; Plateaus = ''; DGlobalSec = $null; ElapsedSec = 0.0; Mode = 'full' }
+    $tok = $null
     try {
         if (-not $T.ffmpeg -or -not $T.ffprobe) { $out.Reason = 'no-ffmpeg'; return $out }
         $pv = Invoke-Exe $T.ffprobe @('-v','error','-select_streams','v:0','-show_entries','stream=codec_type','-of','csv=p=0',$RecFile) -TimeoutMs 30000
         if ($pv.Code -ne 0 -or ([string]$pv.Out) -notmatch 'video') { $out.Reason = 'rec-no-video'; return $out }
         if (-not ('KidFrameSync' -as [type])) { Add-Type -TypeDefinition $script:KidSyncSource -Language CSharp -ErrorAction Stop }
+        $tok = New-Object KidCancel
         $geoms = $script:KidSyncGeoms
-        $refSig = New-FrameSignatures -T $T -File $RefVideo -Side 'Ref' -Geoms $geoms -Work $Work
-        if (-not $refSig.Ok) { $out.Reason = 'ref-decode-failed'; Write-Warn2 ('Giai ma video goc de khop hinh loi: ' + $refSig.Err); return $out }
-        $scrSig = New-FrameSignatures -T $T -File $RecFile -Side 'Scr' -Geoms $geoms -Work $Work
+        $maxOffsetFrames = if ($MaxOffsetSec -gt 0) { [int][Math]::Ceiling($MaxOffsetSec * 30.0) } else { 0 }
+        $segSec = 6.0
+        $segFrames = [int]($segSec * 30)
+        $refDur = $RefDuration
+        if ($refDur -le 0) { $refDur = Get-VideoDuration $T $RefVideo }
+        $segStart = $null; $segCount = $null; $refTotal = 0
+        # Bo nho: ban thu toi da (maxOffset + do dai video + 10 s) hoac tran cung 20 phut.
+        $scrCapFrames = 36000
+        if ($maxOffsetFrames -gt 0 -and $refDur -gt 0) { $scrCapFrames = [int][Math]::Min(36000, $maxOffsetFrames + [Math]::Ceiling($refDur * 30.0) + 300) }
+        $scrDurLimit = if ($scrCapFrames -lt 36000) { [double]($scrCapFrames / 30.0) + 2.0 } else { 0.0 }
+
+        if ($refDur -gt $script:KidSyncLongRefSec) {
+            $out.Mode = 'segments'
+            $refTotal = [int][Math]::Floor($refDur * 30.0)
+            $midStart = [int][Math]::Max($segFrames, [Math]::Floor(($refTotal - 120) / 2) - 30)
+            $segStart = @(0, $midStart, ($refTotal - $segFrames))
+            $segCount = @()
+            $segPaths = @()
+            for ($s = 0; $s -lt 3; $s++) {
+                $sig = New-FrameSignatures -T $T -File $RefVideo -Side 'Ref' -Geoms $geoms -Work $Work -StartSec ($segStart[$s] / 30.0) -DurSec $segSec -Tag ("-seg$s")
+                if (-not $sig.Ok) { $out.Reason = 'ref-decode-failed'; Write-Warn2 ('Giai ma doan video goc de khop hinh loi: ' + $sig.Err); return $out }
+                $segPaths += ,$sig.Paths
+            }
+            # Moi hinh hoc: noi 3 doan thanh 1 file; so khung moi doan = size/(W*H) (toi da 180).
+            $refPaths = @()
+            for ($i = 0; $i -lt $geoms.Count; $i++) {
+                $g = $geoms[$i]; $frameBytes = [int]$g.W * [int]$g.H
+                $merged = Join-Path $Work ('sig-Ref-' + $g.Name + '.raw')
+                $counts = @()
+                $fsOut = [IO.File]::Create($merged)
+                try {
+                    for ($s = 0; $s -lt 3; $s++) {
+                        $len = (Get-Item -LiteralPath $segPaths[$s][$i]).Length
+                        $c = [int][Math]::Min($segFrames, [Math]::Floor($len / $frameBytes))
+                        $counts += $c
+                        $fsIn = [IO.File]::OpenRead($segPaths[$s][$i])
+                        try {
+                            $buf = New-Object byte[] ($c * $frameBytes)
+                            $got = 0
+                            while ($got -lt $buf.Length) { $r = $fsIn.Read($buf, $got, $buf.Length - $got); if ($r -le 0) { break }; $got += $r }
+                            $fsOut.Write($buf, 0, $got)
+                        } finally { $fsIn.Dispose() }
+                    }
+                } finally { $fsOut.Dispose() }
+                $refPaths += $merged
+                if ($i -eq 0) { $segCount = $counts }
+            }
+            $refSig = @{ Ok = $true; Paths = $refPaths }
+        } else {
+            $refSig = New-FrameSignatures -T $T -File $RefVideo -Side 'Ref' -Geoms $geoms -Work $Work
+            if (-not $refSig.Ok) { $out.Reason = 'ref-decode-failed'; Write-Warn2 ('Giai ma video goc de khop hinh loi: ' + $refSig.Err); return $out }
+        }
+        $scrSig = New-FrameSignatures -T $T -File $RecFile -Side 'Scr' -Geoms $geoms -Work $Work -DurSec $scrDurLimit
         if (-not $scrSig.Ok) { $out.Reason = 'rec-decode-failed'; Write-Warn2 ('Giai ma hinh man hinh de khop hinh loi: ' + $scrSig.Err); return $out }
         $best = $null
         for ($i = 0; $i -lt $geoms.Count; $i++) {
             $g = $geoms[$i]
-            $k = New-Object KidFrameSync($refSig.Paths[$i], $scrSig.Paths[$i], [int]$g.W, [int]$g.H)
-            $m = Measure-FrameSync -K $k
+            $k = Wait-KidTask -Task ([KidFrameSync]::CreateAsync($refSig.Paths[$i], $scrSig.Paths[$i], [int]$g.W, [int]$g.H, $segStart, $segCount, $refTotal, $scrCapFrames, $tok)) -Tok $tok
+            $m = Measure-FrameSync -K $k -MaxOffsetFrames $maxOffsetFrames -Tok $tok
+            $k = $null
             $m.Geometry = $g.Name
             if (-not $m.Ok) { if ($null -eq $best) { $best = $m }; continue }
             if ($null -eq $best -or -not $best.Ok -or $m.Peak -gt $best.Peak) { $best = $m }
@@ -1439,7 +1569,7 @@ function Find-VideoSyncOffset {
         $out.StartPeak = if ($null -ne $best.StartPeak) { [Math]::Round($best.StartPeak, 3) } else { $null }
         $out.DriftMs = $best.DriftMs; $out.SegText = $best.SegText; $out.Plateaus = $best.Plateaus; $out.DGlobalSec = [Math]::Round($best.DGlobal / 30.0, 3)
         if ($best.Peak -lt 0.6 -or $best.Ratio -lt 1.15) {
-            $out.Reason = [string]::Format([cultureinfo]::InvariantCulture, 'low-confidence peak={0:0.000} ratio={1:0.00}', $best.Peak, $best.Ratio)
+            $out.Reason = [string]::Format($inv, 'low-confidence peak={0:0.000} ratio={1:0.00}', $best.Peak, $best.Ratio)
             return $out
         }
         $out.T0 = [Math]::Round($best.D / 30.0, 3)
@@ -1447,10 +1577,14 @@ function Find-VideoSyncOffset {
         $out.Ok = $true; $out.Reason = 'ok'
         return $out
     } catch {
+        for ($ex = $_.Exception; $null -ne $ex; $ex = $ex.InnerException) {
+            if ($ex -is [System.Management.Automation.PipelineStoppedException]) { throw }
+        }
         $out.Reason = 'exception'
         Write-Warn2 ('Khop khung hinh loi: ' + $_.Exception.Message)
         return $out
     } finally {
+        if ($null -ne $tok) { $tok.Flag = $true }
         $out.ElapsedSec = [Math]::Round($sw.Elapsed.TotalSeconds, 2)
     }
 }
@@ -2204,8 +2338,9 @@ function Invoke-ReeditVideo {
     $name = [IO.Path]::GetFileName($final)
     if ($name -notmatch '^(.+)-3-hoan-chinh\.mp4$') { throw 'Hay chon video hoan chinh trong Kho Video de sua logo.' }
     $id = $matches[1]; $dest = Split-Path $final -Parent
-    $source = Join-Path $dest ($id + '-1-video-goc.mp4')
-    $audio = Join-Path $dest ($id + '-2-am-thanh-tho.m4a')
+    # Dot 4: -1/-2 nam trong <dest>\.cache; fallback goc thu muc xuat (file cu). -3 luon duoc ghi de tai cho ($final).
+    $source = Get-ReelIntermediatePath -Dest $dest -Id $id -Kind 'source'
+    $audio = Get-ReelIntermediatePath -Dest $dest -Id $id -Kind 'audio'
     foreach ($inputFile in @($source,$audio)) {
         if (-not (Test-Path -LiteralPath $inputFile -PathType Leaf)) { throw "Thieu file da luu de sua video: $inputFile. Khong tai hoac thu am lai tu dong." }
     }
@@ -2316,6 +2451,39 @@ function Test-ValidReelOutput {
     }
 }
 
+# Dot 4: thu muc an chua file trung gian (-1 video goc, -2 am thanh tho) de sua lai logo/GIF khong can mang.
+$script:ReelCacheName = '.cache'
+function Get-ReelCacheDir {
+    param([string]$Dest)
+    return (Join-Path $Dest $script:ReelCacheName)
+}
+
+# Tao <Dest>\.cache neu thieu va dat thuoc tinh Hidden. Loi dat Hidden chi canh bao (khong lam hong xuat ban).
+function Initialize-ReelCacheDir {
+    param([string]$Dest)
+    $dir = Get-ReelCacheDir -Dest $Dest
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null }
+    try {
+        $di = New-Object System.IO.DirectoryInfo($dir)
+        if (-not ($di.Attributes -band [IO.FileAttributes]::Hidden)) {
+            [IO.File]::SetAttributes($dir, ($di.Attributes -bor [IO.FileAttributes]::Hidden))
+        }
+    } catch { Write-Warn2 ('Khong dat duoc thuoc tinh an cho thu muc .cache: ' + $_.Exception.Message) }
+    return $dir
+}
+
+# Duong dan file trung gian. Kind: 'source' (-1-video-goc.mp4) | 'audio' (-2-am-thanh-tho.m4a).
+# Uu tien .cache; neu khong co thi dung file cu o goc thu muc xuat; neu khong co o dau thi tra ve duong dan trong .cache.
+function Get-ReelIntermediatePath {
+    param([string]$Dest, [string]$Id, [ValidateSet('source','audio')][string]$Kind)
+    $leaf = if ($Kind -eq 'source') { $Id + '-1-video-goc.mp4' } else { $Id + '-2-am-thanh-tho.m4a' }
+    $inCache = Join-Path (Get-ReelCacheDir -Dest $Dest) $leaf
+    if (Test-Path -LiteralPath $inCache -PathType Leaf) { return $inCache }
+    $inRoot = Join-Path $Dest $leaf
+    if (Test-Path -LiteralPath $inRoot -PathType Leaf) { return $inRoot }
+    return $inCache
+}
+
 function Publish-ReelFiles {
     param([System.Collections.IDictionary[]]$Pairs, [string]$Dest)
     if (-not (Test-Path -LiteralPath $Dest -PathType Container)) {
@@ -2330,6 +2498,13 @@ function Publish-ReelFiles {
     $staging = Join-Path $txnPath 'staging'
     $backups = Join-Path $txnPath 'backups'
     New-Item -ItemType Directory -Path $staging,$backups -Force | Out-Null
+    # Dich nam trong .cache: tao + an truoc khi di chuyen; moi dich phai nam duoi thu muc xuat.
+    foreach ($pair in $Pairs) {
+        $destParent = [IO.Path]::GetFullPath((Split-Path ([string]$pair.Destination) -Parent)).TrimEnd('\')
+        if ($destParent -ieq $destFull) { continue }
+        if ($destParent -ieq (Get-ReelCacheDir -Dest $destFull)) { [void](Initialize-ReelCacheDir -Dest $destFull); continue }
+        throw "Publish destination is outside the allowed folders: $($pair.Destination)"
+    }
     $hadOld = @(); $attempted = @(); $rollbackErrors = @(); $safeCleanup = $true; $committed = $false; $publishError = ''
     try {
         for ($i = 0; $i -lt $Pairs.Count; $i++) {
@@ -2518,6 +2693,7 @@ function Invoke-OneLink {
         for ($attempt = 1; $attempt -le 2; $attempt++) {
             $res.captureAttempts = $attempt
             $res.tOpen = $null; $res.tRec = $null; $tOpen = $null
+            $res.t0Onset = $null; $res.syncConfidence = $null; $res.syncDriftMs = $null; $t0 = $null
             $withVideo = $false; $rec = $null; $swScrcpy = $null
             # Lan 1 thu kem hinh; neu scrcpy khong chay duoc voi video thi lan 2 chi thu am thanh (dong bo bang onset).
             foreach ($capMode in @('video','audio')) {
@@ -2729,7 +2905,10 @@ function Invoke-OneLink {
             $syncFinalFail = ''
             if ($withVideo) {
                 Write-Note 'Khop khung hinh man hinh voi video goc de xac dinh t0...'
-                $sync = Find-VideoSyncOffset -T $T -RefVideo $vf.FullName -RecFile $rec -Work $tmp
+                # Gioi han tim t0: Reel mo luc (tOpen - tRec) trong file thu; cho them 20 s. Khong biet tOpen => khong gioi han.
+                $syncMaxSec = 0.0
+                if ($null -ne $tOpen) { $syncMaxSec = [Math]::Max(0.0, [double]$tOpen - $(if ($null -ne $res.tRec) { [double]$res.tRec } else { 0.0 })) + 20.0 }
+                $sync = Find-VideoSyncOffset -T $T -RefVideo $vf.FullName -RecFile $rec -Work $tmp -MaxOffsetSec $syncMaxSec -RefDuration $dur
                 if ($null -ne $sync.Peak) { $res.syncConfidence = [double]$sync.Peak }
                 Write-Note ([string]::Format($inv, 'Khop hinh: ket qua {0}, hinh hoc {1}, dinh {2}, ty le {3}, dinh dau video {4}, d toan cuc {5} s, bac d (khung) [{6}], 3 doan (ms so voi t0) {7}, mat {8:0.0} s', $sync.Reason, $sync.Geometry, $sync.Peak, $sync.Ratio, $sync.StartPeak, $sync.DGlobalSec, $sync.Plateaus, $sync.SegText, [double]$sync.ElapsedSec))
                 if ($sync.Ok) {
@@ -2846,8 +3025,10 @@ function Invoke-OneLink {
         $fGoc = Join-Path $tmp "$vid-1-video-goc.mp4"
         $fAm  = Join-Path $tmp "$vid-2-am-thanh-tho.m4a"
         $out  = Join-Path $tmp "$vid-3-hoan-chinh.mp4"
-        $finalGoc = Join-Path $Dest "$vid-1-video-goc.mp4"
-        $finalAm  = Join-Path $Dest "$vid-2-am-thanh-tho.m4a"
+        # Dot 4: chi -3 hien o thu muc xuat; -1/-2 vao <Dest>\.cache (an).
+        $cacheDir = Get-ReelCacheDir -Dest $Dest
+        $finalGoc = Join-Path $cacheDir "$vid-1-video-goc.mp4"
+        $finalAm  = Join-Path $cacheDir "$vid-2-am-thanh-tho.m4a"
         $finalOut = Join-Path $Dest "$vid-3-hoan-chinh.mp4"
 
         # Chuyen AV1/VP9 sang H.264 yuv420p de tang kha nang tuong thich trinh phat

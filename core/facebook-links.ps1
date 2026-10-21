@@ -213,8 +213,10 @@ function Remove-RejectedReelMedia {
     $errors = New-Object Collections.Generic.List[string]
     $token = [guid]::NewGuid().ToString('N')
     try {
-        foreach ($suffix in @('-1-video-goc.mp4','-2-am-thanh-tho.m4a','-3-hoan-chinh.mp4','-3-hoan-chinh-logo-preview.mp4')) {
-            $source = [IO.Path]::GetFullPath((Join-Path $OutDir ($VideoId+$suffix)))
+        # Dot 4: -1/-2 nam trong .cache (an) hoac o goc (file cu); xet ca hai cho.
+        foreach ($rel in @('-1-video-goc.mp4','-2-am-thanh-tho.m4a','-3-hoan-chinh.mp4','-3-hoan-chinh-logo-preview.mp4','.cache\-1-video-goc.mp4','.cache\-2-am-thanh-tho.m4a')) {
+            $leafRel = if ($rel.StartsWith('.cache\')) { '.cache\' + $VideoId + $rel.Substring(7) } else { $VideoId + $rel }
+            $source = [IO.Path]::GetFullPath((Join-Path $OutDir $leafRel))
             if (-not $source.StartsWith($boundary,[StringComparison]::OrdinalIgnoreCase)) { throw 'Cleanup escaped the output directory.' }
             if ([IO.File]::Exists($source)) {
                 $stage = $source+'.rejected.'+$token
@@ -272,8 +274,9 @@ function Get-FacebookLinkDuplicateReport {
     $downloadedIds = New-Object 'System.Collections.Generic.List[string]'
     if (-not [string]::IsNullOrWhiteSpace($OutDir)) {
         foreach ($videoId in $allIds) {
-            foreach ($suffix in @('-1-video-goc.mp4', '-3-hoan-chinh.mp4')) {
-                $candidate = Join-Path $OutDir ($videoId + $suffix)
+            # Dot 4: "da co" = -3 o goc; hoac -1 trong .cache / o goc (file cu).
+            foreach ($rel in @(($videoId + '-3-hoan-chinh.mp4'), ('.cache\' + $videoId + '-1-video-goc.mp4'), ($videoId + '-1-video-goc.mp4'))) {
+                $candidate = Join-Path $OutDir $rel
                 if (Test-Path -LiteralPath $candidate -PathType Leaf -ErrorAction Stop) {
                     $file = Get-Item -LiteralPath $candidate -ErrorAction Stop
                     if ($file -and $file.Length -gt 0) {

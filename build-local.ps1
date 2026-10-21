@@ -42,6 +42,16 @@ foreach ($xamlName in @('ui/Theme.xaml','ui/MainWindow.xaml')) {
     if ([regex]::IsMatch($xamlText,'(?<!\r)\n')) { throw ('XAML must use CRLF line endings: '+$xamlName) }
     try { [void]([xml]$xamlText.TrimStart([char]0xFEFF)) } catch { throw ('XAML is not well-formed: '+$xamlName+' '+$_.Exception.Message) }
 }
+# Phong Nunito (SIL OFL 1.1) nhung vao EXE; font la nhi phan -> chi kiem ton tai + chu ky TrueType, khong chuan hoa dong.
+$fontResources=@('ui/fonts/Nunito-Regular.ttf','ui/fonts/Nunito-SemiBold.ttf','ui/fonts/Nunito-ExtraBold.ttf','ui/fonts/OFL.txt')
+foreach ($fontName in $fontResources) {
+    $fontPath=Join-Path $Root ('core/'+$fontName)
+    if (-not (Test-Path -LiteralPath $fontPath -PathType Leaf)) { throw ('Missing UI font resource: '+$fontName) }
+    if ($fontName -like '*.ttf') {
+        $head=[IO.File]::ReadAllBytes($fontPath)[0..3]
+        if (-not ($head[0] -eq 0 -and $head[1] -eq 1 -and $head[2] -eq 0 -and $head[3] -eq 0)) { throw ('Not a TrueType font: '+$fontName) }
+    }
+}
 $compiler='C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if(-not (Test-Path -LiteralPath $compiler -PathType Leaf)){throw 'C# compiler is unavailable.'}
 # Keep generated compiler input outside the checkout and retire only this owned directory.
@@ -65,13 +75,15 @@ try{
         /res:core\kid-fby-gui.ps1,kid-fby-gui.ps1 /res:core\kid-fby.ps1,kid-fby.ps1 `
         /res:core\whisper-language.ps1,whisper-language.ps1 /res:core\facebook-links.ps1,facebook-links.ps1 `
         /res:core\fix-ket-noi.ps1,fix-ket-noi.ps1 /res:core\kid-logo.zip,kid-logo.zip /res:core\Kid-FB.Y.ico,Kid-FB.Y.ico `
-        /res:core\ui\Theme.xaml,ui.Theme.xaml /res:core\ui\MainWindow.xaml,ui.MainWindow.xaml Program.cs $assemblyInfo
+        /res:core\ui\Theme.xaml,ui.Theme.xaml /res:core\ui\MainWindow.xaml,ui.MainWindow.xaml `
+        /res:core\ui\fonts\Nunito-Regular.ttf,ui.fonts.Nunito-Regular.ttf /res:core\ui\fonts\Nunito-SemiBold.ttf,ui.fonts.Nunito-SemiBold.ttf `
+        /res:core\ui\fonts\Nunito-ExtraBold.ttf,ui.fonts.Nunito-ExtraBold.ttf /res:core\ui\fonts\OFL.txt,ui.fonts.OFL.txt Program.cs $assemblyInfo
     if($LASTEXITCODE -ne 0){throw 'Local EXE compile failed.'}
     $launcherMetadata=[Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $Root 'Kid-FB.Y.exe'))
     if ($launcherMetadata.FileVersion -ne ($buildVersion+'.0') -or $launcherMetadata.ProductVersion -ne $buildVersion) {
         throw 'Launcher version metadata does not match core/version.txt.'
     }
-    Write-Output ('Local EXE v'+$buildVersion+' compiled with synchronized GIF source and nine embedded resources.')
+    Write-Output ('Local EXE v'+$buildVersion+' compiled with synchronized GIF source and thirteen embedded resources (9 + 4 font files).')
 }finally{
     if ($locationPushed) { Pop-Location }
     $resolvedAssembly=[IO.Path]::GetFullPath($assemblyTempDir)
@@ -106,13 +118,13 @@ try {
         throw 'Fresh launcher SelfTest exceeded 30 seconds.'
     }
     if ($buildProcess.ExitCode -ne 0) { throw ('Fresh launcher SelfTest failed: '+$buildProcess.ExitCode) }
-    foreach ($resource in @('kid-fby-gui.ps1','kid-fby.ps1','whisper-language.ps1','facebook-links.ps1','fix-ket-noi.ps1','Kid-FB.Y.ico','kid-logo.zip','ui/Theme.xaml','ui/MainWindow.xaml')) {
+    foreach ($resource in (@('kid-fby-gui.ps1','kid-fby.ps1','whisper-language.ps1','facebook-links.ps1','fix-ket-noi.ps1','Kid-FB.Y.ico','kid-logo.zip','ui/Theme.xaml','ui/MainWindow.xaml') + $fontResources)) {
         $expected=(Get-FileHash -LiteralPath (Join-Path $Root ('core/'+$resource))).Hash
         $actual=(Get-FileHash -LiteralPath (Join-Path $buildCheckDir ('core/'+$resource))).Hash
         if ($actual -ne $expected) { throw ('Embedded resource mismatch: '+$resource) }
     }
     if (-not (Test-Path -LiteralPath (Join-Path $buildCheckDir 'core/_update/BOOT_OK'))) { throw 'Fresh GUI did not report BOOT_OK.' }
-    Write-Output 'PASS: fresh launcher SelfTest and all nine embedded resource hashes.'
+    Write-Output 'PASS: fresh launcher SelfTest and all thirteen embedded resource hashes (fonts byte-identical).'
 } finally {
     if ($buildProcess) { $buildProcess.Dispose() }
     $resolvedCheck=[IO.Path]::GetFullPath($buildCheckDir)

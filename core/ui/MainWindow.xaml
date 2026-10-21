@@ -5,242 +5,303 @@
         Width="1440" Height="900" MinWidth="1200" MinHeight="720"
         WindowStartupLocation="Manual"
         Background="{DynamicResource Surface0}" Foreground="{DynamicResource TextPrimary}"
-        FontFamily="Segoe UI" FontSize="14"
+        FontFamily="{DynamicResource FontUi}" FontSize="15"
         UseLayoutRounding="True" TextOptions.TextFormattingMode="Display">
   <!--
-    Kid FB.Y - cay cua so chinh (nap boi core\kid-fby-gui.ps1).
+    Kid FB.Y - cay cua so chinh, phong cach "cute" (dot 4). Nap boi core\kid-fby-gui.ps1.
     Moi mau/style lay tu Theme.xaml qua DynamicResource (theme duoc merge sau khi parse).
     Ten x:Name duoc code dung qua $ui[...] - doi ten phai sua dong bo danh sach trong GUI va SelfTest.
   -->
   <shell:WindowChrome.WindowChrome>
-    <shell:WindowChrome CaptionHeight="44" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0"/>
+    <shell:WindowChrome CaptionHeight="64" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0"/>
   </shell:WindowChrome.WindowChrome>
 
   <Grid x:Name="RootGrid" Background="{DynamicResource Surface0}">
     <Grid.RowDefinitions>
-      <RowDefinition Height="44"/>
+      <RowDefinition Height="64"/>
       <RowDefinition Height="*"/>
       <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
+    <!-- giay cham tron rat nhat phia sau moi thu -->
+    <Rectangle Grid.RowSpan="3" Fill="{DynamicResource PaperDots}" IsHitTestVisible="False"/>
 
     <!-- ===================================================== thanh tieu de -->
-    <Border Grid.Row="0" Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,0,1">
-      <Grid>
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="*"/>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="Auto"/>
-        </Grid.ColumnDefinitions>
-        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0">
-          <Border Width="24" Height="24" CornerRadius="6" Background="{DynamicResource Accent}" Margin="0,0,10,0">
-            <TextBlock Text="&#xE714;" Style="{DynamicResource Icon}" FontSize="12" Foreground="{DynamicResource TextOnAccent}"/>
-          </Border>
-          <TextBlock Text="Kid FB.Y" FontFamily="Segoe UI Semibold" FontSize="14" VerticalAlignment="Center"/>
-          <TextBlock x:Name="TxtAppVersion" Text="v1.0.0" Style="{DynamicResource TextCaption}" VerticalAlignment="Center" Margin="8,1,0,0"/>
-        </StackPanel>
+    <Grid Grid.Row="0">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+      <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="20,0,0,0">
+        <Grid Width="47" Height="47" Margin="0,0,12,0">
+          <Ellipse Margin="3,3,0,0" Fill="{DynamicResource StickerShadow}"/>
+          <Ellipse Margin="0,0,3,3" Fill="{DynamicResource Pink}" Stroke="{DynamicResource Ink}" StrokeThickness="2"/>
+          <Image Source="{DynamicResource MascotCloud}" Width="32" Height="25" Margin="0,2,3,3"/>
+        </Grid>
+        <TextBlock Text="Kid FB.Y" FontWeight="ExtraBold" FontSize="22" VerticalAlignment="Center"/>
+        <Border Style="{DynamicResource Badge}" Background="{DynamicResource LavenderSoft}" BorderBrush="{DynamicResource LavenderLine}" Margin="10,2,0,0" Padding="10,1">
+          <TextBlock x:Name="TxtAppVersion" Text="v1.0.0" FontSize="13" FontWeight="Bold"/>
+        </Border>
+        <Image Source="{DynamicResource DecoHeart}" Width="18" Height="18" Margin="10,0,0,10" VerticalAlignment="Center"/>
+      </StackPanel>
 
-        <StackPanel x:Name="HeaderBadges" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0"
-                    shell:WindowChrome.IsHitTestVisibleInChrome="True">
-          <Border x:Name="ChipDevice" Style="{DynamicResource Chip}" ToolTip="Chưa kiểm tra thiết bị Android. Bấm để kiểm tra."
-                  AutomationProperties.Name="Trạng thái thiết bị">
-            <StackPanel Orientation="Horizontal">
-              <TextBlock x:Name="ChipDeviceDot" Text="●" FontSize="10" Foreground="{DynamicResource TextMuted}" VerticalAlignment="Center" Margin="0,0,6,0"/>
-              <TextBlock Text="&#xE8EA;" Style="{DynamicResource Icon}" FontSize="12" Foreground="{DynamicResource TextMuted}" Margin="0,0,6,0"/>
-              <TextBlock x:Name="ChipDeviceText" Text="Thiết bị" FontSize="12" VerticalAlignment="Center"/>
-            </StackPanel>
-          </Border>
-          <Border x:Name="ChipTools" Style="{DynamicResource Chip}" ToolTip="Chưa kiểm tra công cụ. Bấm để mở Cài đặt › Công cụ."
-                  AutomationProperties.Name="Trạng thái công cụ">
-            <StackPanel Orientation="Horizontal">
-              <TextBlock x:Name="ChipToolsDot" Text="●" FontSize="10" Foreground="{DynamicResource TextMuted}" VerticalAlignment="Center" Margin="0,0,6,0"/>
-              <TextBlock Text="&#xE90F;" Style="{DynamicResource Icon}" FontSize="12" Foreground="{DynamicResource TextMuted}" Margin="0,0,6,0"/>
-              <TextBlock x:Name="ChipToolsText" Text="Công cụ" FontSize="12" VerticalAlignment="Center"/>
-            </StackPanel>
-          </Border>
-        </StackPanel>
+      <StackPanel x:Name="HeaderBadges" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0"
+                  shell:WindowChrome.IsHitTestVisibleInChrome="True">
+        <Border x:Name="ChipDevice" Style="{DynamicResource Chip}" ToolTip="Chưa kiểm tra thiết bị Android. Bấm để kiểm tra."
+                AutomationProperties.Name="Trạng thái thiết bị">
+          <StackPanel Orientation="Horizontal">
+            <Ellipse x:Name="ChipDeviceDot" Width="10" Height="10" Fill="{DynamicResource Neutral}" Stroke="{DynamicResource Ink}" StrokeThickness="1.5" VerticalAlignment="Center" Margin="0,0,7,0"/>
+            <TextBlock Text="&#xE8EA;" Style="{DynamicResource Icon}" FontSize="14" Margin="0,0,7,0"/>
+            <TextBlock x:Name="ChipDeviceText" Text="Thiết bị" FontSize="14" VerticalAlignment="Center"/>
+          </StackPanel>
+        </Border>
+        <Border x:Name="ChipTools" Style="{DynamicResource Chip}" ToolTip="Chưa kiểm tra công cụ. Bấm để mở Cài đặt › Công cụ."
+                AutomationProperties.Name="Trạng thái công cụ">
+          <StackPanel Orientation="Horizontal">
+            <Ellipse x:Name="ChipToolsDot" Width="10" Height="10" Fill="{DynamicResource Neutral}" Stroke="{DynamicResource Ink}" StrokeThickness="1.5" VerticalAlignment="Center" Margin="0,0,7,0"/>
+            <TextBlock Text="&#xE90F;" Style="{DynamicResource Icon}" FontSize="14" Margin="0,0,7,0"/>
+            <TextBlock x:Name="ChipToolsText" Text="Công cụ" FontSize="14" VerticalAlignment="Center"/>
+          </StackPanel>
+        </Border>
+      </StackPanel>
 
-        <StackPanel Grid.Column="3" Orientation="Horizontal" shell:WindowChrome.IsHitTestVisibleInChrome="True">
-          <Button x:Name="BtnWinMin" Style="{DynamicResource WinBtn}" Content="&#xE921;" ToolTip="Thu nhỏ" AutomationProperties.Name="Thu nhỏ"/>
-          <Button x:Name="BtnWinMax" Style="{DynamicResource WinBtn}" Content="&#xE922;" ToolTip="Phóng to" AutomationProperties.Name="Phóng to"/>
-          <Button x:Name="BtnWinClose" Style="{DynamicResource WinBtnClose}" Content="&#xE8BB;" ToolTip="Đóng" AutomationProperties.Name="Đóng"/>
-        </StackPanel>
-      </Grid>
-    </Border>
+      <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,10,0" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+        <Button x:Name="BtnWinMin" Style="{DynamicResource WinBtn}" Background="{DynamicResource MintSoft}" Content="&#xE921;" ToolTip="Thu nhỏ" AutomationProperties.Name="Thu nhỏ"/>
+        <Button x:Name="BtnWinMax" Style="{DynamicResource WinBtn}" Background="{DynamicResource ButterSoft}" Content="&#xE922;" ToolTip="Phóng to" AutomationProperties.Name="Phóng to"/>
+        <Button x:Name="BtnWinClose" Style="{DynamicResource WinBtnClose}" Background="{DynamicResource PinkSoft}" Content="&#xE8BB;" ToolTip="Đóng" AutomationProperties.Name="Đóng"/>
+      </StackPanel>
+    </Grid>
 
     <!-- ===================================================== than: sidebar | trang | xem truoc -->
     <Grid Grid.Row="1" x:Name="BodyGrid">
       <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="72"/>
+        <ColumnDefinition Width="96"/>
         <ColumnDefinition Width="*"/>
         <ColumnDefinition x:Name="ColPreview" Width="0"/>
       </Grid.ColumnDefinitions>
 
-      <!-- Sidebar -->
-      <Border Grid.Column="0" Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,1,0">
-        <DockPanel Margin="0,10,0,10">
-          <RadioButton x:Name="NavSettings" DockPanel.Dock="Bottom" Style="{DynamicResource NavButton}" Tag="&#xE713;" Content="Cài đặt"
-                       HorizontalAlignment="Center" ToolTip="Cài đặt (Ctrl+5)" AutomationProperties.Name="Cài đặt"/>
-          <Border DockPanel.Dock="Bottom" Style="{DynamicResource Divider}" Margin="14,6"/>
-          <StackPanel HorizontalAlignment="Center">
-            <RadioButton x:Name="NavSource" Style="{DynamicResource NavButton}" Tag="&#xE71B;" Content="Nguồn" IsChecked="True"
-                         ToolTip="Nguồn: link và thư mục xuất (Ctrl+1)" AutomationProperties.Name="Nguồn"/>
-            <RadioButton x:Name="NavBrand" Style="{DynamicResource NavButton}" Tag="&#xE790;" Content="Thương hiệu"
-                         ToolTip="Thương hiệu: logo và GIF (Ctrl+2)" AutomationProperties.Name="Thương hiệu"/>
-            <RadioButton x:Name="NavQueue" Style="{DynamicResource NavButton}" Tag="&#xE8FD;" Content="Hàng đợi"
-                         ToolTip="Hàng đợi đang chạy (Ctrl+3)" AutomationProperties.Name="Hàng đợi"/>
-            <RadioButton x:Name="NavLibrary" Style="{DynamicResource NavButton}" Tag="&#xE8F1;" Content="Kho"
-                         ToolTip="Kho video đã lưu (Ctrl+4)" AutomationProperties.Name="Kho"/>
-          </StackPanel>
-        </DockPanel>
+      <!-- Sidebar: sticker tron moi trang mot mau -->
+      <Border Grid.Column="0" Margin="0,4,0,10" Background="{DynamicResource SurfaceAlt}" CornerRadius="0,30,30,0" BorderBrush="{DynamicResource InkFaint}" BorderThickness="0,2,2,2">
+      <DockPanel Margin="2,4,2,8">
+        <RadioButton x:Name="NavSettings" DockPanel.Dock="Bottom" Style="{DynamicResource NavButton}" Background="{DynamicResource Sky}" Tag="&#xE713;" Content="Cài đặt"
+                     HorizontalAlignment="Center" ToolTip="Cài đặt (Ctrl+5)" AutomationProperties.Name="Cài đặt"/>
+        <Image DockPanel.Dock="Bottom" Source="{DynamicResource DecoSparkles}" Width="30" Height="24" Margin="0,0,0,6" Opacity="0.9"/>
+        <StackPanel HorizontalAlignment="Center">
+          <RadioButton x:Name="NavSource" Style="{DynamicResource NavButton}" Background="{DynamicResource Pink}" Tag="&#xE71B;" Content="Nguồn" IsChecked="True"
+                       ToolTip="Nguồn: link và thư mục xuất (Ctrl+1)" AutomationProperties.Name="Nguồn"/>
+          <RadioButton x:Name="NavBrand" Style="{DynamicResource NavButton}" Background="{DynamicResource Lavender}" Tag="&#xE790;" Content="Thương hiệu"
+                       ToolTip="Thương hiệu: logo và GIF (Ctrl+2)" AutomationProperties.Name="Thương hiệu"/>
+          <RadioButton x:Name="NavQueue" Style="{DynamicResource NavButton}" Background="{DynamicResource Butter}" Tag="&#xE8FD;" Content="Hàng đợi"
+                       ToolTip="Hàng đợi (Ctrl+3)" AutomationProperties.Name="Hàng đợi"/>
+          <RadioButton x:Name="NavLibrary" Style="{DynamicResource NavButton}" Background="{DynamicResource Mint}" Tag="&#xE8F1;" Content="Kho"
+                       ToolTip="Kho video đã lưu (Ctrl+4)" AutomationProperties.Name="Kho"/>
+        </StackPanel>
+      </DockPanel>
       </Border>
 
       <!-- Cac trang (chong cung mot o) -->
       <Grid x:Name="PageHost" Grid.Column="1">
 
         <!-- ================================================= NGUON -->
-        <Grid x:Name="ViewSource" Margin="24,20,24,16">
+        <Grid x:Name="ViewSource" Margin="24,4,24,10">
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
           </Grid.RowDefinitions>
-          <StackPanel Margin="0,0,0,16">
-            <TextBlock Text="Nguồn" Style="{DynamicResource TextTitle}"/>
-            <TextBlock Text="Dán link Reel hoặc video Facebook, mỗi dòng một link. Bấm Bắt đầu (Ctrl+Enter) ở thanh dưới để chạy."
-                       Style="{DynamicResource TextMutedStyle}" Margin="0,4,0,0"/>
-          </StackPanel>
+          <DockPanel Margin="0,0,0,14">
+            <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Pink}" Width="58" Height="58" CornerRadius="29" Margin="0,0,16,0">
+              <TextBlock Text="&#xE71B;" Style="{DynamicResource Icon}" FontSize="24"/>
+            </Border>
+            <StackPanel VerticalAlignment="Center">
+              <StackPanel Orientation="Horizontal">
+                <Grid VerticalAlignment="Center"><Image Source="{DynamicResource DecoRibbon}" Stretch="Fill" Height="20" VerticalAlignment="Bottom" Margin="-8,0,-12,0" IsHitTestVisible="False"/><TextBlock Text="Nguồn" Style="{DynamicResource TextTitle}"/></Grid>
+                <Image Source="{DynamicResource DecoSparkles}" Width="36" Height="29" Margin="10,0,0,10" VerticalAlignment="Center"/>
+              </StackPanel>
+              <TextBlock Text="Dán link Reel hoặc video Facebook, mỗi dòng một link. Xong thì bấm Bắt đầu (Ctrl+Enter) ở dải dưới nhé."
+                         Style="{DynamicResource TextMutedStyle}" FontSize="15" Margin="0,0,0,0"/>
+            </StackPanel>
+          </DockPanel>
           <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*"/>
-              <ColumnDefinition Width="16"/>
-              <ColumnDefinition Width="360"/>
+              <ColumnDefinition Width="18"/>
+              <ColumnDefinition Width="350"/>
             </Grid.ColumnDefinitions>
 
-            <!-- O link -->
-            <Border Style="{DynamicResource Card}" Padding="16">
+            <!-- O link: to giay note -->
+            <ContentControl Style="{DynamicResource StickerCard}" Padding="18">
               <Grid>
                 <Grid.RowDefinitions>
                   <RowDefinition Height="Auto"/>
                   <RowDefinition Height="*"/>
+                  <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
-                <DockPanel Margin="0,0,0,12" LastChildFill="False">
+                <DockPanel Margin="0,0,0,14" LastChildFill="False">
+                  <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Butter}" Width="40" Height="40" CornerRadius="20" Margin="0,0,10,0">
+                    <TextBlock Text="&#xE70B;" Style="{DynamicResource Icon}" FontSize="16"/>
+                  </Border>
                   <TextBlock Text="Danh sách link" Style="{DynamicResource TextHeading}" VerticalAlignment="Center"/>
                   <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                    <Button x:Name="BtnPasteLinks" Margin="0,0,8,0" ToolTip="Dán link từ clipboard" AutomationProperties.Name="Dán link">
-                      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE77F;" Style="{DynamicResource Icon}" FontSize="13" Margin="0,0,6,0"/><AccessText Text="_Dán"/></StackPanel>
+                    <Button x:Name="BtnPasteLinks" Style="{DynamicResource BtnButter}" Margin="0,0,10,0" ToolTip="Dán link từ clipboard" AutomationProperties.Name="Dán link">
+                      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE77F;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><AccessText Text="_Dán"/></StackPanel>
                     </Button>
-                    <Button x:Name="BtnImportLinks" Margin="0,0,8,0" ToolTip="Nhập link từ file .txt" AutomationProperties.Name="Nhập file txt">
-                      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8E5;" Style="{DynamicResource Icon}" FontSize="13" Margin="0,0,6,0"/><TextBlock Text="Nhập .txt"/></StackPanel>
+                    <Button x:Name="BtnImportLinks" Margin="0,0,10,0" ToolTip="Nhập link từ file .txt" AutomationProperties.Name="Nhập file txt">
+                      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8E5;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Nhập .txt"/></StackPanel>
                     </Button>
                     <Button x:Name="BtnClearLinks" Style="{DynamicResource BtnGhost}" ToolTip="Xóa toàn bộ link (Ctrl+Z để hoàn tác)" AutomationProperties.Name="Xóa danh sách link">
-                      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" Style="{DynamicResource Icon}" FontSize="13" Margin="0,0,6,0"/><TextBlock Text="Xóa"/></StackPanel>
+                      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Xóa"/></StackPanel>
                     </Button>
                   </StackPanel>
                 </DockPanel>
                 <Grid Grid.Row="1">
-                  <TextBox x:Name="TxtLinks" Style="{DynamicResource TextBoxMono}" AcceptsReturn="True" AcceptsTab="False" TextWrapping="NoWrap"
-                           VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" MinHeight="230" Padding="12,10"
-                           FontSize="13" AutomationProperties.Name="Danh sách link Facebook"/>
-                  <TextBlock x:Name="TxtLinksPlaceholder" IsHitTestVisible="False" Margin="15,12,12,12" FontFamily="Cascadia Mono, Consolas"
-                             FontSize="13" Foreground="{DynamicResource TextSubtle}" TextWrapping="Wrap"
-                             Text="https://www.facebook.com/reel/1234567890&#x0a;https://www.facebook.com/share/r/AbCdEf/&#x0a;https://fb.watch/xyz/&#x0a;&#x0a;Mỗi dòng một link. Link trùng hoặc đã loại sẽ được báo ở thẻ Tóm tắt."/>
+                  <TextBox x:Name="TxtLinks" Style="{DynamicResource NotePaper}" AcceptsReturn="True" AcceptsTab="False" TextWrapping="NoWrap"
+                           VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" MinHeight="180" Padding="18,8,14,8"
+                           AutomationProperties.Name="Danh sách link Facebook"/>
+                  <StackPanel x:Name="PanelLinksHint" IsHitTestVisible="False" Margin="22,10,16,12">
+                    <TextBlock x:Name="TxtLinksPlaceholder" FontFamily="{DynamicResource FontMono}" FontSize="14" LineHeight="28" LineStackingStrategy="BlockLineHeight"
+                               Foreground="{DynamicResource TextSubtle}" TextWrapping="Wrap"
+                               Text="https://www.facebook.com/reel/1234567890&#x0a;https://www.facebook.com/share/r/AbCdEf/&#x0a;https://fb.watch/xyz/&#x0a;&#x0a;Mỗi dòng một link nhé. Link trùng hoặc đã loại sẽ được đếm ở thẻ Tóm tắt."/>
+                  </StackPanel>
+                  <Border Width="74" Height="22" CornerRadius="3" Background="#B3FED7E2" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="-16,-6,0,0" IsHitTestVisible="False">
+                    <Border.RenderTransform><RotateTransform Angle="-28"/></Border.RenderTransform>
+                  </Border>
+                  <Border Width="74" Height="22" CornerRadius="3" Background="#B3C6F6D5" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,24,-22,0" IsHitTestVisible="False">
+                    <Border.RenderTransform><RotateTransform Angle="28"/></Border.RenderTransform>
+                  </Border>
+                  <Image Source="{DynamicResource MascotCloud}" Width="76" Height="60" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,22,16"
+                         IsHitTestVisible="False" Opacity="0.95"/>
                 </Grid>
-              </Grid>
-            </Border>
-
-            <!-- Cot phai: tom tat + thu muc xuat -->
-            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
-              <StackPanel>
-                <Border Style="{DynamicResource Card}" Margin="0,0,0,16">
-                  <StackPanel>
-                    <TextBlock Text="Tóm tắt" Style="{DynamicResource TextHeading}"/>
-                    <TextBlock x:Name="TxtLinkSummary" Text="Chưa có link nào" Style="{DynamicResource TextBody}" Margin="0,8,0,0"/>
-                    <TextBlock x:Name="TxtDuplicateWarning" Visibility="Collapsed" Style="{DynamicResource TextMutedStyle}" Margin="0,6,0,0"/>
-                    <StackPanel x:Name="PanelDupChoice" Margin="0,12,0,0" Visibility="Collapsed">
-                      <TextBlock Text="Với video đã có trong kho" Style="{DynamicResource TextLabel}" Margin="0,0,0,6"/>
-                      <RadioButton x:Name="RbDupSkip" GroupName="DupChoice" Content="Bỏ qua, chỉ chạy video mới" IsChecked="True" Margin="0,0,0,6"/>
-                      <RadioButton x:Name="RbDupRedownload" GroupName="DupChoice" Content="Tải và ghi âm lại"/>
-                    </StackPanel>
-                  </StackPanel>
-                </Border>
-                <Border Style="{DynamicResource Card}" Margin="0,0,0,16">
-                  <StackPanel>
-                    <TextBlock Text="Thư mục xuất" Style="{DynamicResource TextHeading}"/>
-                    <TextBox x:Name="TxtOut" Margin="0,10,0,10" AutomationProperties.Name="Thư mục xuất"/>
-                    <StackPanel Orientation="Horizontal">
-                      <Button x:Name="BtnPick" Margin="0,0,8,0" AutomationProperties.Name="Chọn thư mục xuất">
-                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8DA;" Style="{DynamicResource Icon}" FontSize="13" Margin="0,0,6,0"/><TextBlock Text="Chọn…"/></StackPanel>
-                      </Button>
-                      <Button x:Name="BtnOpenOut" Style="{DynamicResource BtnGhost}" AutomationProperties.Name="Mở thư mục xuất">
-                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE838;" Style="{DynamicResource Icon}" FontSize="13" Margin="0,0,6,0"/><TextBlock Text="Mở"/></StackPanel>
-                      </Button>
-                    </StackPanel>
-                  </StackPanel>
-                </Border>
-                <Border Style="{DynamicResource Card}">
+                <!-- chinh sach ngon ngu: dai thong tin mong duoi to note -->
+                <Border Grid.Row="2" Margin="0,12,0,0" Background="{DynamicResource SkySoft}" BorderBrush="{DynamicResource SkyLine}" BorderThickness="2" CornerRadius="16" Padding="12,8">
                   <DockPanel>
-                    <TextBlock DockPanel.Dock="Left" Text="&#xE946;" Style="{DynamicResource Icon}" FontSize="14" Foreground="{DynamicResource Info}"
-                               VerticalAlignment="Top" Margin="0,2,10,0"/>
-                    <TextBlock x:Name="TxtLanguagePolicy" Style="{DynamicResource TextMutedStyle}"
+                    <Border DockPanel.Dock="Left" Style="{DynamicResource IconChip}" Background="{DynamicResource Sky}" Width="28" Height="28" CornerRadius="14" Margin="0,0,10,0">
+                      <TextBlock Text="&#xE946;" Style="{DynamicResource Icon}" FontSize="13"/>
+                    </Border>
+                    <TextBlock x:Name="TxtLanguagePolicy" Style="{DynamicResource TextMutedStyle}" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center"
                                Text="Ứng dụng chọn tiếng Việt trên Meta và tự bỏ qua video không có bản lồng tiếng. Việc xác nhận dựa vào giao diện Facebook, không phân tích ngôn ngữ trong âm thanh."/>
                   </DockPanel>
                 </Border>
+              </Grid>
+            </ContentControl>
+
+            <!-- Cot phai: thu muc xuat + tom tat (vua 1366x768 khong can cuon) -->
+            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" Margin="0,0,-6,0">
+              <StackPanel Margin="0,0,6,0">
+                <ContentControl Style="{DynamicResource StickerCard}" Margin="0,0,0,12" Padding="16,12">
+                  <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                      <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Peach}" Width="34" Height="34" CornerRadius="17" Margin="0,0,10,0">
+                        <TextBlock Text="&#xE8B7;" Style="{DynamicResource Icon}" FontSize="14"/>
+                      </Border>
+                      <TextBlock Text="Thư mục xuất" Style="{DynamicResource TextHeading}" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <DockPanel Margin="0,10,0,0">
+                      <Button x:Name="BtnOpenOut" DockPanel.Dock="Right" Style="{DynamicResource BtnIcon}" Background="{DynamicResource ButterSoft}" Content="&#xE838;" Margin="6,0,0,0"
+                              ToolTip="Mở thư mục xuất" AutomationProperties.Name="Mở thư mục xuất"/>
+                      <Button x:Name="BtnPick" DockPanel.Dock="Right" Style="{DynamicResource BtnIcon}" Background="{DynamicResource Peach}" Content="&#xE8DA;" Margin="6,0,0,0"
+                              ToolTip="Chọn thư mục xuất…" AutomationProperties.Name="Chọn thư mục xuất"/>
+                      <TextBox x:Name="TxtOut" FontSize="14" AutomationProperties.Name="Thư mục xuất"
+                               ToolTip="Chỉ file hoàn chỉnh (-3) hiện ở đây; file gốc để sửa lại logo được cất trong thư mục ẩn .cache."/>
+                    </DockPanel>
+                  </StackPanel>
+                </ContentControl>
+                <ContentControl Style="{DynamicResource StickerCard}" Padding="16,12">
+                  <StackPanel>
+                    <TextBlock Text="Tóm tắt" Style="{DynamicResource TextHeading}"/>
+                    <UniformGrid Columns="2" Rows="2" Margin="0,10,0,0">
+                      <Border Background="{DynamicResource SkySoft}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" CornerRadius="16" Padding="12,4" Margin="0,0,5,8">
+                        <DockPanel><TextBlock x:Name="TxtSumLinks" Text="0" FontWeight="ExtraBold" FontSize="24" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="Link" Style="{DynamicResource TextCaption}" FontWeight="Bold" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center" TextWrapping="Wrap"/></DockPanel>
+                      </Border>
+                      <Border Background="{DynamicResource PeachSoft}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" CornerRadius="16" Padding="12,4" Margin="5,0,0,8">
+                        <DockPanel><TextBlock x:Name="TxtSumDup" Text="0" FontWeight="ExtraBold" FontSize="24" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="Trùng" Style="{DynamicResource TextCaption}" FontWeight="Bold" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center" TextWrapping="Wrap"/></DockPanel>
+                      </Border>
+                      <Border Background="{DynamicResource LavenderSoft}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" CornerRadius="16" Padding="12,4" Margin="0,0,5,0">
+                        <DockPanel><TextBlock x:Name="TxtSumRejected" Text="0" FontWeight="ExtraBold" FontSize="24" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="Đã loại trước" Style="{DynamicResource TextCaption}" FontWeight="Bold" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center" TextWrapping="Wrap"/></DockPanel>
+                      </Border>
+                      <Border Background="{DynamicResource MintSoft}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" CornerRadius="16" Padding="12,4" Margin="5,0,0,0">
+                        <DockPanel><TextBlock x:Name="TxtSumRun" Text="0" FontWeight="ExtraBold" FontSize="24" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="Sẽ chạy" Style="{DynamicResource TextCaption}" FontWeight="Bold" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center" TextWrapping="Wrap"/></DockPanel>
+                      </Border>
+                    </UniformGrid>
+                    <!-- Cau tom tat day du giu cho trinh doc man hinh/kiem thu; da co 4 sticker so nen an khoi giao dien. -->
+                    <TextBlock x:Name="TxtLinkSummary" Text="Chưa có link nào" Style="{DynamicResource TextMutedStyle}" Visibility="Collapsed"/>
+                    <TextBlock x:Name="TxtDuplicateWarning" Visibility="Collapsed" Style="{DynamicResource TextMutedStyle}" Margin="0,8,0,0" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+                    <Border x:Name="PanelDupChoice" Style="{DynamicResource CardInset}" Background="{DynamicResource LavenderSoft}" Margin="0,10,0,0" Padding="12,8" Visibility="Collapsed">
+                      <StackPanel>
+                        <TextBlock Text="Với video đã có trong kho" Style="{DynamicResource TextLabel}" FontSize="15" FontWeight="ExtraBold" Margin="0,0,0,6"/>
+                        <RadioButton x:Name="RbDupSkip" GroupName="DupChoice" Content="Bỏ qua, chỉ chạy video mới" IsChecked="True" Margin="0,0,0,6"/>
+                        <RadioButton x:Name="RbDupRedownload" GroupName="DupChoice" Content="Tải và ghi âm lại"/>
+                      </StackPanel>
+                    </Border>
+                  </StackPanel>
+                </ContentControl>
               </StackPanel>
             </ScrollViewer>
           </Grid>
         </Grid>
 
         <!-- ================================================= THUONG HIEU -->
-        <Grid x:Name="ViewBrand" Visibility="Collapsed" Margin="24,20,24,16">
+        <Grid x:Name="ViewBrand" Visibility="Collapsed" Margin="24,4,24,10">
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
           </Grid.RowDefinitions>
-          <DockPanel Margin="0,0,0,16" LastChildFill="False">
-            <StackPanel>
-              <TextBlock Text="Thương hiệu" Style="{DynamicResource TextTitle}"/>
-              <TextBlock Text="Logo và GIF được chèn vào mọi video khi chạy hàng đợi. Kéo trực tiếp trên khung xem trước bên phải."
-                         Style="{DynamicResource TextMutedStyle}" Margin="0,4,0,0"/>
-            </StackPanel>
-            <Border DockPanel.Dock="Right" Style="{DynamicResource Badge}" Background="{DynamicResource AccentSubtle}" VerticalAlignment="Top" Padding="10,4">
-              <TextBlock x:Name="TxtWatermarkSummary" Text="Logo: 30% · GIF: Tắt" FontSize="12" Foreground="{DynamicResource Accent}"/>
+          <DockPanel Margin="0,0,0,14" LastChildFill="True">
+            <Border DockPanel.Dock="Right" Style="{DynamicResource Badge}" Background="{DynamicResource LavenderSoft}" BorderBrush="{DynamicResource LavenderLine}" VerticalAlignment="Center" Padding="14,6">
+              <TextBlock x:Name="TxtWatermarkSummary" Text="Logo: 30% · GIF: Tắt" FontSize="14" FontWeight="Bold"/>
             </Border>
+            <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Lavender}" Width="58" Height="58" CornerRadius="29" Margin="0,0,16,0">
+              <TextBlock Text="&#xE790;" Style="{DynamicResource Icon}" FontSize="24"/>
+            </Border>
+            <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+              <StackPanel Orientation="Horizontal">
+                <Grid VerticalAlignment="Center"><Image Source="{DynamicResource DecoRibbon}" Stretch="Fill" Height="20" VerticalAlignment="Bottom" Margin="-8,0,-12,0" IsHitTestVisible="False"/><TextBlock Text="Thương hiệu" Style="{DynamicResource TextTitle}"/></Grid>
+                <Image Source="{DynamicResource DecoHeart}" Width="24" Height="22" Margin="10,0,0,12" VerticalAlignment="Center"/>
+              </StackPanel>
+              <TextBlock Text="Logo và GIF được chèn vào mọi video. Kéo thẳng trên khung điện thoại bên phải để đặt chỗ."
+                         Style="{DynamicResource TextMutedStyle}" FontSize="15"/>
+            </StackPanel>
           </DockPanel>
-          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-            <StackPanel Margin="0,0,8,0">
+          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,0,-6,0">
+            <StackPanel Margin="0,0,10,0">
               <!-- Logo -->
-              <Border Style="{DynamicResource Card}" Margin="0,0,0,16">
+              <ContentControl Style="{DynamicResource StickerCard}" Margin="0,0,0,14" Padding="20,16">
                 <StackPanel>
                   <DockPanel Margin="0,0,0,12">
-                    <CheckBox x:Name="ChkWatermark" Content="Chèn logo" IsChecked="True" FontFamily="Segoe UI Semibold" FontSize="16"/>
+                    <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Pink}" Width="40" Height="40" CornerRadius="20" Margin="0,0,12,0">
+                      <TextBlock Text="&#xE8B9;" Style="{DynamicResource Icon}" FontSize="16"/>
+                    </Border>
+                    <CheckBox x:Name="ChkWatermark" Content="Chèn logo" IsChecked="True" FontWeight="ExtraBold" FontSize="20" VerticalAlignment="Center"/>
                   </DockPanel>
                   <Grid>
                     <Grid.ColumnDefinitions>
-                      <ColumnDefinition Width="64"/>
+                      <ColumnDefinition Width="Auto"/>
                       <ColumnDefinition Width="*"/>
                       <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <Border Width="52" Height="52" CornerRadius="8" Background="{DynamicResource Surface2}" BorderBrush="{DynamicResource Border}" BorderThickness="1"
-                            HorizontalAlignment="Left" Padding="4">
-                      <Image x:Name="ImgLogoPreview" Stretch="Uniform"/>
-                    </Border>
+                    <Grid Width="70" Height="70" Margin="0,0,14,0">
+                      <Border Margin="3,3,0,0" CornerRadius="16" Background="{DynamicResource StickerShadow}"/>
+                      <Border Margin="0,0,3,3" CornerRadius="16" Background="{DynamicResource PinkSoft}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" Padding="6">
+                        <Image x:Name="ImgLogoPreview" Stretch="Uniform"/>
+                      </Border>
+                    </Grid>
                     <StackPanel Grid.Column="1" Margin="0,0,12,0" VerticalAlignment="Center">
-                      <TextBlock x:Name="TxtLogoName" Text="Đang dùng: Logo Kid" Style="{DynamicResource TextLabel}" TextTrimming="CharacterEllipsis" Margin="0,0,0,6"/>
+                      <TextBlock x:Name="TxtLogoName" Text="Đang dùng: Logo Kid" Style="{DynamicResource TextLabel}" FontWeight="Bold" TextTrimming="CharacterEllipsis" Margin="0,0,0,6"/>
                       <Grid>
-                        <TextBox x:Name="TxtLogoPath" IsReadOnly="True" FontSize="12" ToolTip="Đường dẫn đầy đủ của logo PNG đã chọn." AutomationProperties.Name="Đường dẫn logo"/>
-                        <TextBlock x:Name="TxtLogoDefaultHint" Text="Logo Kid mặc định" FontSize="12" Foreground="{DynamicResource TextSubtle}" Margin="12,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+                        <TextBox x:Name="TxtLogoPath" IsReadOnly="True" FontSize="13" MinHeight="40" ToolTip="Đường dẫn đầy đủ của logo PNG đã chọn." AutomationProperties.Name="Đường dẫn logo"/>
+                        <TextBlock x:Name="TxtLogoDefaultHint" Text="Logo Kid mặc định" FontSize="13" Foreground="{DynamicResource TextSubtle}" Margin="16,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
                       </Grid>
                     </StackPanel>
                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Bottom">
-                      <Button x:Name="BtnPickLogo" Content="Chọn PNG…" Margin="0,0,8,0"/>
+                      <Button x:Name="BtnPickLogo" Content="Chọn PNG…" Style="{DynamicResource BtnLavender}" Margin="0,0,8,0"/>
                       <Button x:Name="BtnDefaultLogo" Content="Logo Kid" Style="{DynamicResource BtnGhost}"/>
                     </StackPanel>
                   </Grid>
                   <Grid Margin="0,16,0,0">
                     <Grid.ColumnDefinitions>
-                      <ColumnDefinition Width="110"/>
+                      <ColumnDefinition Width="120"/>
                       <ColumnDefinition Width="*"/>
-                      <ColumnDefinition Width="90"/>
+                      <ColumnDefinition Width="Auto" MinWidth="100"/>
                     </Grid.ColumnDefinitions>
                     <Grid.RowDefinitions>
                       <RowDefinition Height="Auto"/>
@@ -248,26 +309,29 @@
                       <RowDefinition Height="Auto"/>
                       <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
-                    <TextBlock Text="Kích thước" Style="{DynamicResource TextMutedStyle}" VerticalAlignment="Center"/>
+                    <TextBlock Text="Kích thước" Style="{DynamicResource TextLabel}" FontSize="15" VerticalAlignment="Center"/>
                     <Slider x:Name="SldLogoSize" Grid.Column="1" Minimum="5" Maximum="60" Value="30" TickFrequency="1" IsSnapToTickEnabled="True"
                             SmallChange="1" LargeChange="5" AutomationProperties.Name="Kích thước logo"/>
-                    <TextBlock x:Name="TxtLogoSize" Grid.Column="2" Text="30%" Style="{DynamicResource TextLabel}" HorizontalAlignment="Right" VerticalAlignment="Center"
-                               ToolTip="Phần trăm chiều rộng video; ảnh giữ nguyên tỷ lệ."/>
-                    <TextBlock Grid.Row="1" Text="Độ mờ" Style="{DynamicResource TextMutedStyle}" VerticalAlignment="Center" Margin="0,12,0,0"/>
+                    <Border Grid.Column="2" Style="{DynamicResource Badge}" Background="{DynamicResource PinkSoft}" BorderBrush="{DynamicResource PinkLine}" HorizontalAlignment="Right">
+                      <TextBlock x:Name="TxtLogoSize" Text="30%" FontWeight="ExtraBold" FontSize="14" ToolTip="Phần trăm chiều rộng video; ảnh giữ nguyên tỷ lệ."/>
+                    </Border>
+                    <TextBlock Grid.Row="1" Text="Độ mờ" Style="{DynamicResource TextLabel}" FontSize="15" VerticalAlignment="Center" Margin="0,12,0,0"/>
                     <Slider x:Name="SldLogoFade" Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="95" Value="60" TickFrequency="1" IsSnapToTickEnabled="True"
                             SmallChange="1" LargeChange="5" Margin="0,12,0,0" AutomationProperties.Name="Độ mờ logo"/>
-                    <TextBlock x:Name="TxtLogoFade" Grid.Row="1" Grid.Column="2" Text="60%" Style="{DynamicResource TextLabel}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,12,0,0"/>
-                    <TextBlock Grid.Row="2" Text="Chuyển động" Style="{DynamicResource TextMutedStyle}" VerticalAlignment="Center" Margin="0,14,0,0"/>
-                    <ComboBox x:Name="CmbLogoMode" Grid.Row="2" Grid.Column="1" SelectedIndex="0" Margin="0,14,0,0" HorizontalAlignment="Left" Width="240"
+                    <Border Grid.Row="1" Grid.Column="2" Style="{DynamicResource Badge}" Background="{DynamicResource PinkSoft}" BorderBrush="{DynamicResource PinkLine}" HorizontalAlignment="Right" Margin="0,12,0,0">
+                      <TextBlock x:Name="TxtLogoFade" Text="60%" FontWeight="ExtraBold" FontSize="14"/>
+                    </Border>
+                    <TextBlock Grid.Row="2" Text="Chuyển động" Style="{DynamicResource TextLabel}" FontSize="15" VerticalAlignment="Center" Margin="0,14,0,0"/>
+                    <ComboBox x:Name="CmbLogoMode" Grid.Row="2" Grid.Column="1" SelectedIndex="0" Margin="0,14,0,0" HorizontalAlignment="Left" Width="260"
                               AutomationProperties.Name="Chuyển động logo">
                       <ComboBoxItem Content="Tự do · di chuyển"/>
                       <ComboBoxItem Content="Cố định · đứng yên"/>
                     </ComboBox>
-                    <TextBlock x:Name="TxtLogoMotionHint" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,8,0,0" Style="{DynamicResource TextCaption}" TextWrapping="Wrap"
-                               Text="Tự do: logo di chuyển khắp khung. Chọn Cố định để đặt vị trí (góc, giữa hoặc kéo thả tùy chỉnh)."/>
+                    <TextBlock x:Name="TxtLogoMotionHint" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,10,0,0" Style="{DynamicResource TextCaption}" TextWrapping="Wrap"
+                               Text="Tự do: logo dạo quanh khung. Chọn Cố định để đặt vị trí (góc, giữa hoặc kéo thả tùy chỉnh)."/>
                     <StackPanel x:Name="PanelLogoPosition" Grid.Row="3" Grid.ColumnSpan="3" Orientation="Horizontal" Visibility="Collapsed" Margin="0,12,0,0">
-                      <TextBlock Text="Vị trí" Style="{DynamicResource TextMutedStyle}" VerticalAlignment="Center" Width="110"/>
-                      <ComboBox x:Name="CmbLogoPosition" SelectedIndex="3" Width="240" IsEnabled="False" AutomationProperties.Name="Vị trí logo">
+                      <TextBlock Text="Vị trí" Style="{DynamicResource TextLabel}" FontSize="15" VerticalAlignment="Center" Width="120"/>
+                      <ComboBox x:Name="CmbLogoPosition" SelectedIndex="3" Width="260" IsEnabled="False" AutomationProperties.Name="Vị trí logo">
                         <ComboBoxItem Content="Trên trái"/><ComboBoxItem Content="Trên phải"/>
                         <ComboBoxItem Content="Dưới trái"/><ComboBoxItem Content="Dưới phải"/><ComboBoxItem Content="Giữa"/>
                         <ComboBoxItem Content="Tùy chỉnh (kéo thả)" ToolTip="Vị trí và kích thước do bạn kéo thả trên khung xem trước."/>
@@ -275,676 +339,850 @@
                     </StackPanel>
                   </Grid>
                 </StackPanel>
-              </Border>
+              </ContentControl>
 
               <!-- GIF -->
-              <Border Style="{DynamicResource Card}" Margin="0,0,0,16">
+              <ContentControl Style="{DynamicResource StickerCard}" Margin="0,0,0,14" Padding="20,16">
                 <StackPanel>
-                  <CheckBox x:Name="ChkGif" Content="Chèn GIF" IsChecked="False" FontFamily="Segoe UI Semibold" FontSize="16" Margin="0,0,0,12"/>
+                  <DockPanel Margin="0,0,0,12">
+                    <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Mint}" Width="40" Height="40" CornerRadius="20" Margin="0,0,12,0">
+                      <TextBlock Text="&#xE786;" Style="{DynamicResource Icon}" FontSize="16"/>
+                    </Border>
+                    <CheckBox x:Name="ChkGif" Content="Chèn GIF" IsChecked="False" FontWeight="ExtraBold" FontSize="20" VerticalAlignment="Center"/>
+                  </DockPanel>
                   <Grid>
                     <Grid.ColumnDefinitions>
-                      <ColumnDefinition Width="64"/>
+                      <ColumnDefinition Width="Auto"/>
                       <ColumnDefinition Width="*"/>
                       <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <Border Width="52" Height="52" CornerRadius="8" Background="{DynamicResource Surface2}" BorderBrush="{DynamicResource Border}" BorderThickness="1"
-                            HorizontalAlignment="Left" Padding="4">
-                      <Image x:Name="ImgGifPreview" Stretch="Uniform"/>
-                    </Border>
+                    <Grid Width="70" Height="70" Margin="0,0,14,0">
+                      <Border Margin="3,3,0,0" CornerRadius="16" Background="{DynamicResource StickerShadow}"/>
+                      <Border Margin="0,0,3,3" CornerRadius="16" Background="{DynamicResource MintSoft}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" Padding="6">
+                        <Image x:Name="ImgGifPreview" Stretch="Uniform"/>
+                      </Border>
+                    </Grid>
                     <StackPanel Grid.Column="1" Margin="0,0,12,0" VerticalAlignment="Center">
-                      <TextBlock x:Name="TxtGifName" Text="Chưa chọn file GIF" Style="{DynamicResource TextLabel}" TextTrimming="CharacterEllipsis" Margin="0,0,0,6"/>
-                      <TextBox x:Name="TxtGifPath" IsReadOnly="True" FontSize="12" ToolTip="Đường dẫn file GIF (.gif) đã chọn." AutomationProperties.Name="Đường dẫn GIF"/>
+                      <TextBlock x:Name="TxtGifName" Text="Chưa chọn file GIF" Style="{DynamicResource TextLabel}" FontWeight="Bold" TextTrimming="CharacterEllipsis" Margin="0,0,0,6"/>
+                      <TextBox x:Name="TxtGifPath" IsReadOnly="True" FontSize="13" MinHeight="40" ToolTip="Đường dẫn file GIF (.gif) đã chọn." AutomationProperties.Name="Đường dẫn GIF"/>
                     </StackPanel>
                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Bottom">
-                      <Button x:Name="BtnPickGif" Content="Chọn GIF…"/>
+                      <Button x:Name="BtnPickGif" Content="Chọn GIF…" Style="{DynamicResource BtnMint}"/>
                     </StackPanel>
                   </Grid>
                   <Grid Margin="0,16,0,0">
                     <Grid.ColumnDefinitions>
-                      <ColumnDefinition Width="110"/>
+                      <ColumnDefinition Width="120"/>
                       <ColumnDefinition Width="*"/>
-                      <ColumnDefinition Width="90"/>
+                      <ColumnDefinition Width="Auto" MinWidth="100"/>
                     </Grid.ColumnDefinitions>
                     <Grid.RowDefinitions>
                       <RowDefinition Height="Auto"/>
                       <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
-                    <TextBlock Text="Kích thước" Style="{DynamicResource TextMutedStyle}" VerticalAlignment="Center"/>
+                    <TextBlock Text="Kích thước" Style="{DynamicResource TextLabel}" FontSize="15" VerticalAlignment="Center"/>
                     <Slider x:Name="SldGifSize" Grid.Column="1" Minimum="5" Maximum="100" Value="20" TickFrequency="1" IsSnapToTickEnabled="True"
                             SmallChange="1" LargeChange="5" AutomationProperties.Name="Kích thước GIF"/>
-                    <TextBlock x:Name="TxtGifSize" Grid.Column="2" Text="20%" Style="{DynamicResource TextLabel}" HorizontalAlignment="Right" VerticalAlignment="Center"
-                               ToolTip="Phần trăm chiều rộng video."/>
-                    <TextBlock Grid.Row="1" Text="Vị trí" Style="{DynamicResource TextMutedStyle}" VerticalAlignment="Center" Margin="0,14,0,0"/>
-                    <StackPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,14,0,0">
-                      <ComboBox x:Name="CmbGifPosition" SelectedIndex="1" Width="240" Margin="0,0,8,0" AutomationProperties.Name="Vị trí GIF">
+                    <Border Grid.Column="2" Style="{DynamicResource Badge}" Background="{DynamicResource MintSoft}" BorderBrush="{DynamicResource MintLine}" HorizontalAlignment="Right">
+                      <TextBlock x:Name="TxtGifSize" Text="20%" FontWeight="ExtraBold" FontSize="14" ToolTip="Phần trăm chiều rộng video."/>
+                    </Border>
+                    <TextBlock Grid.Row="1" Text="Vị trí" Style="{DynamicResource TextLabel}" FontSize="15" VerticalAlignment="Center" Margin="0,14,0,0"/>
+                    <WrapPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,14,0,0">
+                      <ComboBox x:Name="CmbGifPosition" SelectedIndex="1" Width="260" Margin="0,0,10,0" AutomationProperties.Name="Vị trí GIF">
                         <ComboBoxItem Content="Trên trái"/><ComboBoxItem Content="Trên phải"/>
                         <ComboBoxItem Content="Dưới trái"/><ComboBoxItem Content="Dưới phải"/><ComboBoxItem Content="Giữa"/>
                         <ComboBoxItem Content="Tùy chỉnh (kéo thả)" ToolTip="Vị trí và kích thước do bạn kéo thả trên khung xem trước."/>
                       </ComboBox>
                       <Button x:Name="BtnGifFullFrame" Content="Phủ đầy khung" ToolTip="Kéo giãn GIF phủ kín khung xem trước và video."/>
-                    </StackPanel>
+                    </WrapPanel>
                   </Grid>
                 </StackPanel>
-              </Border>
+              </ContentControl>
 
               <!-- Lop dang chinh + ap dung -->
-              <Border Style="{DynamicResource Card}">
+              <ContentControl Style="{DynamicResource StickerCard}" Background="{DynamicResource ButterSoft}" Padding="20,16">
                 <StackPanel>
-                  <TextBlock Text="Chỉnh trên khung xem trước" Style="{DynamicResource TextHeading}"/>
+                  <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="Chỉnh trên khung xem trước" Style="{DynamicResource TextHeading}"/>
+                    <Image Source="{DynamicResource DecoStar}" Width="20" Height="20" Margin="8,0,0,6" VerticalAlignment="Center"/>
+                  </StackPanel>
                   <TextBlock Text="Kéo để di chuyển; kéo cạnh hoặc góc để đổi kích thước; lăn chuột trên lớp để phóng to/thu nhỏ."
                              Style="{DynamicResource TextMutedStyle}" Margin="0,4,0,12"/>
                   <WrapPanel>
-                    <TextBlock Text="Lớp đang chỉnh" Style="{DynamicResource TextMutedStyle}" VerticalAlignment="Center" Margin="0,0,12,8"/>
-                    <Button x:Name="BtnSelectLogo" Content="Logo" Margin="0,0,8,8" IsEnabled="False" ToolTip="Đưa logo lên trước để kéo hoặc chỉnh kích thước."/>
-                    <Button x:Name="BtnSelectGif" Content="GIF" Margin="0,0,16,8" IsEnabled="False" ToolTip="Đưa GIF lên trước để kéo hoặc chỉnh kích thước."/>
-                    <Button x:Name="BtnReedit" Style="{DynamicResource BtnPrimary}" Margin="0,0,0,8" IsEnabled="False"
-                            ToolTip="Dùng lại video gốc sạch và âm thanh đã lưu để áp dụng logo/GIF mới, không tải hoặc ghi âm lại.">
-                      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE70F;" Style="{DynamicResource Icon}" FontSize="13" Margin="0,0,8,0"/><TextBlock Text="Áp dụng lên video đang xem (sửa lại)"/></StackPanel>
+                    <TextBlock Text="Lớp đang chỉnh" Style="{DynamicResource TextLabel}" FontSize="15" VerticalAlignment="Center" Margin="0,0,12,10"/>
+                    <Button x:Name="BtnSelectLogo" Content="Logo" Margin="0,0,8,10" IsEnabled="False" ToolTip="Đưa logo lên trước để kéo hoặc chỉnh kích thước."/>
+                    <Button x:Name="BtnSelectGif" Content="GIF" Margin="0,0,16,10" IsEnabled="False" ToolTip="Đưa GIF lên trước để kéo hoặc chỉnh kích thước."/>
+                    <Button x:Name="BtnReedit" Style="{DynamicResource BtnPrimary}" Margin="0,0,0,10" IsEnabled="False"
+                            ToolTip="Dùng lại video gốc sạch và âm thanh đã lưu (trong .cache) để áp dụng logo/GIF mới, không tải hoặc ghi âm lại.">
+                      <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE70F;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Áp dụng lên video đang xem"/></StackPanel>
                     </Button>
                   </WrapPanel>
                 </StackPanel>
-              </Border>
+              </ContentControl>
             </StackPanel>
           </ScrollViewer>
         </Grid>
 
         <!-- ================================================= HANG DOI -->
-        <Grid x:Name="ViewQueue" Visibility="Collapsed" Margin="24,20,24,16">
+        <Grid x:Name="ViewQueue" Visibility="Collapsed" Margin="24,4,24,10">
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
           </Grid.RowDefinitions>
-          <StackPanel Margin="0,0,0,16">
-            <TextBlock Text="Hàng đợi" Style="{DynamicResource TextTitle}"/>
-            <TextBlock x:Name="TxtQueueHeader" Text="Mỗi link một dòng; chọn một dòng để xem chi tiết 7 bước." Style="{DynamicResource TextMutedStyle}" Margin="0,4,0,0"/>
-          </StackPanel>
-          <Border Grid.Row="1" Style="{DynamicResource Card}" Padding="8">
-            <Grid>
-              <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
-              </Grid.RowDefinitions>
-              <!-- tieu de cot -->
-              <Grid Margin="8,4,8,8" TextElement.Foreground="{DynamicResource TextMuted}">
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="40"/>
-                  <ColumnDefinition Width="190"/>
-                  <ColumnDefinition Width="140"/>
-                  <ColumnDefinition Width="70"/>
-                  <ColumnDefinition Width="*"/>
-                  <ColumnDefinition Width="110"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock Text="#" Style="{DynamicResource TextCaption}"/>
-                <TextBlock Grid.Column="1" Text="ID" Style="{DynamicResource TextCaption}"/>
-                <TextBlock Grid.Column="2" Text="Trạng thái" Style="{DynamicResource TextCaption}"/>
-                <TextBlock Grid.Column="3" Text="Bước" Style="{DynamicResource TextCaption}"/>
-                <TextBlock Grid.Column="4" Text="Thông điệp" Style="{DynamicResource TextCaption}"/>
-                <TextBlock Grid.Column="5" Text="Hành động" Style="{DynamicResource TextCaption}"/>
-              </Grid>
-              <ListView x:Name="QueueList" Grid.Row="1" SelectionMode="Single" AutomationProperties.Name="Bảng hàng đợi">
-                <ListView.ItemTemplate>
-                  <DataTemplate>
-                    <Grid Margin="8,8">
-                      <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="40"/>
-                        <ColumnDefinition Width="190"/>
-                        <ColumnDefinition Width="140"/>
-                        <ColumnDefinition Width="70"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="110"/>
-                      </Grid.ColumnDefinitions>
-                      <TextBlock Text="{Binding Index}" Foreground="{DynamicResource TextMuted}" VerticalAlignment="Center" FontSize="13"/>
-                      <TextBlock Grid.Column="1" Text="{Binding IdText}" ToolTip="{Binding Url}" FontFamily="Cascadia Mono, Consolas" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,8,0"/>
-                      <Border Grid.Column="2" x:Name="StatusBadge" Style="{DynamicResource StatusBadge}">
-                        <TextBlock Text="{Binding StatusText}" Style="{DynamicResource StatusBadgeText}"/>
-                      </Border>
-                      <TextBlock Grid.Column="3" Text="{Binding StepText}" Foreground="{DynamicResource TextMuted}" VerticalAlignment="Center" FontSize="13"/>
-                      <StackPanel Grid.Column="4" VerticalAlignment="Center" Margin="0,0,8,0">
-                        <TextBlock Text="{Binding Message}" FontSize="13" TextTrimming="CharacterEllipsis" ToolTip="{Binding Message}"/>
-                        <TextBlock Text="{Binding SyncText}" FontSize="12" Foreground="{DynamicResource TextMuted}" TextTrimming="CharacterEllipsis">
-                          <TextBlock.Style>
-                            <Style TargetType="TextBlock">
-                              <Style.Triggers>
-                                <DataTrigger Binding="{Binding SyncText}" Value=""><Setter Property="Visibility" Value="Collapsed"/></DataTrigger>
-                                <DataTrigger Binding="{Binding SyncWarn}" Value="True"><Setter Property="Foreground" Value="{DynamicResource Warning}"/></DataTrigger>
-                              </Style.Triggers>
-                            </Style>
-                          </TextBlock.Style>
-                        </TextBlock>
-                      </StackPanel>
-                      <Button Grid.Column="5" Content="{Binding ActionText}" Tag="{Binding ActionKind}" Style="{DynamicResource RowActionButton}" HorizontalAlignment="Left"
-                              AutomationProperties.Name="{Binding ActionText}"/>
-                    </Grid>
-                  </DataTemplate>
-                </ListView.ItemTemplate>
-              </ListView>
-              <StackPanel x:Name="QueueEmpty" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="24">
-                <TextBlock Text="&#xE8FD;" Style="{DynamicResource Icon}" FontSize="32" Foreground="{DynamicResource TextSubtle}"/>
-                <TextBlock Text="Chưa có hàng đợi" Style="{DynamicResource TextHeading}" HorizontalAlignment="Center" Margin="0,12,0,4"/>
-                <TextBlock Text="Dán link ở trang Nguồn rồi bấm Bắt đầu." Style="{DynamicResource TextMutedStyle}" HorizontalAlignment="Center"/>
+          <DockPanel Margin="0,0,0,14">
+            <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Butter}" Width="58" Height="58" CornerRadius="29" Margin="0,0,16,0">
+              <TextBlock Text="&#xE8FD;" Style="{DynamicResource Icon}" FontSize="24"/>
+            </Border>
+            <StackPanel VerticalAlignment="Center">
+              <StackPanel Orientation="Horizontal">
+                <Grid VerticalAlignment="Center"><Image Source="{DynamicResource DecoRibbon}" Stretch="Fill" Height="20" VerticalAlignment="Bottom" Margin="-8,0,-12,0" IsHitTestVisible="False"/><TextBlock Text="Hàng đợi" Style="{DynamicResource TextTitle}"/></Grid>
+                <Image Source="{DynamicResource DecoSparkles}" Width="36" Height="29" Margin="10,0,0,10" VerticalAlignment="Center"/>
               </StackPanel>
-            </Grid>
-          </Border>
+              <TextBlock x:Name="TxtQueueHeader" Text="Mỗi link là một thẻ; bấm vào thẻ để xem chi tiết 7 bước." Style="{DynamicResource TextMutedStyle}" FontSize="15"/>
+            </StackPanel>
+          </DockPanel>
+          <Grid Grid.Row="1">
+            <ListView x:Name="QueueList" SelectionMode="Single" AutomationProperties.Name="Bảng hàng đợi" Margin="-5,-5,-5,0">
+              <ListView.ItemTemplate>
+                <DataTemplate>
+                  <Grid>
+                    <Border Margin="4,4,0,0" CornerRadius="20" Background="{DynamicResource StickerShadow}"/>
+                    <Border Margin="0,0,4,4" CornerRadius="20" Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" Padding="14,12">
+                      <Grid>
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="Auto"/>
+                          <ColumnDefinition Width="200"/>
+                          <ColumnDefinition Width="*"/>
+                          <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="42" Height="42" CornerRadius="21" Background="{DynamicResource ButterSoft}" BorderBrush="{DynamicResource Ink}" BorderThickness="2"
+                                Margin="0,0,14,0" VerticalAlignment="Center">
+                          <TextBlock Text="{Binding Index}" FontWeight="ExtraBold" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,14,0">
+                          <TextBlock Text="{Binding IdText}" ToolTip="{Binding Url}" FontWeight="ExtraBold" FontSize="16" TextTrimming="CharacterEllipsis"/>
+                          <Border x:Name="StatusBadge" Style="{DynamicResource StatusBadge}" Margin="0,6,0,0">
+                            <TextBlock Text="{Binding StatusText}" Style="{DynamicResource StatusBadgeText}"/>
+                          </Border>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="0,0,12,0">
+                          <StackPanel Orientation="Horizontal">
+                            <Grid Width="196" ToolTip="7 bước: công cụ · thiết bị · ID · chọn tiếng Việt · thu âm · chuẩn hóa · ghép MP4">
+                              <Border Height="4" CornerRadius="2" Background="{DynamicResource InkFaint}" Margin="14,0" VerticalAlignment="Center"/>
+                              <ItemsControl ItemsSource="{Binding Beads}" Focusable="False" IsTabStop="False">
+                                <ItemsControl.ItemsPanel>
+                                  <ItemsPanelTemplate><UniformGrid Rows="1"/></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                  <DataTemplate>
+                                    <Border Style="{DynamicResource BeadDot}" HorizontalAlignment="Center">
+                                      <TextBlock Style="{DynamicResource BeadGlyph}"/>
+                                    </Border>
+                                  </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                              </ItemsControl>
+                            </Grid>
+                            <TextBlock Text="{Binding StepText}" FontWeight="Bold" FontSize="13" Foreground="{DynamicResource TextMuted}" VerticalAlignment="Center" Margin="10,0,0,0"/>
+                          </StackPanel>
+                          <TextBlock Text="{Binding Message}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding Message}" Margin="0,8,0,0"/>
+                          <TextBlock Text="{Binding SyncText}" FontSize="13" Foreground="{DynamicResource TextMuted}" TextTrimming="CharacterEllipsis" Margin="0,2,0,0">
+                            <TextBlock.Style>
+                              <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                  <DataTrigger Binding="{Binding SyncText}" Value=""><Setter Property="Visibility" Value="Collapsed"/></DataTrigger>
+                                  <DataTrigger Binding="{Binding SyncWarn}" Value="True"><Setter Property="Foreground" Value="{DynamicResource WarningText}"/></DataTrigger>
+                                </Style.Triggers>
+                              </Style>
+                            </TextBlock.Style>
+                          </TextBlock>
+                        </StackPanel>
+                        <Button Grid.Column="3" Content="{Binding ActionText}" Tag="{Binding ActionKind}" Style="{DynamicResource RowActionButton}" VerticalAlignment="Center"
+                                ToolTip="{Binding ActionText}" AutomationProperties.Name="{Binding ActionText}"/>
+                      </Grid>
+                    </Border>
+                  </Grid>
+                </DataTemplate>
+              </ListView.ItemTemplate>
+            </ListView>
+            <StackPanel x:Name="QueueEmpty" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="24">
+              <Image Source="{DynamicResource MascotCloud}" Width="132" Height="104"/>
+              <TextBlock Text="Chưa có hàng đợi" Style="{DynamicResource TextHeading}" FontSize="24" HorizontalAlignment="Center" Margin="0,10,0,4"/>
+              <TextBlock Text="Dán link ở trang Nguồn rồi bấm Bắt đầu nhé!" Style="{DynamicResource TextMutedStyle}" FontSize="15" HorizontalAlignment="Center"/>
+            </StackPanel>
+          </Grid>
           <!-- chi tiet 7 buoc -->
-          <Border Grid.Row="2" Style="{DynamicResource Card}" Margin="0,16,0,0" Padding="16,12">
+          <ContentControl Grid.Row="2" Style="{DynamicResource StickerCard}" Margin="0,12,0,0" Padding="18,12">
             <StackPanel>
-              <DockPanel Margin="0,0,0,10">
-                <TextBlock x:Name="TxtStepTitle" Text="Chi tiết các bước" Style="{DynamicResource TextHeading}"/>
-              </DockPanel>
+              <TextBlock x:Name="TxtStepTitle" Text="Chi tiết các bước" Style="{DynamicResource TextHeading}" FontSize="18" Margin="0,0,0,8" TextTrimming="CharacterEllipsis"/>
               <ItemsControl x:Name="StepList" Focusable="False">
                 <ItemsControl.ItemsPanel>
                   <ItemsPanelTemplate><UniformGrid Rows="1"/></ItemsPanelTemplate>
                 </ItemsControl.ItemsPanel>
                 <ItemsControl.ItemTemplate>
                   <DataTemplate>
-                    <StackPanel Margin="0,0,8,0" ToolTip="{Binding Detail}">
-                      <StackPanel Orientation="Horizontal">
-                        <Border Style="{DynamicResource StepDot}">
-                          <TextBlock Text="{Binding Glyph}" Style="{DynamicResource StepGlyph}"/>
+                    <StackPanel ToolTip="{Binding Detail}">
+                      <Grid Height="44">
+                        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                        <Border x:Name="LineL" Height="4" CornerRadius="2" Background="{DynamicResource InkFaint}" VerticalAlignment="Center"/>
+                        <Border x:Name="LineR" Grid.Column="1" Height="4" CornerRadius="2" Background="{DynamicResource InkFaint}" VerticalAlignment="Center"/>
+                        <Border Grid.ColumnSpan="2" Style="{DynamicResource StepDot}" HorizontalAlignment="Center" VerticalAlignment="Center">
+                          <Grid>
+                            <TextBlock x:Name="StepNo" Text="{Binding No}" FontWeight="ExtraBold" FontSize="15" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="StepIcon" Text="{Binding Glyph}" Style="{DynamicResource StepGlyph}" Visibility="Collapsed"/>
+                          </Grid>
                         </Border>
-                        <TextBlock Text="{Binding NoText}" Foreground="{DynamicResource TextSubtle}" FontSize="12" Margin="8,0,0,0" VerticalAlignment="Center"/>
-                      </StackPanel>
-                      <TextBlock Text="{Binding Name}" Style="{DynamicResource StepName}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                      </Grid>
+                      <TextBlock Text="{Binding Name}" Style="{DynamicResource StepName}" TextWrapping="Wrap" Margin="2,4,2,0"/>
                     </StackPanel>
+                    <DataTemplate.Triggers>
+                      <DataTrigger Binding="{Binding Edge}" Value="first"><Setter TargetName="LineL" Property="Visibility" Value="Hidden"/></DataTrigger>
+                      <DataTrigger Binding="{Binding Edge}" Value="last"><Setter TargetName="LineR" Property="Visibility" Value="Hidden"/></DataTrigger>
+                      <DataTrigger Binding="{Binding State}" Value="done">
+                        <Setter TargetName="StepNo" Property="Visibility" Value="Collapsed"/><Setter TargetName="StepIcon" Property="Visibility" Value="Visible"/>
+                        <Setter TargetName="LineL" Property="Background" Value="{DynamicResource MintLine}"/><Setter TargetName="LineR" Property="Background" Value="{DynamicResource MintLine}"/>
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding State}" Value="failed">
+                        <Setter TargetName="StepNo" Property="Visibility" Value="Collapsed"/><Setter TargetName="StepIcon" Property="Visibility" Value="Visible"/>
+                      </DataTrigger>
+                    </DataTemplate.Triggers>
                   </DataTemplate>
                 </ItemsControl.ItemTemplate>
               </ItemsControl>
             </StackPanel>
-          </Border>
+          </ContentControl>
         </Grid>
 
         <!-- ================================================= KHO -->
-        <Grid x:Name="ViewLibrary" Visibility="Collapsed" Margin="24,20,24,16">
+        <Grid x:Name="ViewLibrary" Visibility="Collapsed" Margin="24,4,24,10">
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
           </Grid.RowDefinitions>
-          <DockPanel Margin="0,0,0,12" LastChildFill="False">
-            <StackPanel>
-              <TextBlock Text="Kho" Style="{DynamicResource TextTitle}"/>
-              <TextBlock x:Name="TxtGalleryCount" Text="0 video" Style="{DynamicResource TextMutedStyle}" Margin="0,4,0,0"/>
+          <DockPanel Margin="0,0,0,12" LastChildFill="True">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+              <RadioButton x:Name="TabLibVideos" Style="{DynamicResource SegButton}" GroupName="LibTabs" Content="Video đã lưu" IsChecked="True"/>
+              <RadioButton x:Name="TabLibRejected" Style="{DynamicResource SegButton}" GroupName="LibTabs" Margin="0">
+                <TextBlock x:Name="TxtRejectedTabLabel" Text="Lịch sử đã loại (0)"/>
+              </RadioButton>
             </StackPanel>
-            <Border DockPanel.Dock="Right" Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="3" VerticalAlignment="Top">
-              <StackPanel Orientation="Horizontal">
-                <RadioButton x:Name="TabLibVideos" Style="{DynamicResource SegButton}" GroupName="LibTabs" Content="Video đã lưu" IsChecked="True"/>
-                <RadioButton x:Name="TabLibRejected" Style="{DynamicResource SegButton}" GroupName="LibTabs">
-                  <TextBlock x:Name="TxtRejectedTabLabel" Text="Lịch sử đã loại (0)"/>
-                </RadioButton>
-              </StackPanel>
+            <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Mint}" Width="58" Height="58" CornerRadius="29" Margin="0,0,16,0">
+              <TextBlock Text="&#xE8F1;" Style="{DynamicResource Icon}" FontSize="24"/>
             </Border>
+            <StackPanel VerticalAlignment="Center">
+              <StackPanel Orientation="Horizontal">
+                <Grid VerticalAlignment="Center"><Image Source="{DynamicResource DecoRibbon}" Stretch="Fill" Height="20" VerticalAlignment="Bottom" Margin="-8,0,-12,0" IsHitTestVisible="False"/><TextBlock Text="Kho" Style="{DynamicResource TextTitle}"/></Grid>
+                <Image Source="{DynamicResource DecoStar}" Width="24" Height="24" Margin="10,0,0,10" VerticalAlignment="Center"/>
+              </StackPanel>
+              <TextBlock x:Name="TxtGalleryCount" Text="0 video" Style="{DynamicResource TextMutedStyle}" FontSize="15"/>
+            </StackPanel>
           </DockPanel>
 
-          <!-- thanh loc -->
+          <!-- thanh loc: cac pill bo tron -->
           <Grid x:Name="PanelLibFilters" Grid.Row="1" Margin="0,0,0,12">
             <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="*" MaxWidth="320"/>
+              <ColumnDefinition Width="*" MaxWidth="300"/>
               <ColumnDefinition Width="Auto"/>
               <ColumnDefinition Width="Auto"/>
               <ColumnDefinition Width="Auto"/>
               <ColumnDefinition Width="*"/>
               <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            <Grid>
-              <TextBox x:Name="TxtGallerySearch" Padding="32,6,10,6" AutomationProperties.Name="Tìm theo ID"/>
-              <TextBlock Text="&#xE721;" Style="{DynamicResource Icon}" FontSize="13" Foreground="{DynamicResource TextMuted}" HorizontalAlignment="Left" Margin="11,0,0,0" IsHitTestVisible="False"/>
-              <TextBlock x:Name="TxtGallerySearchHint" Text="Tìm theo ID…" Foreground="{DynamicResource TextSubtle}" FontSize="13" Margin="33,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+            <Grid MinWidth="150">
+              <TextBox x:Name="TxtGallerySearch" Padding="40,6,14,6" AutomationProperties.Name="Tìm theo ID">
+                <TextBox.Template>
+                  <ControlTemplate TargetType="TextBox">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="2" CornerRadius="999">
+                      <ScrollViewer x:Name="PART_ContentHost" Focusable="False" Margin="{TemplateBinding Padding}" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                      <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Ink}"/></Trigger>
+                      <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentPressed}"/></Trigger>
+                    </ControlTemplate.Triggers>
+                  </ControlTemplate>
+                </TextBox.Template>
+              </TextBox>
+              <TextBlock Text="&#xE721;" Style="{DynamicResource Icon}" FontSize="15" HorizontalAlignment="Left" Margin="16,0,0,0" IsHitTestVisible="False"/>
+              <TextBlock x:Name="TxtGallerySearchHint" Text="Tìm theo ID…" Foreground="{DynamicResource TextSubtle}" FontSize="15" FontWeight="SemiBold" Margin="42,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
             </Grid>
-            <ComboBox x:Name="CmbDateFilter" Grid.Column="1" Width="150" Margin="8,0,0,0" SelectedIndex="0" AutomationProperties.Name="Lọc theo ngày">
+            <ComboBox x:Name="CmbDateFilter" Grid.Column="1" Width="160" Margin="10,0,0,0" SelectedIndex="0" AutomationProperties.Name="Lọc theo ngày">
               <ComboBoxItem Content="Tất cả ngày"/>
               <ComboBoxItem Content="Hôm nay"/>
               <ComboBoxItem Content="Hôm qua"/>
               <ComboBoxItem Content="7 ngày qua"/>
               <ComboBoxItem Content="Chọn ngày…"/>
             </ComboBox>
-            <ComboBox x:Name="CmbFilterSpecificDate" Grid.Column="2" Width="190" Margin="8,0,0,0" Visibility="Collapsed" AutomationProperties.Name="Ngày cụ thể"/>
-            <ComboBox x:Name="CmbTikTokFilter" Grid.Column="3" Width="170" Margin="8,0,0,0" SelectedIndex="0" AutomationProperties.Name="Lọc trạng thái TikTok">
+            <ComboBox x:Name="CmbFilterSpecificDate" Grid.Column="2" Width="200" Margin="10,0,0,0" Visibility="Collapsed" AutomationProperties.Name="Ngày cụ thể"/>
+            <ComboBox x:Name="CmbTikTokFilter" Grid.Column="3" Width="190" Margin="10,0,0,0" SelectedIndex="0" AutomationProperties.Name="Lọc trạng thái TikTok">
               <ComboBoxItem Content="TikTok: tất cả"/>
               <ComboBoxItem Content="Chưa đăng TikTok"/>
               <ComboBoxItem Content="Đã đăng TikTok"/>
             </ComboBox>
-            <Button x:Name="BtnRefreshGallery" Grid.Column="5" Style="{DynamicResource BtnGhost}" ToolTip="Quét lại thư mục xuất" AutomationProperties.Name="Làm mới kho">
-              <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE72C;" Style="{DynamicResource Icon}" FontSize="13" Margin="0,0,6,0"/><TextBlock Text="Làm mới"/></StackPanel>
-            </Button>
+            <Button x:Name="BtnRefreshGallery" Grid.Column="5" Style="{DynamicResource BtnIcon}" Background="{DynamicResource SkySoft}" Content="&#xE72C;" Margin="10,0,0,0"
+                    ToolTip="Quét lại thư mục xuất" AutomationProperties.Name="Làm mới kho"/>
           </Grid>
 
-          <!-- danh sach video -->
-          <Border x:Name="PanelLibVideos" Grid.Row="2" Style="{DynamicResource Card}" Padding="6">
-            <Grid>
-              <ListView x:Name="GalleryList" SelectionMode="Single" AutomationProperties.Name="Danh sách video đã lưu">
-                <ListView.ItemTemplate>
-                  <DataTemplate>
-                    <Grid Margin="8,6">
-                      <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="54"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="Auto"/>
-                      </Grid.ColumnDefinitions>
-                      <Border Width="54" Height="96" CornerRadius="6" Background="{DynamicResource Surface3}" ClipToBounds="True">
-                        <Grid>
-                          <TextBlock Text="&#xE714;" Style="{DynamicResource Icon}" FontSize="18" Foreground="{DynamicResource TextSubtle}"/>
-                          <Image Source="{Binding Thumb}" Stretch="UniformToFill"/>
+          <!-- danh sach video: the lon doc (ListView ao hoa) -->
+          <Grid x:Name="PanelLibVideos" Grid.Row="2">
+            <ListView x:Name="GalleryList" SelectionMode="Single" AutomationProperties.Name="Danh sách video đã lưu" Margin="-5,-5,-5,0">
+              <ListView.ItemTemplate>
+                <DataTemplate>
+                  <Grid>
+                    <Border Margin="4,4,0,0" CornerRadius="20" Background="{DynamicResource StickerShadow}"/>
+                    <Border Margin="0,0,4,4" CornerRadius="20" Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" Padding="14,12">
+                      <Grid>
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="Auto"/>
+                          <ColumnDefinition Width="*"/>
+                          <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <!-- anh thu nho kieu polaroid -->
+                        <Grid Margin="0,0,16,0" VerticalAlignment="Center">
+                          <Border Margin="3,3,0,0" CornerRadius="14" Background="{DynamicResource StickerShadow}"/>
+                          <Border Margin="0,0,3,3" CornerRadius="14" Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" Padding="5,5,5,12">
+                            <Grid Width="62" Height="110">
+                              <Border CornerRadius="10" Background="{DynamicResource PeachSoft}"/>
+                              <TextBlock Text="&#xE714;" Style="{DynamicResource Icon}" FontSize="18" Foreground="{DynamicResource PeachLine}"/>
+                              <Image Source="{Binding Thumb}" Stretch="UniformToFill">
+                                <Image.Clip><RectangleGeometry Rect="0,0,62,110" RadiusX="10" RadiusY="10"/></Image.Clip>
+                              </Image>
+                            </Grid>
+                          </Border>
                         </Grid>
-                      </Border>
-                      <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="14,0,12,0">
-                        <TextBlock Text="{Binding Title}" FontFamily="Segoe UI Semibold" FontSize="14"/>
-                        <TextBlock Text="{Binding MetaText}" FontSize="12" Foreground="{DynamicResource TextMuted}" Margin="0,4,0,0" TextTrimming="CharacterEllipsis"/>
-                        <TextBlock Text="{Binding DetailText}" FontSize="12" Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
-                      </StackPanel>
-                      <Button Grid.Column="2" Tag="tiktok" Style="{DynamicResource BtnTikTok}" Margin="0,0,12,0" VerticalAlignment="Center"
-                              ToolTip="Bấm để đổi trạng thái đã đăng TikTok" AutomationProperties.Name="{Binding PostedText}">
-                        <TextBlock Text="{Binding PostedText}"/>
-                      </Button>
-                      <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Button Tag="view" Style="{DynamicResource BtnIcon}" Content="&#xE768;" ToolTip="Xem trong khung xem trước" AutomationProperties.Name="Xem"/>
-                        <Button Tag="copy" Style="{DynamicResource BtnIcon}" Content="&#xE8C8;" ToolTip="Copy file để dán (Ctrl+V) khi đăng" AutomationProperties.Name="Copy file"/>
-                        <Button Tag="folder" Style="{DynamicResource BtnIcon}" Content="&#xE838;" ToolTip="Mở thư mục chứa file" AutomationProperties.Name="Mở thư mục"/>
-                        <Button Tag="redo" Style="{DynamicResource BtnIcon}" Content="&#xE720;" ToolTip="Ghi âm lại video này" AutomationProperties.Name="Ghi âm lại"/>
-                        <Button Tag="delete" Style="{DynamicResource BtnIcon}" Margin="12,0,0,0" Content="&#xE74D;" Foreground="{DynamicResource Danger}" ToolTip="Xóa video (có xác nhận)" AutomationProperties.Name="Xóa video"/>
-                      </StackPanel>
-                    </Grid>
-                  </DataTemplate>
-                </ListView.ItemTemplate>
-              </ListView>
-              <StackPanel x:Name="GalleryState" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="24" Visibility="Collapsed">
-                <TextBlock x:Name="TxtGalleryStateGlyph" Text="&#xE8F1;" Style="{DynamicResource Icon}" FontSize="32" Foreground="{DynamicResource TextSubtle}"/>
-                <TextBlock x:Name="TxtGalleryStateTitle" Text="Kho trống" Style="{DynamicResource TextHeading}" HorizontalAlignment="Center" Margin="0,12,0,4"/>
-                <TextBlock x:Name="TxtGalleryStateText" Text="Video hoàn tất sẽ xuất hiện ở đây." Style="{DynamicResource TextMutedStyle}" HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="420"/>
-              </StackPanel>
-            </Grid>
-          </Border>
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,12,0">
+                          <TextBlock Text="{Binding Title}" FontWeight="ExtraBold" FontSize="19" TextTrimming="CharacterEllipsis"/>
+                          <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                            <TextBlock Text="&#xE787;" Style="{DynamicResource Icon}" FontSize="13" Foreground="{DynamicResource TextMuted}" Margin="0,0,6,0"/>
+                            <TextBlock Text="{Binding MetaText}" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextMuted}" TextTrimming="CharacterEllipsis"/>
+                          </StackPanel>
+                          <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+                            <TextBlock Text="&#xE916;" Style="{DynamicResource Icon}" FontSize="13" Foreground="{DynamicResource TextMuted}" Margin="0,0,6,0"/>
+                            <TextBlock Text="{Binding DetailText}" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextMuted}" TextTrimming="CharacterEllipsis"/>
+                          </StackPanel>
+                          <Button Tag="tiktok" Style="{DynamicResource BtnTikTok}" Margin="0,10,0,0" HorizontalAlignment="Left"
+                                  ToolTip="Bấm để đổi trạng thái đã đăng TikTok" AutomationProperties.Name="{Binding PostedText}">
+                            <StackPanel Orientation="Horizontal" IsHitTestVisible="False">
+                              <TextBlock Text="&#xE8FB;" Style="{DynamicResource Icon}" FontSize="12" Margin="0,0,6,0"/>
+                              <TextBlock Text="{Binding PostedText}"/>
+                            </StackPanel>
+                          </Button>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                          <Button Tag="view" Style="{DynamicResource BtnIcon}" Background="{DynamicResource Pink}" Content="&#xE768;" Margin="0,0,6,0" ToolTip="Xem trong khung xem trước" AutomationProperties.Name="Xem"/>
+                          <Button Tag="copy" Style="{DynamicResource BtnIcon}" Background="{DynamicResource Sky}" Content="&#xE8C8;" Margin="0,0,6,0" ToolTip="Copy file để dán (Ctrl+V) khi đăng" AutomationProperties.Name="Copy file"/>
+                          <Button Tag="folder" Style="{DynamicResource BtnIcon}" Background="{DynamicResource Butter}" Content="&#xE838;" Margin="0,0,6,0" ToolTip="Mở thư mục chứa file" AutomationProperties.Name="Mở thư mục"/>
+                          <Button Tag="redo" Style="{DynamicResource BtnIcon}" Background="{DynamicResource Lavender}" Content="&#xE720;" ToolTip="Ghi âm lại video này" AutomationProperties.Name="Ghi âm lại"/>
+                          <Button Tag="delete" Style="{DynamicResource BtnIcon}" Background="{DynamicResource CoralSoft}" Margin="12,0,0,0" Content="&#xE74D;" ToolTip="Xóa video (có xác nhận)" AutomationProperties.Name="Xóa video"/>
+                        </StackPanel>
+                      </Grid>
+                    </Border>
+                  </Grid>
+                </DataTemplate>
+              </ListView.ItemTemplate>
+            </ListView>
+            <StackPanel x:Name="GalleryState" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="24" Visibility="Collapsed">
+              <Image x:Name="ImgGalleryMascot" Source="{DynamicResource MascotCloud}" Width="132" Height="104"/>
+              <Border x:Name="BadgeGalleryGlyph" Width="56" Height="56" CornerRadius="28" Background="{DynamicResource CoralSoft}" BorderBrush="{DynamicResource Ink}" BorderThickness="2"
+                      HorizontalAlignment="Center" Visibility="Collapsed">
+                <TextBlock x:Name="TxtGalleryStateGlyph" Text="&#xE8F1;" Style="{DynamicResource Icon}" FontSize="24" Foreground="{DynamicResource TextPrimary}"/>
+              </Border>
+              <TextBlock x:Name="TxtGalleryStateTitle" Text="Kho trống" Style="{DynamicResource TextHeading}" FontSize="24" HorizontalAlignment="Center" Margin="0,10,0,4"/>
+              <TextBlock x:Name="TxtGalleryStateText" Text="Chưa có video nào — dán link ở trang Nguồn nhé!" Style="{DynamicResource TextMutedStyle}" FontSize="15" HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="440"/>
+              <Button x:Name="BtnGalleryRetry" Style="{DynamicResource BtnButter}" HorizontalAlignment="Center" Margin="0,14,0,0" Visibility="Collapsed" AutomationProperties.Name="Thử quét lại kho">
+                <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE72C;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Thử lại"/></StackPanel>
+              </Button>
+            </StackPanel>
+          </Grid>
 
           <!-- lich su da loai -->
-          <Border x:Name="PanelLibRejected" Grid.Row="1" Grid.RowSpan="2" Style="{DynamicResource Card}" Padding="6" Visibility="Collapsed">
-            <Grid>
-              <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
-              </Grid.RowDefinitions>
-              <TextBlock x:Name="TxtRejectedDashboard" Text="Chưa có video bị loại." Style="{DynamicResource TextMutedStyle}" Margin="10,8,10,8"/>
-              <ListView x:Name="RejectedList" Grid.Row="1" SelectionMode="Single" AutomationProperties.Name="Lịch sử video đã loại">
-                <ListView.ItemTemplate>
-                  <DataTemplate>
-                    <Grid Margin="10,8">
-                      <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                      </Grid.ColumnDefinitions>
-                      <StackPanel VerticalAlignment="Center">
-                        <TextBlock Text="{Binding Title}" FontFamily="Segoe UI Semibold" FontSize="13"/>
-                        <TextBlock Text="{Binding Detail}" FontSize="12" Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                      </StackPanel>
-                      <Button Grid.Column="1" Tag="{Binding VideoId}" Content="Bỏ loại" Padding="10,3" MinHeight="26" FontSize="12" VerticalAlignment="Center"
-                              ToolTip="{Binding UnrejectTip}" AutomationProperties.Name="Bỏ loại"/>
-                    </Grid>
-                  </DataTemplate>
-                </ListView.ItemTemplate>
-              </ListView>
-            </Grid>
-          </Border>
+          <Grid x:Name="PanelLibRejected" Grid.Row="1" Grid.RowSpan="2" Visibility="Collapsed">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <ContentControl Style="{DynamicResource StickerCard}" Background="{DynamicResource ButterSoft}" Padding="16,12" Margin="0,0,0,12">
+              <DockPanel>
+                <Border DockPanel.Dock="Left" Style="{DynamicResource IconChip}" Background="{DynamicResource Butter}" Width="36" Height="36" CornerRadius="18" Margin="0,0,12,0">
+                  <TextBlock Text="&#xE7BA;" Style="{DynamicResource Icon}" FontSize="14"/>
+                </Border>
+                <TextBlock x:Name="TxtRejectedDashboard" Text="Chưa có video bị loại." Style="{DynamicResource TextMutedStyle}" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center"/>
+              </DockPanel>
+            </ContentControl>
+            <ListView x:Name="RejectedList" Grid.Row="1" SelectionMode="Single" AutomationProperties.Name="Lịch sử video đã loại" Margin="-5,-5,-5,0">
+              <ListView.ItemTemplate>
+                <DataTemplate>
+                  <Grid>
+                    <Border Margin="4,4,0,0" CornerRadius="18" Background="{DynamicResource StickerShadow}"/>
+                    <Border Margin="0,0,4,4" CornerRadius="18" Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" Padding="14,10">
+                      <Grid>
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="Auto"/>
+                          <ColumnDefinition Width="*"/>
+                          <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="40" Height="40" CornerRadius="20" Background="{DynamicResource ButterSoft}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" Margin="0,0,12,0">
+                          <TextBlock Text="&#xE711;" Style="{DynamicResource Icon}" FontSize="13"/>
+                        </Border>
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                          <TextBlock Text="{Binding Title}" FontWeight="ExtraBold" FontSize="16"/>
+                          <TextBlock Text="{Binding Detail}" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                        </StackPanel>
+                        <Button Grid.Column="2" Tag="{Binding VideoId}" Content="Bỏ loại" Style="{DynamicResource BtnButter}" VerticalAlignment="Center"
+                                ToolTip="{Binding UnrejectTip}" AutomationProperties.Name="Bỏ loại"/>
+                      </Grid>
+                    </Border>
+                  </Grid>
+                </DataTemplate>
+              </ListView.ItemTemplate>
+            </ListView>
+          </Grid>
         </Grid>
 
         <!-- ================================================= CAI DAT -->
-        <Grid x:Name="ViewSettings" Visibility="Collapsed" Margin="24,20,24,16">
+        <Grid x:Name="ViewSettings" Visibility="Collapsed" Margin="24,4,24,10">
           <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
           </Grid.RowDefinitions>
-          <DockPanel Margin="0,0,0,16" LastChildFill="False">
-            <TextBlock Text="Cài đặt" Style="{DynamicResource TextTitle}" VerticalAlignment="Center"/>
-            <Border DockPanel.Dock="Right" Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="3">
-              <StackPanel Orientation="Horizontal">
-                <RadioButton x:Name="SetTabTools" Style="{DynamicResource SegButton}" GroupName="SetTabs" Content="Công cụ" IsChecked="True"/>
-                <RadioButton x:Name="SetTabLogs" Style="{DynamicResource SegButton}" GroupName="SetTabs" Content="Nhật ký"/>
-                <RadioButton x:Name="SetTabUpdate" Style="{DynamicResource SegButton}" GroupName="SetTabs" Content="Cập nhật"/>
-                <RadioButton x:Name="SetTabAbout" Style="{DynamicResource SegButton}" GroupName="SetTabs" Content="Giới thiệu"/>
-              </StackPanel>
+          <DockPanel Margin="0,0,0,12">
+            <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Sky}" Width="58" Height="58" CornerRadius="29" Margin="0,0,16,0">
+              <TextBlock Text="&#xE713;" Style="{DynamicResource Icon}" FontSize="24"/>
             </Border>
+            <StackPanel VerticalAlignment="Center" Orientation="Horizontal">
+              <Grid VerticalAlignment="Center"><Image Source="{DynamicResource DecoRibbon}" Stretch="Fill" Height="20" VerticalAlignment="Bottom" Margin="-8,0,-12,0" IsHitTestVisible="False"/><TextBlock Text="Cài đặt" Style="{DynamicResource TextTitle}"/></Grid>
+              <Image Source="{DynamicResource DecoSparkles}" Width="36" Height="29" Margin="10,0,0,10" VerticalAlignment="Center"/>
+            </StackPanel>
           </DockPanel>
-          <Grid Grid.Row="1">
+          <WrapPanel Grid.Row="1" Margin="0,0,0,12">
+            <RadioButton x:Name="SetTabTools" Style="{DynamicResource SegButton}" GroupName="SetTabs" Content="Công cụ" IsChecked="True" Margin="0,0,8,6"/>
+            <RadioButton x:Name="SetTabGeneral" Style="{DynamicResource SegButton}" GroupName="SetTabs" Content="Tùy chọn" Margin="0,0,8,6"/>
+            <RadioButton x:Name="SetTabLogs" Style="{DynamicResource SegButton}" GroupName="SetTabs" Content="Nhật ký" Margin="0,0,8,6"/>
+            <RadioButton x:Name="SetTabUpdate" Style="{DynamicResource SegButton}" GroupName="SetTabs" Content="Cập nhật" Margin="0,0,8,6"/>
+            <RadioButton x:Name="SetTabAbout" Style="{DynamicResource SegButton}" GroupName="SetTabs" Content="Giới thiệu" Margin="0,0,8,6"/>
+          </WrapPanel>
+          <Grid Grid.Row="2">
             <!-- Cong cu -->
-            <ScrollViewer x:Name="ViewTools" VerticalScrollBarVisibility="Auto">
-              <StackPanel Margin="0,0,8,0">
-                <Border Style="{DynamicResource Card}" Margin="0,0,0,16">
+            <ScrollViewer x:Name="ViewTools" VerticalScrollBarVisibility="Auto" Margin="0,0,-6,0">
+              <StackPanel Margin="0,0,10,0">
+                <ContentControl Style="{DynamicResource StickerCard}" Margin="0,0,0,14" Padding="20,16">
                   <DockPanel>
-                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                      <Button x:Name="BtnCheck" Margin="0,0,8,0" ToolTip="Kiểm tra công cụ và thiết bị Android" AutomationProperties.Name="Kiểm tra máy">
-                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8EA;" Style="{DynamicResource Icon}" FontSize="13" Margin="0,0,6,0"/><TextBlock Text="Kiểm tra máy"/></StackPanel>
+                    <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                      <Button x:Name="BtnCheck" Style="{DynamicResource BtnSky}" Margin="0,0,10,0" ToolTip="Kiểm tra công cụ và thiết bị Android" AutomationProperties.Name="Kiểm tra máy">
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8EA;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Kiểm tra máy"/></StackPanel>
                       </Button>
                       <Button x:Name="BtnInstallAllTools" Style="{DynamicResource BtnPrimary}" AutomationProperties.Name="Tải và cài tất cả công cụ">
-                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE896;" Style="{DynamicResource Icon}" FontSize="13" Margin="0,0,6,0"/><TextBlock Text="Tải và cài tất cả"/></StackPanel>
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE896;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Tải và cài tất cả"/></StackPanel>
                       </Button>
-                    </StackPanel>
+                    </WrapPanel>
                     <StackPanel Margin="0,0,16,0">
                       <TextBlock Text="Công cụ" Style="{DynamicResource TextHeading}"/>
                       <TextBlock Text="Tải và cấu hình công cụ vào thư mục tools cạnh ứng dụng. Có thể chép cả thư mục sang máy khác để dùng ngay."
                                  Style="{DynamicResource TextMutedStyle}" Margin="0,4,0,0"/>
                     </StackPanel>
                   </DockPanel>
-                </Border>
-                <Border Style="{DynamicResource Card}" Padding="8" Margin="0,0,0,16">
+                </ContentControl>
+                <ContentControl Style="{DynamicResource StickerCard}" Padding="12,8" Margin="0,0,0,14">
                   <StackPanel>
-                    <Grid Margin="8">
-                      <Grid.ColumnDefinitions><ColumnDefinition Width="36"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                      <TextBlock Text="&#xE720;" Style="{DynamicResource Icon}" HorizontalAlignment="Left" Foreground="{DynamicResource TextMuted}"/>
-                      <StackPanel Grid.Column="1" Margin="0,0,12,0">
-                        <TextBlock Text="scrcpy" Style="{DynamicResource TextLabel}"/>
+                    <Grid Margin="8,10">
+                      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                      <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Pink}" Width="44" Height="44" CornerRadius="22" Margin="0,0,14,0">
+                        <TextBlock Text="&#xE720;" Style="{DynamicResource Icon}"/>
+                      </Border>
+                      <StackPanel Grid.Column="1" Margin="0,0,12,0" VerticalAlignment="Center">
+                        <TextBlock Text="scrcpy" Style="{DynamicResource TextLabel}" FontWeight="ExtraBold"/>
                         <TextBlock Text="Ghi âm thanh từ Android (AAC), không dùng micro máy tính." Style="{DynamicResource TextMutedStyle}"/>
                       </StackPanel>
                       <Border x:Name="BadgeStatusScrcpy" Grid.Column="2" Style="{DynamicResource Badge}" Margin="0,0,12,0">
-                        <TextBlock x:Name="TxtStatusScrcpy" Text="Đang kiểm tra…" FontSize="12"/>
+                        <TextBlock x:Name="TxtStatusScrcpy" Text="Đang kiểm tra…" FontSize="13"/>
                       </Border>
-                      <Button x:Name="BtnInstallScrcpy" Grid.Column="3" Content="Cài đặt" MinWidth="110"/>
+                      <Button x:Name="BtnInstallScrcpy" Grid.Column="3" Content="Cài đặt" MinWidth="128"/>
                     </Grid>
-                    <Border Style="{DynamicResource Divider}" Margin="8,0"/>
-                    <Grid Margin="8">
-                      <Grid.ColumnDefinitions><ColumnDefinition Width="36"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                      <TextBlock Text="&#xE8EA;" Style="{DynamicResource Icon}" HorizontalAlignment="Left" Foreground="{DynamicResource TextMuted}"/>
-                      <StackPanel Grid.Column="1" Margin="0,0,12,0">
-                        <TextBlock Text="ADB" Style="{DynamicResource TextLabel}"/>
+                    <Border Style="{DynamicResource Divider}" Margin="12,0"/>
+                    <Grid Margin="8,10">
+                      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                      <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Lavender}" Width="44" Height="44" CornerRadius="22" Margin="0,0,14,0">
+                        <TextBlock Text="&#xE8EA;" Style="{DynamicResource Icon}"/>
+                      </Border>
+                      <StackPanel Grid.Column="1" Margin="0,0,12,0" VerticalAlignment="Center">
+                        <TextBlock Text="ADB" Style="{DynamicResource TextLabel}" FontWeight="ExtraBold"/>
                         <TextBlock Text="Điều khiển LDPlayer hoặc thiết bị Android." Style="{DynamicResource TextMutedStyle}"/>
                       </StackPanel>
                       <Border x:Name="BadgeStatusAdb" Grid.Column="2" Style="{DynamicResource Badge}" Margin="0,0,12,0">
-                        <TextBlock x:Name="TxtStatusAdb" Text="Đang kiểm tra…" FontSize="12"/>
+                        <TextBlock x:Name="TxtStatusAdb" Text="Đang kiểm tra…" FontSize="13"/>
                       </Border>
-                      <Button x:Name="BtnInstallAdb" Grid.Column="3" Content="Cài đặt" MinWidth="110"/>
+                      <Button x:Name="BtnInstallAdb" Grid.Column="3" Content="Cài đặt" MinWidth="128"/>
                     </Grid>
-                    <Border Style="{DynamicResource Divider}" Margin="8,0"/>
-                    <Grid Margin="8">
-                      <Grid.ColumnDefinitions><ColumnDefinition Width="36"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                      <TextBlock Text="&#xE896;" Style="{DynamicResource Icon}" HorizontalAlignment="Left" Foreground="{DynamicResource TextMuted}"/>
-                      <StackPanel Grid.Column="1" Margin="0,0,12,0">
-                        <TextBlock Text="yt-dlp" Style="{DynamicResource TextLabel}"/>
+                    <Border Style="{DynamicResource Divider}" Margin="12,0"/>
+                    <Grid Margin="8,10">
+                      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                      <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Butter}" Width="44" Height="44" CornerRadius="22" Margin="0,0,14,0">
+                        <TextBlock Text="&#xE896;" Style="{DynamicResource Icon}"/>
+                      </Border>
+                      <StackPanel Grid.Column="1" Margin="0,0,12,0" VerticalAlignment="Center">
+                        <TextBlock Text="yt-dlp" Style="{DynamicResource TextLabel}" FontWeight="ExtraBold"/>
                         <TextBlock Text="Tải phần hình video Facebook ở độ phân giải cao nhất có sẵn." Style="{DynamicResource TextMutedStyle}"/>
                       </StackPanel>
                       <Border x:Name="BadgeStatusYtdlp" Grid.Column="2" Style="{DynamicResource Badge}" Margin="0,0,12,0">
-                        <TextBlock x:Name="TxtStatusYtdlp" Text="Đang kiểm tra…" FontSize="12"/>
+                        <TextBlock x:Name="TxtStatusYtdlp" Text="Đang kiểm tra…" FontSize="13"/>
                       </Border>
-                      <Button x:Name="BtnInstallYtdlp" Grid.Column="3" Content="Cài đặt" MinWidth="110"/>
+                      <Button x:Name="BtnInstallYtdlp" Grid.Column="3" Content="Cài đặt" MinWidth="128"/>
                     </Grid>
-                    <Border Style="{DynamicResource Divider}" Margin="8,0"/>
-                    <Grid Margin="8">
-                      <Grid.ColumnDefinitions><ColumnDefinition Width="36"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                      <TextBlock Text="&#xE714;" Style="{DynamicResource Icon}" HorizontalAlignment="Left" Foreground="{DynamicResource TextMuted}"/>
-                      <StackPanel Grid.Column="1" Margin="0,0,12,0">
-                        <TextBlock Text="FFmpeg và ffprobe" Style="{DynamicResource TextLabel}"/>
+                    <Border Style="{DynamicResource Divider}" Margin="12,0"/>
+                    <Grid Margin="8,10">
+                      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                      <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Mint}" Width="44" Height="44" CornerRadius="22" Margin="0,0,14,0">
+                        <TextBlock Text="&#xE714;" Style="{DynamicResource Icon}"/>
+                      </Border>
+                      <StackPanel Grid.Column="1" Margin="0,0,12,0" VerticalAlignment="Center">
+                        <TextBlock Text="FFmpeg và ffprobe" Style="{DynamicResource TextLabel}" FontWeight="ExtraBold"/>
                         <TextBlock Text="Ghép MP4, chuẩn hóa âm lượng, đọc thông tin video và tạo ảnh thu nhỏ trong Kho." Style="{DynamicResource TextMutedStyle}"/>
                       </StackPanel>
                       <Border x:Name="BadgeStatusFfmpeg" Grid.Column="2" Style="{DynamicResource Badge}" Margin="0,0,12,0">
-                        <TextBlock x:Name="TxtStatusFfmpeg" Text="Đang kiểm tra…" FontSize="12"/>
+                        <TextBlock x:Name="TxtStatusFfmpeg" Text="Đang kiểm tra…" FontSize="13"/>
                       </Border>
-                      <Button x:Name="BtnInstallFfmpeg" Grid.Column="3" Content="Cài đặt" MinWidth="110"/>
+                      <Button x:Name="BtnInstallFfmpeg" Grid.Column="3" Content="Cài đặt" MinWidth="128"/>
                     </Grid>
-                    <Border Style="{DynamicResource Divider}" Margin="8,0"/>
-                    <Grid Margin="8">
-                      <Grid.ColumnDefinitions><ColumnDefinition Width="36"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                      <TextBlock Text="&#xE8C1;" Style="{DynamicResource Icon}" HorizontalAlignment="Left" Foreground="{DynamicResource TextMuted}"/>
-                      <StackPanel Grid.Column="1" Margin="0,0,12,0">
-                        <TextBlock Text="Whisper tiny (tùy chọn)" Style="{DynamicResource TextLabel}"/>
+                    <Border Style="{DynamicResource Divider}" Margin="12,0"/>
+                    <Grid Margin="8,10">
+                      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                      <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Sky}" Width="44" Height="44" CornerRadius="22" Margin="0,0,14,0">
+                        <TextBlock Text="&#xE8C1;" Style="{DynamicResource Icon}"/>
+                      </Border>
+                      <StackPanel Grid.Column="1" Margin="0,0,12,0" VerticalAlignment="Center">
+                        <TextBlock Text="Whisper tiny (tùy chọn)" Style="{DynamicResource TextLabel}" FontWeight="ExtraBold"/>
                         <TextBlock Text="Công cụ chẩn đoán dòng lệnh; không dùng để quyết định tải video." Style="{DynamicResource TextMutedStyle}"/>
                       </StackPanel>
                       <Border x:Name="BadgeStatusWhisper" Grid.Column="2" Style="{DynamicResource Badge}" Margin="0,0,12,0">
-                        <TextBlock x:Name="TxtStatusWhisper" Text="Đang kiểm tra…" FontSize="12"/>
+                        <TextBlock x:Name="TxtStatusWhisper" Text="Đang kiểm tra…" FontSize="13"/>
                       </Border>
-                      <Button x:Name="BtnInstallWhisper" Grid.Column="3" Content="Cài đặt" MinWidth="110"/>
+                      <Button x:Name="BtnInstallWhisper" Grid.Column="3" Content="Cài đặt" MinWidth="128"/>
                     </Grid>
                   </StackPanel>
-                </Border>
-                <Border Style="{DynamicResource Card}">
+                </ContentControl>
+                <ContentControl Style="{DynamicResource StickerCard}" Padding="20,16">
                   <DockPanel>
-                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                      <Button x:Name="BtnCheckTools" Style="{DynamicResource BtnGhost}" Margin="0,0,8,0" Content="Quét lại"/>
+                    <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                      <Button x:Name="BtnCheckTools" Style="{DynamicResource BtnGhost}" Margin="0,0,10,0" Content="Quét lại"/>
                       <Button x:Name="BtnOpenUninstall" Style="{DynamicResource BtnDanger}" Content="Gỡ thư viện…"/>
-                    </StackPanel>
+                    </WrapPanel>
                     <StackPanel Margin="0,0,16,0">
                       <TextBlock Text="Bảo trì" Style="{DynamicResource TextHeading}"/>
                       <TextBlock Text="Gỡ thư viện xóa thư mục tools (ADB, scrcpy, FFmpeg, yt-dlp, model Whisper); video và lịch sử được giữ nguyên."
                                  Style="{DynamicResource TextMutedStyle}" Margin="0,4,0,0"/>
                     </StackPanel>
                   </DockPanel>
-                </Border>
+                </ContentControl>
+              </StackPanel>
+            </ScrollViewer>
+
+            <!-- Tuy chon: dong bo + luu tru -->
+            <ScrollViewer x:Name="ViewGeneral" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" Margin="0,0,-6,0">
+              <StackPanel Margin="0,0,10,0">
+                <ContentControl Style="{DynamicResource StickerCard}" Margin="0,0,0,14" Padding="20,16">
+                  <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                      <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Peach}" Width="40" Height="40" CornerRadius="20" Margin="0,0,12,0">
+                        <TextBlock Text="&#xE8D6;" Style="{DynamicResource Icon}" FontSize="16"/>
+                      </Border>
+                      <TextBlock Text="Đồng bộ âm thanh" Style="{DynamicResource TextHeading}" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <CheckBox x:Name="ChkAllowOnsetSync" Style="{DynamicResource ToggleSwitch}" IsChecked="False"
+                              AutomationProperties.Name="Cho phép đồng bộ theo âm thanh khi thiết bị không thu được hình">
+                      <StackPanel>
+                        <TextBlock Text="Cho phép đồng bộ theo âm thanh khi thiết bị không thu được hình" FontWeight="ExtraBold" FontSize="16" TextWrapping="Wrap"/>
+                        <TextBlock Text="Kém chính xác, có thể lệch 0,5–1,2 s. Mặc định tắt: video không thu được hình sẽ báo chưa xác nhận để bạn thử lại."
+                                   Style="{DynamicResource TextMutedStyle}" Margin="0,4,0,0"/>
+                      </StackPanel>
+                    </CheckBox>
+                  </StackPanel>
+                </ContentControl>
+                <ContentControl Style="{DynamicResource StickerCard}" Padding="20,16">
+                  <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                      <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Mint}" Width="40" Height="40" CornerRadius="20" Margin="0,0,12,0">
+                        <TextBlock Text="&#xE74C;" Style="{DynamicResource Icon}" FontSize="16"/>
+                      </Border>
+                      <TextBlock Text="Lưu trữ" Style="{DynamicResource TextHeading}" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <TextBlock Style="{DynamicResource TextMutedStyle}" FontSize="15"
+                               Text="Thư mục xuất chỉ hiện file hoàn chỉnh (-3). Video gốc (-1) và âm thanh (-2) được cất trong thư mục ẩn .cache để sửa lại logo/GIF không cần tải lại."/>
+                    <Border Style="{DynamicResource CardInset}" Background="{DynamicResource MintSoft}" Margin="0,12,0,12" Padding="14,10">
+                      <TextBlock x:Name="TxtCacheInfo" Text="Đang đọc dung lượng…" FontWeight="Bold" FontSize="14" TextWrapping="Wrap"/>
+                    </Border>
+                    <WrapPanel>
+                      <Button x:Name="BtnCleanLegacy" Style="{DynamicResource BtnButter}" Margin="0,0,10,8" AutomationProperties.Name="Dọn file trung gian cũ"
+                              ToolTip="File -1/-2 của bản cũ đang nằm lẫn ở thư mục xuất: chuyển vào .cache hoặc xóa.">
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8B7;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Dọn file trung gian cũ…"/></StackPanel>
+                      </Button>
+                      <Button x:Name="BtnClearCache" Style="{DynamicResource BtnDanger}" Margin="0,0,10,8" AutomationProperties.Name="Dọn cache sửa lại"
+                              ToolTip="Xóa toàn bộ .cache: video cũ sẽ không sửa lại logo/GIF được nữa.">
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Dọn cache sửa lại…"/></StackPanel>
+                      </Button>
+                    </WrapPanel>
+                  </StackPanel>
+                </ContentControl>
               </StackPanel>
             </ScrollViewer>
 
             <!-- Nhat ky -->
-            <Border x:Name="ViewLogs" Visibility="Collapsed" Style="{DynamicResource Card}" Padding="0">
+            <ContentControl x:Name="ViewLogs" Visibility="Collapsed" Style="{DynamicResource StickerCard}" Padding="0">
               <DockPanel>
-                <Border DockPanel.Dock="Top" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,0,1" Padding="16,10">
+                <Border DockPanel.Dock="Top" BorderBrush="{DynamicResource InkFaint}" BorderThickness="0,0,0,2" Padding="18,12">
                   <DockPanel LastChildFill="False">
                     <StackPanel VerticalAlignment="Center">
                       <TextBlock Text="Nhật ký" Style="{DynamicResource TextHeading}"/>
-                      <TextBlock x:Name="TxtLogPath" Text="" Style="{DynamicResource TextCaption}" Margin="0,2,0,0"/>
+                      <TextBlock x:Name="TxtLogPath" Text="" Style="{DynamicResource TextCaption}" Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
                     </StackPanel>
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                      <Button x:Name="BtnCopyLog" Margin="0,0,8,0" ToolTip="Sao chép toàn bộ nhật ký" AutomationProperties.Name="Sao chép nhật ký">
-                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8C8;" Style="{DynamicResource Icon}" FontSize="13" Margin="0,0,6,0"/><TextBlock Text="Sao chép"/></StackPanel>
+                      <Button x:Name="BtnCopyLog" Style="{DynamicResource BtnSky}" Margin="0,0,10,0" ToolTip="Sao chép toàn bộ nhật ký" AutomationProperties.Name="Sao chép nhật ký">
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8C8;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Sao chép"/></StackPanel>
                       </Button>
-                      <Button x:Name="BtnOpenLogFolder" Margin="0,0,8,0" ToolTip="Mở thư mục logs" AutomationProperties.Name="Mở thư mục nhật ký">
-                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE838;" Style="{DynamicResource Icon}" FontSize="13" Margin="0,0,6,0"/><TextBlock Text="Thư mục logs"/></StackPanel>
+                      <Button x:Name="BtnOpenLogFolder" Margin="0,0,10,0" ToolTip="Mở thư mục logs" AutomationProperties.Name="Mở thư mục nhật ký">
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE838;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Thư mục logs"/></StackPanel>
                       </Button>
                       <Button x:Name="BtnClearLog" Style="{DynamicResource BtnGhost}" ToolTip="Xóa nhật ký đang hiển thị (file log vẫn giữ)" AutomationProperties.Name="Xóa nhật ký hiển thị">
-                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" Style="{DynamicResource Icon}" FontSize="13" Margin="0,0,6,0"/><TextBlock Text="Xóa"/></StackPanel>
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Xóa"/></StackPanel>
                       </Button>
                     </StackPanel>
                   </DockPanel>
                 </Border>
                 <TextBox x:Name="TxtLog" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" Style="{DynamicResource TextBoxMono}"
                          VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" BorderThickness="0" Background="Transparent"
-                         Padding="16,12" FontSize="12.5" AutomationProperties.Name="Nhật ký"/>
+                         Padding="18,12" FontSize="13" AutomationProperties.Name="Nhật ký"/>
               </DockPanel>
-            </Border>
+            </ContentControl>
 
             <!-- Cap nhat -->
             <StackPanel x:Name="ViewUpdate" Visibility="Collapsed">
-              <Border Style="{DynamicResource Card}">
+              <ContentControl Style="{DynamicResource StickerCard}" Padding="20,16">
                 <DockPanel>
                   <Button x:Name="BtnUpdate" DockPanel.Dock="Right" Style="{DynamicResource BtnPrimary}" VerticalAlignment="Center" AutomationProperties.Name="Kiểm tra bản mới">
-                    <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE895;" Style="{DynamicResource Icon}" FontSize="13" Margin="0,0,6,0"/><TextBlock x:Name="TxtUpdateButton" Text="Kiểm tra bản mới"/></StackPanel>
+                    <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE895;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock x:Name="TxtUpdateButton" Text="Kiểm tra bản mới"/></StackPanel>
                   </Button>
+                  <Border DockPanel.Dock="Left" Style="{DynamicResource IconChip}" Background="{DynamicResource Lavender}" Width="44" Height="44" CornerRadius="22" Margin="0,0,14,0" VerticalAlignment="Top">
+                    <TextBlock Text="&#xE895;" Style="{DynamicResource Icon}"/>
+                  </Border>
                   <StackPanel Margin="0,0,16,0">
                     <TextBlock Text="Cập nhật" Style="{DynamicResource TextHeading}"/>
                     <TextBlock x:Name="TxtUpdateInfo" Text="Phiên bản hiện tại" Style="{DynamicResource TextMutedStyle}" Margin="0,4,0,0"/>
                   </StackPanel>
                 </DockPanel>
-              </Border>
+              </ContentControl>
             </StackPanel>
 
             <!-- Gioi thieu -->
-            <ScrollViewer x:Name="ViewAbout" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
-              <StackPanel Margin="0,0,8,0">
-                <Border Style="{DynamicResource Card}" Margin="0,0,0,16">
-                  <StackPanel>
-                    <TextBlock Text="Kid FB.Y" Style="{DynamicResource TextHeading}"/>
-                    <TextBlock x:Name="TxtAboutVersion" Text="Phiên bản" Style="{DynamicResource TextMutedStyle}" Margin="0,4,0,8"/>
-                    <TextBlock Style="{DynamicResource TextBody}"
-                               Text="Tải video Facebook kèm bản lồng tiếng Meta AI: chọn tiếng Việt trên ứng dụng Facebook Android, thu âm thanh, ghép với phần hình chất lượng cao và chèn logo/GIF thương hiệu."/>
-                  </StackPanel>
-                </Border>
-                <Border Style="{DynamicResource Card}" Margin="0,0,0,16">
+            <ScrollViewer x:Name="ViewAbout" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" Margin="0,0,-6,0">
+              <StackPanel Margin="0,0,10,0">
+                <ContentControl Style="{DynamicResource StickerCard}" Background="{DynamicResource PinkSoft}" Margin="0,0,0,14" Padding="20,16">
+                  <DockPanel>
+                    <Image DockPanel.Dock="Left" Source="{DynamicResource MascotCloud}" Width="84" Height="66" Margin="0,0,16,0" VerticalAlignment="Top"/>
+                    <StackPanel>
+                      <TextBlock Text="Kid FB.Y" Style="{DynamicResource TextHeading}" FontSize="24"/>
+                      <TextBlock x:Name="TxtAboutVersion" Text="Phiên bản" Style="{DynamicResource TextMutedStyle}" Margin="0,2,0,8"/>
+                      <TextBlock Style="{DynamicResource TextBody}"
+                                 Text="Tải video Facebook kèm bản lồng tiếng Meta AI: chọn tiếng Việt trên ứng dụng Facebook Android, thu âm thanh, ghép với phần hình chất lượng cao và chèn logo/GIF thương hiệu."/>
+                    </StackPanel>
+                  </DockPanel>
+                </ContentControl>
+                <ContentControl Style="{DynamicResource StickerCard}" Margin="0,0,0,14" Padding="20,16">
                   <StackPanel>
                     <TextBlock Text="Phím tắt" Style="{DynamicResource TextHeading}" Margin="0,0,0,8"/>
-                    <TextBlock Style="{DynamicResource TextMutedStyle}" LineHeight="22"
-                               Text="Ctrl+Enter: bắt đầu · Esc: dừng (có xác nhận) · Ctrl+1…5: chuyển trang&#x0a;Space: phát/tạm dừng · ← / →: tua 3 giây · T: đổi âm thanh xem trước&#x0a;Ctrl+C: copy video đang xem · Ctrl+R: ghi âm lại · Shift+Delete: xóa video đang xem"/>
+                    <TextBlock Style="{DynamicResource TextMutedStyle}" FontSize="15" LineHeight="24"
+                               Text="Ctrl+Enter: bắt đầu · Esc: dừng (hỏi lại nếu còn video chờ) · Ctrl+1…5: chuyển trang&#x0a;Space: phát/tạm dừng · ← / →: tua 3 giây · T: đổi âm thanh xem trước&#x0a;Ctrl+C: copy video đang xem · Ctrl+R: ghi âm lại · Shift+Delete: xóa video đang xem"/>
                   </StackPanel>
-                </Border>
-                <Border Style="{DynamicResource Card}">
+                </ContentControl>
+                <ContentControl Style="{DynamicResource StickerCard}" Padding="20,16">
                   <StackPanel>
                     <TextBlock Text="Giấy phép bên thứ ba" Style="{DynamicResource TextHeading}" Margin="0,0,0,8"/>
-                    <TextBlock Style="{DynamicResource TextMutedStyle}" LineHeight="22"
-                               Text="Các công cụ sau được tải về thư mục tools và dùng theo giấy phép của dự án gốc:&#x0a;• Android Platform Tools (ADB) — Google, Apache License 2.0&#x0a;• scrcpy — Genymobile, Apache License 2.0&#x0a;• FFmpeg / ffprobe — FFmpeg project, LGPL/GPL tùy bản build&#x0a;• yt-dlp — The Unlicense&#x0a;• whisper.cpp và model Whisper — MIT License (tùy chọn)&#x0a;Biểu tượng giao diện dùng phông Segoe Fluent Icons / Segoe MDL2 Assets có sẵn trong Windows."/>
+                    <TextBlock Style="{DynamicResource TextMutedStyle}" FontSize="15" LineHeight="24"
+                               Text="Các công cụ sau được tải về thư mục tools và dùng theo giấy phép của dự án gốc:&#x0a;• Android Platform Tools (ADB) — Google, Apache License 2.0&#x0a;• scrcpy — Genymobile, Apache License 2.0&#x0a;• FFmpeg / ffprobe — FFmpeg project, LGPL/GPL tùy bản build&#x0a;• yt-dlp — The Unlicense&#x0a;• whisper.cpp và model Whisper — MIT License (tùy chọn)&#x0a;Phông chữ Nunito — The Nunito Project Authors, SIL Open Font License 1.1 (core\ui\fonts\OFL.txt).&#x0a;Biểu tượng giao diện dùng phông Segoe Fluent Icons / Segoe MDL2 Assets có sẵn trong Windows; hình trang trí tự vẽ bằng vector."/>
                   </StackPanel>
-                </Border>
+                </ContentControl>
               </StackPanel>
             </ScrollViewer>
           </Grid>
         </Grid>
       </Grid>
 
-      <!-- ===================================================== cot xem truoc -->
-      <Border x:Name="PreviewPane" Grid.Column="2" Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Border}" BorderThickness="1,0,0,0"
-              Padding="16,16,16,12" Visibility="Collapsed">
+      <!-- ===================================================== cot xem truoc: "dien thoai sticker" -->
+      <ContentControl x:Name="PreviewPane" Grid.Column="2" Style="{DynamicResource StickerCard}" Margin="0,4,16,10" Padding="16,14,16,14" Visibility="Collapsed">
         <DockPanel>
           <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10" LastChildFill="False">
             <TextBlock Text="Xem trước" Style="{DynamicResource TextHeading}" VerticalAlignment="Center"/>
-            <Border x:Name="BadgeRes" DockPanel.Dock="Right" Style="{DynamicResource Badge}" Background="{DynamicResource AccentSubtle}" Visibility="Collapsed">
-              <TextBlock x:Name="TxtRes" Text="1080x1920" FontSize="12" Foreground="{DynamicResource Accent}"/>
+            <Border x:Name="BadgeRes" DockPanel.Dock="Right" Style="{DynamicResource Badge}" Background="{DynamicResource SkySoft}" BorderBrush="{DynamicResource SkyLine}" Padding="10,2" Visibility="Collapsed">
+              <TextBlock x:Name="TxtRes" Text="1080x1920" FontSize="13" FontWeight="Bold"/>
             </Border>
           </DockPanel>
-          <Border DockPanel.Dock="Top" Background="{DynamicResource Surface0}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="3"
-                  HorizontalAlignment="Left" Margin="0,0,0,10">
-            <StackPanel Orientation="Horizontal">
-              <RadioButton x:Name="BtnTrackB" Style="{DynamicResource SegButton}" GroupName="PreviewTrack" Content="Bản lồng tiếng" IsChecked="True" Padding="10,4"
-                           ToolTip="Phát video hoàn chỉnh với âm thanh đã thu từ Android"/>
-              <RadioButton x:Name="BtnTrackA" Style="{DynamicResource SegButton}" GroupName="PreviewTrack" Content="Âm thanh tách" Padding="10,4"
-                           ToolTip="Nghe riêng âm thanh lồng tiếng đã tách và chuẩn hóa"/>
-            </StackPanel>
-          </Border>
+          <WrapPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+            <RadioButton x:Name="BtnTrackB" Style="{DynamicResource SegButton}" GroupName="PreviewTrack" Content="Lồng tiếng" IsChecked="True" Padding="14,0" MinHeight="40" FontSize="14" Margin="0,0,6,4"
+                         ToolTip="Phát video hoàn chỉnh với âm thanh đã thu từ Android"/>
+            <RadioButton x:Name="BtnTrackA" Style="{DynamicResource SegButton}" GroupName="PreviewTrack" Content="Âm thanh tách" Padding="14,0" MinHeight="40" FontSize="14" Margin="0,0,0,4"
+                         ToolTip="Nghe riêng âm thanh lồng tiếng đã tách và chuẩn hóa (trong .cache)"/>
+          </WrapPanel>
 
           <!-- review: hanh dong video dang xem -->
-          <StackPanel x:Name="PanelRev" DockPanel.Dock="Bottom" Visibility="Collapsed" Margin="0,10,0,0">
-            <TextBlock x:Name="TxtRev" Style="{DynamicResource TextCaption}" TextTrimming="CharacterEllipsis" Margin="0,0,0,8"/>
-            <Button x:Name="BtnCopyReup" Style="{DynamicResource BtnPrimary}" HorizontalAlignment="Stretch" Margin="0,0,0,8" ToolTip="Copy file vào clipboard để dán (Ctrl+V) khi đăng">
-              <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8C8;" Style="{DynamicResource Icon}" FontSize="13" Margin="0,0,8,0"/><TextBlock Text="Copy để đăng"/></StackPanel>
-            </Button>
-            <UniformGrid Columns="3">
-              <Button x:Name="BtnRedo" Margin="0,0,4,0" ToolTip="Ghi âm lại video này (Ctrl+R)" AutomationProperties.Name="Ghi âm lại">
-                <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE720;" Style="{DynamicResource Icon}" FontSize="13" Margin="0,0,6,0"/><TextBlock Text="Ghi lại"/></StackPanel>
+          <StackPanel x:Name="PanelRev" DockPanel.Dock="Bottom" Visibility="Collapsed" Margin="0,8,0,0">
+            <TextBlock x:Name="TxtRev" Style="{DynamicResource TextCaption}" FontWeight="Bold" TextTrimming="CharacterEllipsis" Margin="0,0,0,6"/>
+            <DockPanel>
+              <Button x:Name="BtnDeleteCurrent" DockPanel.Dock="Right" Style="{DynamicResource BtnIcon}" Background="{DynamicResource CoralSoft}" Content="&#xE74D;" Margin="6,0,0,0"
+                      ToolTip="Xóa video đang xem (Shift+Delete)" AutomationProperties.Name="Xóa video đang xem"/>
+              <Button x:Name="BtnFolder" DockPanel.Dock="Right" Style="{DynamicResource BtnIcon}" Background="{DynamicResource Butter}" Content="&#xE838;" Margin="6,0,0,0"
+                      ToolTip="Mở thư mục xuất" AutomationProperties.Name="Mở thư mục xuất"/>
+              <Button x:Name="BtnRedo" DockPanel.Dock="Right" Style="{DynamicResource BtnIcon}" Background="{DynamicResource Lavender}" Content="&#xE720;" Margin="6,0,0,0"
+                      ToolTip="Ghi âm lại video này (Ctrl+R)" AutomationProperties.Name="Ghi âm lại"/>
+              <Button x:Name="BtnCopyReup" Style="{DynamicResource BtnPrimary}" Padding="10,0" ToolTip="Copy file vào clipboard để dán (Ctrl+V) khi đăng" AutomationProperties.Name="Copy để đăng">
+                <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8C8;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Copy để đăng" TextTrimming="CharacterEllipsis"/></StackPanel>
               </Button>
-              <Button x:Name="BtnFolder" Margin="4,0,4,0" ToolTip="Mở thư mục xuất" AutomationProperties.Name="Mở thư mục xuất">
-                <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE838;" Style="{DynamicResource Icon}" FontSize="13" Margin="0,0,6,0"/><TextBlock Text="Thư mục"/></StackPanel>
-              </Button>
-              <Button x:Name="BtnDeleteCurrent" Style="{DynamicResource BtnDanger}" Margin="4,0,0,0" ToolTip="Xóa video đang xem (Shift+Delete)" AutomationProperties.Name="Xóa video đang xem">
-                <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" Style="{DynamicResource Icon}" FontSize="13" Margin="0,0,6,0"/><TextBlock Text="Xóa"/></StackPanel>
-              </Button>
-            </UniformGrid>
+            </DockPanel>
           </StackPanel>
 
           <!-- dieu khien phat -->
-          <StackPanel x:Name="PanelPlay" DockPanel.Dock="Bottom" Visibility="Collapsed" Margin="0,10,0,0">
+          <StackPanel x:Name="PanelPlay" DockPanel.Dock="Bottom" Visibility="Collapsed" Margin="0,8,0,0">
             <Slider x:Name="Seek" IsMoveToPointEnabled="False" ToolTip="Bấm hoặc kéo để tua video" AutomationProperties.Name="Thanh tua video"/>
-            <DockPanel Margin="0,6,0,0" LastChildFill="False">
-              <Button x:Name="BtnPlay" Style="{DynamicResource BtnPlayToggle}" Content="Phát" MinWidth="110" AutomationProperties.Name="Phát hoặc tạm dừng"/>
-              <TextBlock x:Name="TxtTime" Text="0:00 / 0:00" FontFamily="Cascadia Mono, Consolas" FontSize="12" Foreground="{DynamicResource TextMuted}"
-                         VerticalAlignment="Center" Margin="12,0,0,0"/>
-              <Button x:Name="BtnOpenExt" DockPanel.Dock="Right" Style="{DynamicResource BtnIcon}" Content="&#xE8A7;" ToolTip="Mở bằng trình phát mặc định của Windows"
+            <DockPanel Margin="0,4,0,0" LastChildFill="False">
+              <Button x:Name="BtnPlay" Style="{DynamicResource BtnPlayToggle}" Content="Phát" MinWidth="112" AutomationProperties.Name="Phát hoặc tạm dừng"/>
+              <TextBlock x:Name="TxtTime" Text="0:00 / 0:00" FontFamily="{DynamicResource FontMono}" FontSize="13" Foreground="{DynamicResource TextMuted}"
+                         VerticalAlignment="Center" Margin="10,0,0,0"/>
+              <Button x:Name="BtnOpenExt" DockPanel.Dock="Right" Style="{DynamicResource BtnIcon}" Background="{DynamicResource SkySoft}" Content="&#xE8A7;" ToolTip="Mở bằng trình phát mặc định của Windows"
                       AutomationProperties.Name="Mở bằng trình phát ngoài"/>
             </DockPanel>
           </StackPanel>
 
-          <!-- khung 9:16 -->
-          <Border Background="{DynamicResource Surface0}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="12" ClipToBounds="True">
-            <Grid x:Name="ViewportGrid">
-              <Border x:Name="PhoneFrame" HorizontalAlignment="Center" VerticalAlignment="Center" Width="300" Height="533"
-                      Background="{DynamicResource MediaBackground}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="10" ClipToBounds="True">
-                <Grid x:Name="PlayerContainer" ClipToBounds="True">
-                  <MediaElement x:Name="Player" LoadedBehavior="Manual" UnloadedBehavior="Stop" Stretch="Uniform" ScrubbingEnabled="True" Margin="0"/>
-                  <!-- Khung mau 9:16 (chi trang Thuong hieu, khi chua co video): van keo tha logo/GIF duoc. -->
-                  <Grid x:Name="PreviewSample" Visibility="Collapsed" IsHitTestVisible="False">
-                    <Grid.Background>
-                      <LinearGradientBrush StartPoint="0,0" EndPoint="0.4,1">
-                        <GradientStop Color="{DynamicResource Surface2Color}" Offset="0"/>
-                        <GradientStop Color="{DynamicResource Surface0Color}" Offset="1"/>
-                      </LinearGradientBrush>
-                    </Grid.Background>
-                    <Border Background="{DynamicResource Scrim}" CornerRadius="6" Padding="10,4" HorizontalAlignment="Center" VerticalAlignment="Center">
-                      <TextBlock Text="Khung mẫu 9:16 · kéo logo/GIF để đặt vị trí" FontSize="12" Foreground="{DynamicResource TextMuted}"/>
+          <!-- khung dien thoai 9:16 (bo 28, vien nau 3 px, bong sticker) -->
+          <Grid x:Name="ViewportGrid">
+            <Grid HorizontalAlignment="Center" VerticalAlignment="Center">
+              <Border Margin="5,5,0,0" CornerRadius="28" Background="{DynamicResource StickerShadow}"/>
+              <Border x:Name="PhoneShell" Margin="0,0,5,5" CornerRadius="28" BorderBrush="{DynamicResource InkStrong}" BorderThickness="3" Background="{DynamicResource MediaBackground}">
+                <Border x:Name="PhoneFrame" Width="300" Height="533" Background="{DynamicResource MediaBackground}" BorderThickness="0" CornerRadius="25" ClipToBounds="True">
+                  <Grid x:Name="PlayerContainer" ClipToBounds="True">
+                    <MediaElement x:Name="Player" LoadedBehavior="Manual" UnloadedBehavior="Stop" Stretch="Uniform" ScrubbingEnabled="True" Margin="0"/>
+                    <!-- Khung mau 9:16 (chi trang Thuong hieu, khi chua co video): van keo tha logo/GIF duoc. -->
+                    <Grid x:Name="PreviewSample" Visibility="Collapsed" IsHitTestVisible="False">
+                      <Grid.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0.4,1">
+                          <GradientStop Color="#FFFFF5F7" Offset="0"/>
+                          <GradientStop Color="#FFF6EFFE" Offset="0.55"/>
+                          <GradientStop Color="#FFE7F5FA" Offset="1"/>
+                        </LinearGradientBrush>
+                      </Grid.Background>
+                      <Image Source="{DynamicResource MascotCloud}" Width="96" Height="76" VerticalAlignment="Center" Margin="0,0,0,80" Opacity="0.9"/>
+                      <Border Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" CornerRadius="999" Padding="12,5" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,40,0,0">
+                        <TextBlock Text="Khung mẫu 9:16 · kéo logo/GIF nhé" FontSize="13" FontWeight="Bold" Foreground="{DynamicResource TextPrimary}"/>
+                      </Border>
+                    </Grid>
+                    <Canvas x:Name="CanvasWatermark" ClipToBounds="True" Panel.ZIndex="10" Background="Transparent" Focusable="True">
+                      <Grid x:Name="BoxLogoOverlay" Visibility="Collapsed" Cursor="SizeAll">
+                        <Border x:Name="BorderLogoOverlay" BorderBrush="{DynamicResource OverlayLogo}" BorderThickness="2" CornerRadius="4"
+                                Background="{DynamicResource HitTestFill}" SnapsToDevicePixels="True"/>
+                        <Image x:Name="ImgVideoWatermark" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality" IsHitTestVisible="False" Visibility="Visible"/>
+                        <Border x:Name="GripLogoResize" Width="13" Height="13" HorizontalAlignment="Right" VerticalAlignment="Bottom" Background="{DynamicResource OverlayLogo}" BorderBrush="White" BorderThickness="1.5" CornerRadius="7" Cursor="SizeNWSE" ToolTip="Kéo góc để chỉnh kích thước (hoặc lăn chuột)"/>
+                        <Border x:Name="GripLogoResizeNW" Width="13" Height="13" HorizontalAlignment="Left" VerticalAlignment="Top" Background="{DynamicResource OverlayLogo}" BorderBrush="White" BorderThickness="1.5" CornerRadius="7" Cursor="SizeNWSE" ToolTip="Kéo góc trên trái để chỉnh kích thước"/>
+                        <Border x:Name="GripLogoResizeNE" Width="13" Height="13" HorizontalAlignment="Right" VerticalAlignment="Top" Background="{DynamicResource OverlayLogo}" BorderBrush="White" BorderThickness="1.5" CornerRadius="7" Cursor="SizeNESW" ToolTip="Kéo góc trên phải để chỉnh kích thước"/>
+                        <Border x:Name="GripLogoResizeSW" Width="13" Height="13" HorizontalAlignment="Left" VerticalAlignment="Bottom" Background="{DynamicResource OverlayLogo}" BorderBrush="White" BorderThickness="1.5" CornerRadius="7" Cursor="SizeNESW" ToolTip="Kéo góc dưới trái để chỉnh kích thước"/>
+                        <Border x:Name="GripLogoResizeN" Width="24" Height="8" HorizontalAlignment="Center" VerticalAlignment="Top" Background="{DynamicResource OverlayLogo}" CornerRadius="4" Cursor="SizeNS" ToolTip="Kéo cạnh trên để chỉnh chiều cao"/>
+                        <Border x:Name="GripLogoResizeS" Width="24" Height="8" HorizontalAlignment="Center" VerticalAlignment="Bottom" Background="{DynamicResource OverlayLogo}" CornerRadius="4" Cursor="SizeNS" ToolTip="Kéo cạnh dưới để chỉnh chiều cao"/>
+                        <Border x:Name="GripLogoResizeW" Width="8" Height="24" HorizontalAlignment="Left" VerticalAlignment="Center" Background="{DynamicResource OverlayLogo}" CornerRadius="4" Cursor="SizeWE" ToolTip="Kéo cạnh trái để chỉnh chiều rộng"/>
+                        <Border x:Name="GripLogoResizeE" Width="8" Height="24" HorizontalAlignment="Right" VerticalAlignment="Center" Background="{DynamicResource OverlayLogo}" CornerRadius="4" Cursor="SizeWE" ToolTip="Kéo cạnh phải để chỉnh chiều rộng"/>
+                      </Grid>
+                      <Grid x:Name="BoxGifOverlay" Visibility="Collapsed" Cursor="SizeAll">
+                        <Border x:Name="BorderGifOverlay" BorderBrush="{DynamicResource OverlayGif}" BorderThickness="2" CornerRadius="4"
+                                Background="{DynamicResource HitTestFill}" SnapsToDevicePixels="True"/>
+                        <Image x:Name="ImgVideoGif" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality" IsHitTestVisible="False" Visibility="Collapsed"/>
+                        <Border x:Name="GripGifResize" Width="13" Height="13" HorizontalAlignment="Right" VerticalAlignment="Bottom" Background="{DynamicResource OverlayGif}" BorderBrush="White" BorderThickness="1.5" CornerRadius="7" Cursor="SizeNWSE" ToolTip="Kéo góc để chỉnh kích thước (hoặc lăn chuột)"/>
+                        <Border x:Name="GripGifResizeNW" Width="13" Height="13" HorizontalAlignment="Left" VerticalAlignment="Top" Background="{DynamicResource OverlayGif}" BorderBrush="White" BorderThickness="1.5" CornerRadius="7" Cursor="SizeNWSE" ToolTip="Kéo góc trên trái để chỉnh kích thước"/>
+                        <Border x:Name="GripGifResizeNE" Width="13" Height="13" HorizontalAlignment="Right" VerticalAlignment="Top" Background="{DynamicResource OverlayGif}" BorderBrush="White" BorderThickness="1.5" CornerRadius="7" Cursor="SizeNESW" ToolTip="Kéo góc trên phải để chỉnh kích thước"/>
+                        <Border x:Name="GripGifResizeSW" Width="13" Height="13" HorizontalAlignment="Left" VerticalAlignment="Bottom" Background="{DynamicResource OverlayGif}" BorderBrush="White" BorderThickness="1.5" CornerRadius="7" Cursor="SizeNESW" ToolTip="Kéo góc dưới trái để chỉnh kích thước"/>
+                        <Border x:Name="GripGifResizeN" Width="24" Height="8" HorizontalAlignment="Center" VerticalAlignment="Top" Background="{DynamicResource OverlayGif}" CornerRadius="4" Cursor="SizeNS" ToolTip="Kéo cạnh trên để chỉnh chiều cao"/>
+                        <Border x:Name="GripGifResizeS" Width="24" Height="8" HorizontalAlignment="Center" VerticalAlignment="Bottom" Background="{DynamicResource OverlayGif}" CornerRadius="4" Cursor="SizeNS" ToolTip="Kéo cạnh dưới để chỉnh chiều cao"/>
+                        <Border x:Name="GripGifResizeW" Width="8" Height="24" HorizontalAlignment="Left" VerticalAlignment="Center" Background="{DynamicResource OverlayGif}" CornerRadius="4" Cursor="SizeWE" ToolTip="Kéo cạnh trái để chỉnh chiều rộng"/>
+                        <Border x:Name="GripGifResizeE" Width="8" Height="24" HorizontalAlignment="Right" VerticalAlignment="Center" Background="{DynamicResource OverlayGif}" CornerRadius="4" Cursor="SizeWE" ToolTip="Kéo cạnh phải để chỉnh chiều rộng"/>
+                      </Grid>
+                    </Canvas>
+                    <Border x:Name="BadgePreviewMode" Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" CornerRadius="999" Padding="12,4"
+                            HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,12,0,0" Panel.ZIndex="25" Visibility="Collapsed" Cursor="Hand" ToolTip="Bấm để quay lại video hoàn chỉnh">
+                      <TextBlock x:Name="TxtPreviewMode" Text="Xem trước chỉnh sửa · video gốc sạch" FontSize="13" FontWeight="Bold" Foreground="{DynamicResource TextPrimary}"/>
                     </Border>
+                    <StackPanel x:Name="TxtNoVid" HorizontalAlignment="Stretch" VerticalAlignment="Center" Margin="14" Panel.ZIndex="5">
+                      <Image x:Name="ImgNoVid" Source="{DynamicResource MascotCloud}" Width="104" Height="82" Margin="0,0,0,10"/>
+                      <TextBlock x:Name="TxtNoVidTitle" Text="Chưa có video để xem" Foreground="#FFFFF6E8" FontWeight="ExtraBold" FontSize="16" TextWrapping="Wrap" TextAlignment="Center"/>
+                      <TextBlock x:Name="TxtNoVidText" Text="Chọn một video trong Kho hoặc chạy hàng đợi; video hoàn tất hiện ở khung dọc 9:16."
+                                 Foreground="#CCFFF6E8" FontSize="13" FontWeight="SemiBold" Margin="0,6,0,0" TextWrapping="Wrap" TextAlignment="Center"/>
+                    </StackPanel>
                   </Grid>
-                  <Canvas x:Name="CanvasWatermark" ClipToBounds="True" Panel.ZIndex="10" Background="Transparent" Focusable="True">
-                    <Grid x:Name="BoxLogoOverlay" Visibility="Collapsed" Cursor="SizeAll">
-                      <Border x:Name="BorderLogoOverlay" BorderBrush="{DynamicResource OverlayLogo}" BorderThickness="1.5" CornerRadius="2"
-                              Background="{DynamicResource HitTestFill}" SnapsToDevicePixels="True"/>
-                      <Image x:Name="ImgVideoWatermark" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality" IsHitTestVisible="False" Visibility="Visible"/>
-                      <Border x:Name="GripLogoResize" Width="12" Height="12" HorizontalAlignment="Right" VerticalAlignment="Bottom" Background="{DynamicResource OverlayLogo}" CornerRadius="3" Cursor="SizeNWSE" ToolTip="Kéo góc để chỉnh kích thước (hoặc lăn chuột)"/>
-                      <Border x:Name="GripLogoResizeNW" Width="12" Height="12" HorizontalAlignment="Left" VerticalAlignment="Top" Background="{DynamicResource OverlayLogo}" CornerRadius="3" Cursor="SizeNWSE" ToolTip="Kéo góc trên trái để chỉnh kích thước"/>
-                      <Border x:Name="GripLogoResizeNE" Width="12" Height="12" HorizontalAlignment="Right" VerticalAlignment="Top" Background="{DynamicResource OverlayLogo}" CornerRadius="3" Cursor="SizeNESW" ToolTip="Kéo góc trên phải để chỉnh kích thước"/>
-                      <Border x:Name="GripLogoResizeSW" Width="12" Height="12" HorizontalAlignment="Left" VerticalAlignment="Bottom" Background="{DynamicResource OverlayLogo}" CornerRadius="3" Cursor="SizeNESW" ToolTip="Kéo góc dưới trái để chỉnh kích thước"/>
-                      <Border x:Name="GripLogoResizeN" Width="24" Height="7" HorizontalAlignment="Center" VerticalAlignment="Top" Background="{DynamicResource OverlayLogo}" CornerRadius="3" Cursor="SizeNS" ToolTip="Kéo cạnh trên để chỉnh chiều cao"/>
-                      <Border x:Name="GripLogoResizeS" Width="24" Height="7" HorizontalAlignment="Center" VerticalAlignment="Bottom" Background="{DynamicResource OverlayLogo}" CornerRadius="3" Cursor="SizeNS" ToolTip="Kéo cạnh dưới để chỉnh chiều cao"/>
-                      <Border x:Name="GripLogoResizeW" Width="7" Height="24" HorizontalAlignment="Left" VerticalAlignment="Center" Background="{DynamicResource OverlayLogo}" CornerRadius="3" Cursor="SizeWE" ToolTip="Kéo cạnh trái để chỉnh chiều rộng"/>
-                      <Border x:Name="GripLogoResizeE" Width="7" Height="24" HorizontalAlignment="Right" VerticalAlignment="Center" Background="{DynamicResource OverlayLogo}" CornerRadius="3" Cursor="SizeWE" ToolTip="Kéo cạnh phải để chỉnh chiều rộng"/>
-                    </Grid>
-                    <Grid x:Name="BoxGifOverlay" Visibility="Collapsed" Cursor="SizeAll">
-                      <Border x:Name="BorderGifOverlay" BorderBrush="{DynamicResource OverlayGif}" BorderThickness="1.5" CornerRadius="2"
-                              Background="{DynamicResource HitTestFill}" SnapsToDevicePixels="True"/>
-                      <Image x:Name="ImgVideoGif" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality" IsHitTestVisible="False" Visibility="Collapsed"/>
-                      <Border x:Name="GripGifResize" Width="12" Height="12" HorizontalAlignment="Right" VerticalAlignment="Bottom" Background="{DynamicResource OverlayGif}" CornerRadius="3" Cursor="SizeNWSE" ToolTip="Kéo góc để chỉnh kích thước (hoặc lăn chuột)"/>
-                      <Border x:Name="GripGifResizeNW" Width="12" Height="12" HorizontalAlignment="Left" VerticalAlignment="Top" Background="{DynamicResource OverlayGif}" CornerRadius="3" Cursor="SizeNWSE" ToolTip="Kéo góc trên trái để chỉnh kích thước"/>
-                      <Border x:Name="GripGifResizeNE" Width="12" Height="12" HorizontalAlignment="Right" VerticalAlignment="Top" Background="{DynamicResource OverlayGif}" CornerRadius="3" Cursor="SizeNESW" ToolTip="Kéo góc trên phải để chỉnh kích thước"/>
-                      <Border x:Name="GripGifResizeSW" Width="12" Height="12" HorizontalAlignment="Left" VerticalAlignment="Bottom" Background="{DynamicResource OverlayGif}" CornerRadius="3" Cursor="SizeNESW" ToolTip="Kéo góc dưới trái để chỉnh kích thước"/>
-                      <Border x:Name="GripGifResizeN" Width="24" Height="7" HorizontalAlignment="Center" VerticalAlignment="Top" Background="{DynamicResource OverlayGif}" CornerRadius="3" Cursor="SizeNS" ToolTip="Kéo cạnh trên để chỉnh chiều cao"/>
-                      <Border x:Name="GripGifResizeS" Width="24" Height="7" HorizontalAlignment="Center" VerticalAlignment="Bottom" Background="{DynamicResource OverlayGif}" CornerRadius="3" Cursor="SizeNS" ToolTip="Kéo cạnh dưới để chỉnh chiều cao"/>
-                      <Border x:Name="GripGifResizeW" Width="7" Height="24" HorizontalAlignment="Left" VerticalAlignment="Center" Background="{DynamicResource OverlayGif}" CornerRadius="3" Cursor="SizeWE" ToolTip="Kéo cạnh trái để chỉnh chiều rộng"/>
-                      <Border x:Name="GripGifResizeE" Width="7" Height="24" HorizontalAlignment="Right" VerticalAlignment="Center" Background="{DynamicResource OverlayGif}" CornerRadius="3" Cursor="SizeWE" ToolTip="Kéo cạnh phải để chỉnh chiều rộng"/>
-                    </Grid>
-                  </Canvas>
-                  <Border x:Name="BadgePreviewMode" Background="{DynamicResource Scrim}" CornerRadius="6" Padding="10,4" HorizontalAlignment="Center" VerticalAlignment="Top"
-                          Margin="0,10,0,0" Panel.ZIndex="25" Visibility="Collapsed" Cursor="Hand" ToolTip="Bấm để quay lại video hoàn chỉnh">
-                    <TextBlock x:Name="TxtPreviewMode" Text="Xem trước chỉnh sửa · video gốc sạch" FontSize="12" Foreground="{DynamicResource TextPrimary}"/>
-                  </Border>
-                  <StackPanel x:Name="TxtNoVid" HorizontalAlignment="Stretch" VerticalAlignment="Center" Margin="12" Panel.ZIndex="5">
-                    <TextBlock Text="&#xE714;" Style="{DynamicResource Icon}" FontSize="34" Foreground="{DynamicResource TextSubtle}" Margin="0,0,0,10"/>
-                    <TextBlock Text="Chưa có video để xem" Foreground="{DynamicResource TextMuted}" FontFamily="Segoe UI Semibold" FontSize="14" TextWrapping="Wrap" TextAlignment="Center"/>
-                    <TextBlock Text="Chọn một video trong Kho hoặc chạy hàng đợi; video hoàn tất hiển thị theo khung dọc 9:16."
-                               Foreground="{DynamicResource TextSubtle}" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap" TextAlignment="Center"/>
-                  </StackPanel>
-                </Grid>
+                </Border>
               </Border>
             </Grid>
-          </Border>
+          </Grid>
         </DockPanel>
-      </Border>
+      </ContentControl>
     </Grid>
 
-    <!-- ===================================================== thanh hanh dong co dinh -->
-    <Border Grid.Row="2" x:Name="ActionBar" Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0" Padding="16,12">
+    <!-- ===================================================== dai ruy bang hanh dong (the trang bo tron noi) -->
+    <ContentControl Grid.Row="2" x:Name="ActionBar" Style="{DynamicResource StickerCard}" Margin="16,2,16,12" Padding="12,8,16,8">
       <Grid>
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto"/>
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
-        <Button x:Name="BtnStart" Style="{DynamicResource BtnPrimary}" MinWidth="150" Height="40" FontSize="14" Padding="18,0"
+        <Button x:Name="BtnStart" Style="{DynamicResource BtnPrimary}" MinWidth="176" Height="59" FontSize="18" Padding="24,0"
                 ToolTip="Bắt đầu xử lý danh sách link (Ctrl+Enter)" AutomationProperties.Name="Bắt đầu hoặc dừng">
           <StackPanel Orientation="Horizontal">
-            <TextBlock x:Name="TxtStartGlyph" Text="&#xE768;" Style="{DynamicResource Icon}" FontSize="14" Margin="0,0,10,0" Foreground="{DynamicResource TextOnAccent}"/>
+            <Border Width="30" Height="30" CornerRadius="15" Background="{DynamicResource WhiteGlow}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" Margin="0,0,10,0">
+              <TextBlock x:Name="TxtStartGlyph" Text="&#xE768;" Style="{DynamicResource Icon}" FontSize="13" Foreground="{DynamicResource TextPrimary}"/>
+            </Border>
             <AccessText x:Name="TxtStartLabel" Text="_Bắt đầu" VerticalAlignment="Center"/>
           </StackPanel>
         </Button>
-        <Grid Grid.Column="1" Margin="20,0,20,0" VerticalAlignment="Center">
+        <Grid Grid.Column="1" Margin="18,0,18,0" VerticalAlignment="Center">
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
           </Grid.RowDefinitions>
           <DockPanel LastChildFill="True">
-            <TextBlock x:Name="TxtProgress" DockPanel.Dock="Left" Text="0/0" FontFamily="Segoe UI Semibold" FontSize="13" Margin="0,0,12,0" VerticalAlignment="Center"/>
-            <TextBlock x:Name="TxtStat" DockPanel.Dock="Right" Text="" FontSize="12" Foreground="{DynamicResource TextMuted}" Margin="12,0,0,0"
-                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="420"/>
-            <TextBlock x:Name="TxtCurrentItem" Text="Sẵn sàng" FontSize="13" Foreground="{DynamicResource TextMuted}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+            <Border DockPanel.Dock="Left" Background="{DynamicResource ButterSoft}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" CornerRadius="999" Padding="10,1" Margin="0,0,10,0" VerticalAlignment="Center">
+              <TextBlock x:Name="TxtProgress" Text="0/0" FontWeight="ExtraBold" FontSize="14"/>
+            </Border>
+            <TextBlock x:Name="TxtStat" DockPanel.Dock="Right" Text="" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource TextMuted}" Margin="12,0,0,0"
+                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="380"/>
+            <TextBlock x:Name="TxtCurrentItem" Text="Sẵn sàng" FontSize="15" FontWeight="Bold" Foreground="{DynamicResource TextMuted}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
           </DockPanel>
-          <ProgressBar x:Name="Bar" Grid.Row="1" Margin="0,8,0,0" Minimum="0" Maximum="1" Value="0"/>
+          <ProgressBar x:Name="Bar" Grid.Row="1" Margin="0,6,10,0" Minimum="0" Maximum="1" Value="0"/>
         </Grid>
         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-          <Border Style="{DynamicResource Badge}" Background="{DynamicResource SuccessSubtle}" Margin="0,0,6,0" ToolTip="Đã lưu">
-            <TextBlock x:Name="TxtCountSaved" Text="0 đã lưu" FontSize="12" Foreground="{DynamicResource Success}"/>
+          <Border x:Name="PillSaved" Style="{DynamicResource Badge}" Background="{DynamicResource MintSoft}" BorderBrush="{DynamicResource MintLine}" Margin="0,0,8,0" Padding="12,5" ToolTip="Đã lưu">
+            <StackPanel Orientation="Horizontal">
+              <Ellipse Width="10" Height="10" Fill="{DynamicResource Mint}" Stroke="{DynamicResource Ink}" StrokeThickness="1.5" Margin="0,0,6,0" VerticalAlignment="Center"/>
+              <TextBlock x:Name="TxtCountSaved" Text="0 đã lưu" FontSize="14" FontWeight="Bold"/>
+            </StackPanel>
           </Border>
-          <Border Style="{DynamicResource Badge}" Background="{DynamicResource WarningSubtle}" Margin="0,0,6,0" ToolTip="Bị loại (không có bản lồng tiếng Việt)">
-            <TextBlock x:Name="TxtCountRejected" Text="0 bị loại" FontSize="12" Foreground="{DynamicResource Warning}"/>
+          <Border x:Name="PillRejected" Style="{DynamicResource Badge}" Background="{DynamicResource ButterSoft}" BorderBrush="{DynamicResource ButterLine}" Margin="0,0,8,0" Padding="12,5" ToolTip="Bị loại (không có bản lồng tiếng Việt)">
+            <StackPanel Orientation="Horizontal">
+              <Ellipse Width="10" Height="10" Fill="{DynamicResource Butter}" Stroke="{DynamicResource Ink}" StrokeThickness="1.5" Margin="0,0,6,0" VerticalAlignment="Center"/>
+              <TextBlock x:Name="TxtCountRejected" Text="0 bị loại" FontSize="14" FontWeight="Bold"/>
+            </StackPanel>
           </Border>
-          <Border Style="{DynamicResource Badge}" Margin="0,0,6,0" ToolTip="Bỏ qua (đã loại trước hoặc đã có trong kho)">
-            <TextBlock x:Name="TxtCountSkipped" Text="0 bỏ qua" FontSize="12" Foreground="{DynamicResource Neutral}"/>
+          <Border x:Name="PillSkipped" Style="{DynamicResource Badge}" Background="{DynamicResource LavenderSoft}" BorderBrush="{DynamicResource LavenderLine}" Margin="0,0,8,0" Padding="12,5" ToolTip="Bỏ qua (đã loại trước hoặc đã có trong kho)">
+            <StackPanel Orientation="Horizontal">
+              <Ellipse Width="10" Height="10" Fill="{DynamicResource Lavender}" Stroke="{DynamicResource Ink}" StrokeThickness="1.5" Margin="0,0,6,0" VerticalAlignment="Center"/>
+              <TextBlock x:Name="TxtCountSkipped" Text="0 bỏ qua" FontSize="14" FontWeight="Bold"/>
+            </StackPanel>
           </Border>
-          <Border Style="{DynamicResource Badge}" Background="{DynamicResource DangerSubtle}" ToolTip="Lỗi">
-            <TextBlock x:Name="TxtCountFailed" Text="0 lỗi" FontSize="12" Foreground="{DynamicResource Danger}"/>
+          <Border x:Name="PillFailed" Style="{DynamicResource Badge}" Background="{DynamicResource CoralSoft}" BorderBrush="{DynamicResource CoralLine}" Padding="12,5" ToolTip="Lỗi">
+            <StackPanel Orientation="Horizontal">
+              <Ellipse Width="10" Height="10" Fill="{DynamicResource Coral}" Stroke="{DynamicResource Ink}" StrokeThickness="1.5" Margin="0,0,6,0" VerticalAlignment="Center"/>
+              <TextBlock x:Name="TxtCountFailed" Text="0 lỗi" FontSize="14" FontWeight="Bold"/>
+            </StackPanel>
           </Border>
         </StackPanel>
       </Grid>
-    </Border>
+    </ContentControl>
 
     <!-- ===================================================== thong bao (goc duoi phai) -->
-    <StackPanel x:Name="NotificationHost" Grid.Row="0" Grid.RowSpan="3" HorizontalAlignment="Right" VerticalAlignment="Bottom"
-                Margin="0,0,20,84" Width="380" Panel.ZIndex="100"/>
+    <!-- Thong bao: goc TREN phai ngay duoi thanh tieu de; o trang co Xem truoc thi dich sang trai cot xem truoc (code). -->
+    <StackPanel x:Name="NotificationHost" Grid.Row="1" HorizontalAlignment="Right" VerticalAlignment="Top"
+                Margin="0,0,24,0" Width="380" Panel.ZIndex="100"/>
   </Grid>
 </Window>

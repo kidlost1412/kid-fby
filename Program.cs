@@ -310,9 +310,12 @@ namespace KidFBY
 
         static readonly string[] EmbeddedResources = new string[] {
             "kid-fby-gui.ps1", "kid-fby.ps1", "whisper-language.ps1", "facebook-links.ps1", "fix-ket-noi.ps1",
-            "Kid-FB.Y.ico", "kid-logo.zip", "ui/Theme.xaml", "ui/MainWindow.xaml" };
+            "Kid-FB.Y.ico", "kid-logo.zip", "ui/Theme.xaml", "ui/MainWindow.xaml",
+            // Phong Nunito (SIL OFL 1.1) cho giao dien; ghi nguyen byte (font nhi phan, khong doi dong).
+            "ui/fonts/Nunito-Regular.ttf", "ui/fonts/Nunito-SemiBold.ttf", "ui/fonts/Nunito-ExtraBold.ttf", "ui/fonts/OFL.txt" };
 
-        // Ten resource trong EXE: "ui/Theme.xaml" -> "ui.Theme.xaml" (csc /res:core\ui\Theme.xaml,ui.Theme.xaml).
+        // Ten resource trong EXE: "ui/Theme.xaml" -> "ui.Theme.xaml" (csc /res:core\ui\Theme.xaml,ui.Theme.xaml);
+        // "ui/fonts/OFL.txt" -> "ui.fonts.OFL.txt".
         static string ResourceLogicalName(string relativePath)
         {
             return relativePath.Replace('/', '.').Replace('\\', '.');

@@ -12,3 +12,4 @@ core/_backup/
 *.candidate.*
 *.private.xml
 update-signing-*.xml
+_handoff/

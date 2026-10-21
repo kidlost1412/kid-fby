@@ -86,7 +86,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Local build or launcher verification failed. P
 # 5. Tao manifest version.json hoan chinh
 Write-Host "[5/6] Dang tao manifest version.json..." -ForegroundColor Yellow
 function Get-NormalizedFileHash([System.IO.FileInfo]$fi) {
-    if ($fi.Extension -in '.ico','.exe','.dll','.zip') {
+    if ($fi.Extension -in '.ico','.exe','.dll','.zip','.ttf','.otf') {
         return (Get-FileHash -LiteralPath $fi.FullName -Algorithm SHA256).Hash
     }
     $txt = [System.IO.File]::ReadAllText($fi.FullName, [System.Text.Encoding]::UTF8).TrimStart([char]0xFEFF)
@@ -116,7 +116,22 @@ $uiFiles = @(Get-ChildItem -LiteralPath (Join-Path $root 'core\ui') -File -Filte
 foreach ($requiredUi in @('core/ui/Theme.xaml', 'core/ui/MainWindow.xaml')) {
     if (-not ($uiFiles | Where-Object { $_.path -eq $requiredUi })) { throw "Thieu file giao dien trong manifest: $requiredUi" }
 }
-$coreFiles = @($coreFiles) + $uiFiles + @([ordered]@{
+# Phong Nunito (core/ui/fonts, SIL OFL 1.1): nhung trong Kid-FB.Y.exe va duoc launcher ghi lai khi thieu (EnsureResources).
+# File .ttf CHUA dua vao manifest: core/updater.ps1 hien chi coi .ico/.exe/.dll/.zip la nhi phan, se chuan hoa CRLF/BOM
+# (hong font) va lech hash -> may khach dang chay updater cu se loi cap nhat. Font den may khach qua EXE moi trong manifest.
+# Chi OFL.txt (van ban) duoc liet ke. Khi updater coi .ttf la nhi phan tren moi may khach thi moi them .ttf vao day.
+$fontDir = Join-Path $root 'core\ui\fonts'
+foreach ($requiredFont in @('Nunito-Regular.ttf', 'Nunito-SemiBold.ttf', 'Nunito-ExtraBold.ttf', 'OFL.txt')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $fontDir $requiredFont) -PathType Leaf)) { throw "Thieu phong giao dien: core/ui/fonts/$requiredFont" }
+}
+$fontFiles = @(Get-ChildItem -LiteralPath $fontDir -File -Filter 'OFL.txt' | ForEach-Object {
+    [ordered]@{
+        path   = "core/ui/fonts/$($_.Name)"
+        sha256 = (Get-NormalizedFileHash $_)
+        size   = $_.Length
+    }
+})
+$coreFiles = @($coreFiles) + $uiFiles + $fontFiles + @([ordered]@{
     path = 'Kid-FB.Y.exe'
     sha256 = (Get-FileHash -LiteralPath (Join-Path $root 'Kid-FB.Y.exe') -Algorithm SHA256).Hash
     size = (Get-Item -LiteralPath (Join-Path $root 'Kid-FB.Y.exe')).Length
