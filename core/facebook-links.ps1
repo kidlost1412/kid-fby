@@ -116,16 +116,43 @@ function Get-RejectedReelPath {
     return (Join-Path ([IO.Path]::GetFullPath($Root)) 'data/rejected-videos.json')
 }
 
+# Ghi file lich su an toan: FileStream + Write + Flush(true) roi moi Replace/Move (mat dien khong de lai file rong).
+function Write-HistoryFileDurable {
+    param([string]$Stage, [string]$Path, [string]$Backup, [string]$Json)
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Json)
+    $stream = [IO.File]::Open($Stage, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+    if ([IO.File]::Exists($Path)) { [IO.File]::Replace($Stage, $Path, $Backup) } else { [IO.File]::Move($Stage, $Path) }
+    if ([IO.File]::Exists($Backup)) { [IO.File]::Delete($Backup) }
+}
+
 function Get-RejectedReels {
     param([Parameter(Mandatory=$true)][string]$Root)
     $path = Get-RejectedReelPath -Root $Root
     if (-not [IO.File]::Exists($path)) { return }
-    $data = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($path)) -ErrorAction Stop
-    if ($null -eq $data -or $data.Schema -ne 1 -or $null -eq $data.Entries) { throw 'Invalid rejected-video history; refusing to ignore it.' }
-    foreach ($entry in @($data.Entries)) {
-        if ([string]$entry.VideoId -notmatch '^\d+$' -or [string]::IsNullOrWhiteSpace([string]$entry.Reason)) { throw 'Invalid rejected-video entry.' }
-        $entry
+    # Loi DOC (file bi khoa/khong quyen) khac file hong: de nem ra, khong dong vao file.
+    $text = [IO.File]::ReadAllText($path)
+    $entries = $null; $why = ''
+    try {
+        $data = ConvertFrom-Json -InputObject $text -ErrorAction Stop
+        if ($null -eq $data -or $data.Schema -ne 1 -or $null -eq $data.Entries) { throw 'Invalid rejected-video history schema.' }
+        $list = New-Object Collections.Generic.List[object]
+        foreach ($entry in @($data.Entries)) {
+            if ([string]$entry.VideoId -notmatch '^\d+$' -or [string]::IsNullOrWhiteSpace([string]$entry.Reason)) { throw 'Invalid rejected-video entry.' }
+            $list.Add($entry)
+        }
+        $entries = $list
+    } catch { $why = $_.Exception.Message }
+    if ($null -eq $entries) {
+        # File hong: doi ten giu lai de khoi phuc tay, coi nhu rong (khong lam hong moi link).
+        $corrupt = $path + '.corrupt-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,6)
+        $moved = $false
+        try { [IO.File]::Move($path, $corrupt); $moved = $true } catch { $why += ' | khong doi ten duoc: ' + $_.Exception.Message }
+        $msg = "Lich su loai bi hong ($why). " + $(if ($moved) { "Da giu ban hong tai $corrupt, coi nhu rong." } else { 'Coi nhu rong trong lan nay.' })
+        if (Get-Command Write-Warn2 -ErrorAction SilentlyContinue) { Write-Warn2 $msg } else { Write-Host "    !  $msg" -ForegroundColor Yellow }
+        return
     }
+    foreach ($e in $entries) { $e }
 }
 
 function Find-RejectedReel {
@@ -162,9 +189,8 @@ function Save-RejectedReel {
         $record = [pscustomobject]@{ VideoId=$VideoId; Urls=$allUrls; Reason=$Reason; Language=$Language; Probability=$Probability; RejectedAt=[DateTime]::UtcNow.ToString('o'); Evidence=[string]$Evidence }
         $entries = @($entries | Where-Object { [string]$_.VideoId -ne $VideoId }) + @($record)
         $json = [pscustomobject]@{ Schema=1; Entries=@($entries) } | ConvertTo-Json -Depth 8
-        [IO.File]::WriteAllText($stage,$json,[Text.UTF8Encoding]::new($false))
-        if ([IO.File]::Exists($path)) { [IO.File]::Replace($stage,$path,$backup) } else { [IO.File]::Move($stage,$path) }
-        if ([IO.File]::Exists($backup)) { [IO.File]::Delete($backup) }
+        # Ghi ben vung: FileStream + Write + Flush($true) roi Replace/Move (xem Write-HistoryFileDurable).
+        Write-HistoryFileDurable -Stage $stage -Path $path -Backup $backup -Json $json
         return $record
     } finally {
         if ([IO.File]::Exists($stage)) { [IO.File]::Delete($stage) }
@@ -192,9 +218,8 @@ function Remove-RejectedReel {
         $remaining = @($entries | Where-Object { [string]$_.VideoId -ne $VideoId })
         if ($remaining.Count -eq $entries.Count) { return $false }
         $json = [pscustomobject]@{ Schema=1; Entries=@($remaining) } | ConvertTo-Json -Depth 8
-        [IO.File]::WriteAllText($stage,$json,[Text.UTF8Encoding]::new($false))
-        [IO.File]::Replace($stage,$path,$backup)
-        if ([IO.File]::Exists($backup)) { [IO.File]::Delete($backup) }
+        # Ghi ben vung: FileStream + Write + Flush($true) roi Replace/Move (xem Write-HistoryFileDurable).
+        Write-HistoryFileDurable -Stage $stage -Path $path -Backup $backup -Json $json
         return $true
     } finally {
         if ([IO.File]::Exists($stage)) { [IO.File]::Delete($stage) }

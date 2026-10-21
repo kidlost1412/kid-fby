@@ -14,7 +14,7 @@ param(
 $UpdatePublicKeyXml = '<<PUBLIC_KEY_PLACEHOLDER>>'
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { <# bo qua: .NET khong ho tro dat giao thuc, dung mac dinh he thong #> }
 
 $coreDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path $MyInvocation.MyCommand.Path -Parent }
 $root    = Split-Path $coreDir -Parent
@@ -30,8 +30,8 @@ function Save-Status($obj) {
 
 function Get-Config {
     $f = Join-Path $coreDir 'update.json'
-    if (-not (Test-Path $f)) { throw 'Thieu file core\update.json (chua cau hinh repo GitHub).' }
-    $c = Get-Content $f -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not (Test-Path -LiteralPath $f)) { throw 'Thieu file core\update.json (chua cau hinh repo GitHub).' }
+    $c = Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json
     if (-not $c.repo -or $c.repo -match 'OWNER/REPO') {
         throw 'Chua cau hinh repo GitHub trong core\update.json! Vui long mo file core\update.json va dien ten repo cua ban (vi du: "ten-ban/kid-fby").'
     }
@@ -165,7 +165,7 @@ function Save-FileWithBom([string]$dst, [byte[]]$bytes) {
 
 function Get-LocalVersion {
     $f = Join-Path $coreDir 'version.txt'
-    if (Test-Path $f) { (Get-Content $f -Raw).Trim() } else { '0.0.0' }
+    if (Test-Path -LiteralPath $f) { (Get-Content -LiteralPath $f -Raw).Trim() } else { '0.0.0' }
 }
 
 function Test-SafePath([string]$rel) {
@@ -197,7 +197,7 @@ try {
         $cData = $apiSr.ReadToEnd() | ConvertFrom-Json
         if ($cData.sha) { $ref = $cData.sha }
         $apiResp.Close()
-    } catch { }
+    } catch { <# bo qua: khong lay duoc SHA commit moi nhat thi dung nhanh (branch) lam ref #> }
 
     $base = "https://raw.githubusercontent.com/$($cfg.repo)/$ref"
     # Manifest + chu ky: thu nguon goc truoc, loi mang moi thu mirror. Chu ky RSA van bat buoc,
@@ -264,7 +264,7 @@ try {
         Remove-Item -LiteralPath $stageFull -Recurse -Force
     }
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
-    Remove-Item (Join-Path $updDir 'READY') -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $updDir 'READY') -Force -ErrorAction SilentlyContinue
     $list = @()
     foreach ($f in $changed) {
         $bytes = Get-Bytes "$base/$($f.path)"

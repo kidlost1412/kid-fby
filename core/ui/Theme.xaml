@@ -26,9 +26,13 @@
 
   <!-- chu: nau muc, khong dung den/xam lanh -->
   <SolidColorBrush x:Key="TextPrimary" Color="#FF4A3428"/>
-  <SolidColorBrush x:Key="TextMuted" Color="#FF8A6E5C"/>
-  <SolidColorBrush x:Key="TextSubtle" Color="#FFB09584"/>
-  <SolidColorBrush x:Key="TextOnAccent" Color="#FF4A3428"/>
+  <SolidColorBrush x:Key="TextMuted" Color="#FF7F6452"/>
+  <SolidColorBrush x:Key="TextDisabled" Color="#FF7F6452"/>
+  <SolidColorBrush x:Key="NavLabel" Color="#FF7A5C48"/>
+  <SolidColorBrush x:Key="IconPlaceholder" Color="#FF9A6A2A"/>
+  <SolidColorBrush x:Key="MediaScrim" Color="#8C4A3428"/>
+  <SolidColorBrush x:Key="TextSubtle" Color="#FF86675A"/>
+  <SolidColorBrush x:Key="TextOnAccent" Color="#FF2D1E16"/>
 
   <!-- macaron (to day) + Soft (nen nhat) + Line (vien badge dam hon) -->
   <SolidColorBrush x:Key="Pink" Color="#FFFED7E2"/>
@@ -58,13 +62,13 @@
   <SolidColorBrush x:Key="AccentHover" Color="#FFFF86C3"/>
   <SolidColorBrush x:Key="AccentPressed" Color="#FFF0529F"/>
   <SolidColorBrush x:Key="Success" Color="#FFC6F6D5"/>
-  <SolidColorBrush x:Key="SuccessText" Color="#FF2F855A"/>
+  <SolidColorBrush x:Key="SuccessText" Color="#FF276749"/>
   <SolidColorBrush x:Key="Warning" Color="#FFFEEBC8"/>
   <SolidColorBrush x:Key="WarningSubtle" Color="#FFFFF6E6"/>
-  <SolidColorBrush x:Key="WarningText" Color="#FFB7791F"/>
+  <SolidColorBrush x:Key="WarningText" Color="#FF8C6A1A"/>
   <SolidColorBrush x:Key="Danger" Color="#FFFF6B6B"/>
   <SolidColorBrush x:Key="DangerSubtle" Color="#FFFFE4E4"/>
-  <SolidColorBrush x:Key="DangerText" Color="#FFD64545"/>
+  <SolidColorBrush x:Key="DangerText" Color="#FFBE2A2A"/>
   <SolidColorBrush x:Key="Info" Color="#FFA8D8EA"/>
   <SolidColorBrush x:Key="Neutral" Color="#FFD8C6B5"/>
   <SolidColorBrush x:Key="NeutralSubtle" Color="#FFF6EEE4"/>
@@ -185,6 +189,15 @@
   <FontFamily x:Key="FontMono">Cascadia Mono, Consolas, Courier New</FontFamily>
   <FontFamily x:Key="FontIcon">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
 
+  <!-- kich thuoc sidebar: code ghi de trong Window.Resources khi cua so thap (< 640 px) -->
+  <sys:Double x:Key="NavDot">59</sys:Double>
+  <sys:Double x:Key="NavBtnW">92</sys:Double>
+  <sys:Double x:Key="NavBtnH">90</sys:Double>
+  <sys:Double x:Key="NavGlyph">22</sys:Double>
+  <Thickness x:Key="NavMargin">0,2,0,2</Thickness>
+  <sys:Double x:Key="NavFont">14</sys:Double>
+  <sys:Double x:Key="NavLabelGap">5</sys:Double>
+
   <!-- bien doi dung chung cho nut sticker (hover nhich len 1 px, nhan xuong 2 px) -->
   <TranslateTransform x:Key="LiftUp" X="0" Y="-1"/>
   <TranslateTransform x:Key="PressDown" X="1" Y="2"/>
@@ -213,7 +226,7 @@
   <Style x:Key="TextTitle" TargetType="TextBlock">
     <Setter Property="FontFamily" Value="{DynamicResource FontUi}"/>
     <Setter Property="FontWeight" Value="ExtraBold"/>
-    <Setter Property="FontSize" Value="32"/>
+    <Setter Property="FontSize" Value="28"/>
     <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
   </Style>
   <Style x:Key="TextHeading" TargetType="TextBlock">
@@ -241,6 +254,14 @@
     <Setter Property="LineHeight" Value="21"/>
     <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
     <Setter Property="TextWrapping" Value="Wrap"/>
+  </Style>
+  <Style x:Key="TextSummaryLabel" TargetType="TextBlock">
+    <Setter Property="FontFamily" Value="{DynamicResource FontUi}"/>
+    <Setter Property="FontSize" Value="15"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+    <Setter Property="TextWrapping" Value="Wrap"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
   </Style>
   <Style x:Key="TextCaption" TargetType="TextBlock">
     <Setter Property="FontFamily" Value="{DynamicResource FontUi}"/>
@@ -346,7 +367,10 @@
         <Setter TargetName="Shadow" Property="Visibility" Value="Hidden"/>
       </Trigger>
       <Trigger Property="IsEnabled" Value="False">
-        <Setter TargetName="Root" Property="Opacity" Value="0.45"/>
+        <Setter TargetName="Face" Property="Background" Value="{StaticResource NeutralSubtle}"/>
+        <Setter TargetName="Face" Property="BorderBrush" Value="{StaticResource InkFaint}"/>
+        <Setter TargetName="Shadow" Property="Visibility" Value="Hidden"/>
+        <Setter Property="Foreground" Value="{StaticResource TextDisabled}"/>
         <Setter TargetName="Root" Property="RenderTransform" Value="{StaticResource NoShift}"/>
       </Trigger>
     </ControlTemplate.Triggers>
@@ -396,7 +420,7 @@
   <!-- Nut "Dung" dac (nut chinh khi dang chay): san ho, chu nau -->
   <Style x:Key="BtnDangerSolid" TargetType="Button" BasedOn="{StaticResource BtnSecondary}">
     <Setter Property="Background" Value="{StaticResource Danger}"/>
-    <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+    <Setter Property="Foreground" Value="{StaticResource TextOnAccent}"/>
     <Setter Property="FontWeight" Value="ExtraBold"/>
   </Style>
 
@@ -426,7 +450,9 @@
               <Setter TargetName="Root" Property="RenderTransform" Value="{StaticResource PressDown}"/>
             </Trigger>
             <Trigger Property="IsEnabled" Value="False">
-              <Setter TargetName="Root" Property="Opacity" Value="0.45"/>
+              <Setter TargetName="Face" Property="Background" Value="{StaticResource NeutralSubtle}"/>
+              <Setter TargetName="Face" Property="BorderBrush" Value="{StaticResource InkFaint}"/>
+              <Setter Property="Foreground" Value="{StaticResource TextDisabled}"/>
             </Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate>
@@ -450,9 +476,9 @@
     <Setter Property="Background" Value="{StaticResource Surface1}"/>
     <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
     <Setter Property="BorderBrush" Value="{StaticResource InkSoft}"/>
-    <Setter Property="Width" Value="38"/>
-    <Setter Property="Height" Value="38"/>
-    <Setter Property="Margin" Value="0,0,8,0"/>
+    <Setter Property="Width" Value="44"/>
+    <Setter Property="Height" Value="44"/>
+    <Setter Property="Margin" Value="0,0,2,0"/>
     <Setter Property="FontFamily" Value="{StaticResource FontIcon}"/>
     <Setter Property="FontSize" Value="10"/>
     <Setter Property="Focusable" Value="False"/>
@@ -497,15 +523,15 @@
 
   <!-- Dieu huong sidebar: sticker tron 56 px (mau = Background) + nhan 14 SemiBold. Chon: vien nau day + nay nhe 1.0 -> 1.06 -->
   <Style x:Key="NavButton" TargetType="RadioButton">
-    <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
-    <Setter Property="Background" Value="{StaticResource Pink}"/>
+    <Setter Property="Foreground" Value="{StaticResource NavLabel}"/>
+    <Setter Property="BorderBrush" Value="{StaticResource Pink}"/>
     <Setter Property="Cursor" Value="Hand"/>
-    <Setter Property="Width" Value="92"/>
-    <Setter Property="Height" Value="90"/>
-    <Setter Property="Margin" Value="0,2"/>
+    <Setter Property="Width" Value="{DynamicResource NavBtnW}"/>
+    <Setter Property="Height" Value="{DynamicResource NavBtnH}"/>
+    <Setter Property="Margin" Value="{DynamicResource NavMargin}"/>
     <Setter Property="FontFamily" Value="{DynamicResource FontUi}"/>
     <Setter Property="FontWeight" Value="SemiBold"/>
-    <Setter Property="FontSize" Value="14"/>
+    <Setter Property="FontSize" Value="{DynamicResource NavFont}"/>
     <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
     <Setter Property="GroupName" Value="MainNav"/>
     <Setter Property="Template">
@@ -513,15 +539,15 @@
         <ControlTemplate TargetType="RadioButton">
           <Grid Background="Transparent">
             <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-              <Grid x:Name="Sticker" Width="59" Height="59" HorizontalAlignment="Center" RenderTransformOrigin="0.5,0.5">
+              <Grid x:Name="Sticker" Width="{DynamicResource NavDot}" Height="{DynamicResource NavDot}" HorizontalAlignment="Center" RenderTransformOrigin="0.5,0.5">
                 <Grid.RenderTransform><ScaleTransform ScaleX="1" ScaleY="1"/></Grid.RenderTransform>
                 <Ellipse Margin="3,3,0,0" Fill="{StaticResource StickerShadow}"/>
-                <Ellipse x:Name="Disc" Margin="0,0,3,3" Fill="{TemplateBinding Background}" Stroke="{StaticResource InkSoft}" StrokeThickness="2"/>
+                <Ellipse x:Name="Disc" Margin="0,0,3,3" Fill="{TemplateBinding BorderBrush}" Stroke="{StaticResource InkSoft}" StrokeThickness="2"/>
                 <Ellipse x:Name="Shine" Width="12" Height="8" Margin="13,11,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" Fill="{StaticResource WhiteGlow}"/>
-                <TextBlock x:Name="Glyph" Text="{TemplateBinding Tag}" FontFamily="{StaticResource FontIcon}" FontSize="22" Margin="0,0,3,3"
+                <TextBlock x:Name="Glyph" Text="{TemplateBinding Tag}" FontFamily="{StaticResource FontIcon}" FontSize="{DynamicResource NavGlyph}" Margin="0,0,3,3"
                            HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{StaticResource TextPrimary}"/>
               </Grid>
-              <ContentPresenter x:Name="Label" Margin="0,5,0,0" HorizontalAlignment="Center" RecognizesAccessKey="True"
+              <ContentPresenter x:Name="Label" Margin="0,2,0,0" HorizontalAlignment="Center" RecognizesAccessKey="True"
                                 TextElement.Foreground="{TemplateBinding Foreground}" TextElement.FontSize="{TemplateBinding FontSize}"/>
             </StackPanel>
           </Grid>
@@ -565,7 +591,7 @@
     <Setter Property="BorderBrush" Value="{StaticResource InkSoft}"/>
     <Setter Property="Cursor" Value="Hand"/>
     <Setter Property="Padding" Value="18,0"/>
-    <Setter Property="MinHeight" Value="44"/>
+    <Setter Property="MinHeight" Value="46"/>
     <Setter Property="Margin" Value="0,0,8,0"/>
     <Setter Property="FontFamily" Value="{DynamicResource FontUi}"/>
     <Setter Property="FontWeight" Value="Bold"/>
@@ -650,6 +676,246 @@
     <Setter Property="Cursor" Value="Hand"/>
     <Setter Property="VerticalAlignment" Value="Center"/>
     <Setter Property="TextElement.FontWeight" Value="Bold"/>
+    <Setter Property="TextElement.Foreground" Value="{StaticResource TextPrimary}"/>
+  </Style>
+
+  <Style x:Key="ChipButton" TargetType="Button">
+    <Setter Property="Background" Value="{StaticResource Surface1}"/>
+    <Setter Property="BorderBrush" Value="{StaticResource Ink}"/>
+    <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+    <Setter Property="FontFamily" Value="{DynamicResource FontUi}"/>
+    <Setter Property="FontWeight" Value="Bold"/>
+    <Setter Property="FontSize" Value="14"/>
+    <Setter Property="Margin" Value="0,0,8,0"/>
+    <Setter Property="MinHeight" Value="44"/>
+    <Setter Property="Cursor" Value="Hand"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Grid x:Name="Root" Background="Transparent" MinHeight="44">
+            <Border x:Name="Face" Height="36" CornerRadius="18" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="2" Padding="12,0" VerticalAlignment="Center">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" TextElement.Foreground="{TemplateBinding Foreground}"/>
+            </Border>
+          </Grid>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+              <Setter TargetName="Face" Property="Background" Value="{StaticResource ButterSoft}"/>
+              <Setter TargetName="Root" Property="RenderTransform" Value="{StaticResource LiftUp}"/>
+            </Trigger>
+            <Trigger Property="IsPressed" Value="True">
+              <Setter TargetName="Root" Property="RenderTransform" Value="{StaticResource PressDown}"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <!-- Nut chu dang lien ket (vung bam cao 44): vd "Chi tiet" -->
+  <Style x:Key="BtnLinkSmall" TargetType="Button">
+    <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+    <Setter Property="FontFamily" Value="{DynamicResource FontUi}"/>
+    <Setter Property="FontWeight" Value="ExtraBold"/>
+    <Setter Property="FontSize" Value="14"/>
+    <Setter Property="MinHeight" Value="44"/>
+    <Setter Property="MinWidth" Value="44"/>
+    <Setter Property="Cursor" Value="Hand"/>
+    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Grid Background="Transparent" MinHeight="44">
+            <TextBlock x:Name="Lbl" Text="{TemplateBinding Content}" TextDecorations="Underline" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{TemplateBinding Foreground}" Margin="6,0"/>
+          </Grid>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Lbl" Property="Foreground" Value="{StaticResource AccentPressed}"/></Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <!-- Nut icon nho: vung bam 44 x 44, hinh tron 30 -->
+  <Style x:Key="BtnIconSmall" TargetType="Button">
+    <Setter Property="Background" Value="{StaticResource Surface1}"/>
+    <Setter Property="BorderBrush" Value="{StaticResource InkSoft}"/>
+    <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+    <Setter Property="FontFamily" Value="{StaticResource FontIcon}"/>
+    <Setter Property="FontSize" Value="14"/>
+    <Setter Property="Width" Value="44"/>
+    <Setter Property="Height" Value="44"/>
+    <Setter Property="Cursor" Value="Hand"/>
+    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Grid x:Name="Root" Background="Transparent">
+            <Border x:Name="Face" Width="30" Height="30" CornerRadius="15" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="2">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" TextElement.Foreground="{TemplateBinding Foreground}"/>
+            </Border>
+          </Grid>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+              <Setter TargetName="Face" Property="Background" Value="{StaticResource ButterSoft}"/>
+              <Setter TargetName="Face" Property="BorderBrush" Value="{StaticResource Ink}"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <!-- Nut tron phu tren video (Xem lon): vung bam 44, nen nau mo, bieu tuong trang -->
+  <Style x:Key="BtnOverlayIcon" TargetType="Button">
+    <Setter Property="Background" Value="Transparent"/>
+    <Setter Property="Foreground" Value="White"/>
+    <Setter Property="FontFamily" Value="{StaticResource FontIcon}"/>
+    <Setter Property="FontSize" Value="15"/>
+    <Setter Property="Width" Value="44"/>
+    <Setter Property="Height" Value="44"/>
+    <Setter Property="Cursor" Value="Hand"/>
+    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Grid x:Name="Root" Background="Transparent">
+            <Ellipse x:Name="Disc" Width="34" Height="34" Fill="{StaticResource MediaScrim}" Stroke="#66FFFFFF" StrokeThickness="1.5"/>
+            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" TextElement.Foreground="{TemplateBinding Foreground}"/>
+          </Grid>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+              <Setter TargetName="Disc" Property="Fill" Value="#CC4A3428"/>
+              <Setter TargetName="Disc" Property="Stroke" Value="White"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <!-- Phat / Tam dung tren thanh dieu khien video (Content = "Phat" | "Tam dung": glyph doi theo) -->
+  <Style x:Key="BtnPlayOverlay" TargetType="Button">
+    <Setter Property="Background" Value="Transparent"/>
+    <Setter Property="Foreground" Value="White"/>
+    <Setter Property="Width" Value="44"/>
+    <Setter Property="Height" Value="44"/>
+    <Setter Property="Cursor" Value="Hand"/>
+    <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Grid x:Name="Root" Background="Transparent">
+            <Ellipse x:Name="Hover" Width="34" Height="34" Fill="#33FFFFFF" Visibility="Hidden"/>
+            <TextBlock x:Name="Glyph" Text="&#xE768;" FontFamily="{StaticResource FontIcon}" FontSize="17" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{TemplateBinding Foreground}"/>
+          </Grid>
+          <ControlTemplate.Triggers>
+            <Trigger Property="Content" Value="T&#x1EA1;m d&#x1EEB;ng">
+              <Setter TargetName="Glyph" Property="Text" Value="&#xE769;"/>
+            </Trigger>
+            <Trigger Property="IsMouseOver" Value="True">
+              <Setter TargetName="Hover" Property="Visibility" Value="Visible"/>
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+              <Setter TargetName="Glyph" Property="Opacity" Value="0.6"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <!-- Thanh tua phu tren video: ray mo trang, phan da xem hong, nut tron trang (vung bam 44) -->
+  <Style x:Key="SeekSlider" TargetType="Slider">
+    <Setter Property="Focusable" Value="True"/>
+    <Setter Property="IsTabStop" Value="True"/>
+    <Setter Property="Cursor" Value="Hand"/>
+    <Setter Property="MinHeight" Value="44"/>
+    <Setter Property="IsMoveToPointEnabled" Value="False"/>
+    <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="Slider">
+          <Grid x:Name="SliderRoot" Background="Transparent" VerticalAlignment="Center" MinHeight="44">
+            <Border x:Name="Rail" Height="8" CornerRadius="4" Background="#59FFFFFF" BorderBrush="#33FFFFFF" BorderThickness="1" VerticalAlignment="Center"/>
+            <Track x:Name="PART_Track" Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}"
+                   Value="{Binding Value, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                   IsDirectionReversed="{TemplateBinding IsDirectionReversed}">
+              <Track.DecreaseRepeatButton>
+                <RepeatButton Command="Slider.DecreaseLarge" Focusable="False" IsTabStop="False">
+                  <RepeatButton.Template>
+                    <ControlTemplate TargetType="RepeatButton">
+                      <Border Background="Transparent"><Border Height="8" CornerRadius="4" Margin="0,0,-8,0" Background="{StaticResource ProgressFill}" VerticalAlignment="Center"/></Border>
+                    </ControlTemplate>
+                  </RepeatButton.Template>
+                </RepeatButton>
+              </Track.DecreaseRepeatButton>
+              <Track.IncreaseRepeatButton>
+                <RepeatButton Command="Slider.IncreaseLarge" Style="{DynamicResource SliderRepeat}"/>
+              </Track.IncreaseRepeatButton>
+              <Track.Thumb>
+                <Thumb x:Name="Thumb" Width="18" Height="18" Focusable="False">
+                  <Thumb.Template>
+                    <ControlTemplate TargetType="Thumb">
+                      <Ellipse Fill="White" Stroke="{StaticResource InkStrong}" StrokeThickness="2"/>
+                    </ControlTemplate>
+                  </Thumb.Template>
+                </Thumb>
+              </Track.Thumb>
+            </Track>
+          </Grid>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsKeyboardFocused" Value="True">
+              <Setter TargetName="Rail" Property="BorderBrush" Value="White"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <!-- Nut "..." tren the Kho: an cho toi khi re chuot / focus ban phim vao the (DataTemplate dat Opacity=1) -->
+  <Style x:Key="BtnCardMore" TargetType="Button" BasedOn="{StaticResource BtnOverlayIcon}">
+    <Setter Property="Opacity" Value="0"/>
+  </Style>
+
+  <!-- Muc the Kho (ListViewItem): vien chon hong day quanh the, khong nen -->
+  <Style x:Key="GalleryItemStyle" TargetType="ListViewItem">
+    <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+    <Setter Property="Background" Value="Transparent"/>
+    <Setter Property="HorizontalContentAlignment" Value="Center"/>
+    <Setter Property="VerticalContentAlignment" Value="Top"/>
+    <Setter Property="Padding" Value="0"/>
+    <Setter Property="Margin" Value="0"/>
+    <Setter Property="Cursor" Value="Hand"/>
+    <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="ListViewItem">
+          <Grid Background="Transparent">
+            <Border x:Name="Sel" CornerRadius="24" BorderThickness="3" BorderBrush="{StaticResource AccentPressed}" Background="{StaticResource PinkSoft}" Visibility="Hidden" Margin="2,2,2,2"/>
+            <ContentPresenter Margin="6,6,6,6" HorizontalAlignment="Center" VerticalAlignment="Top"/>
+          </Grid>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsSelected" Value="True"><Setter TargetName="Sel" Property="Visibility" Value="Visible"/></Trigger>
+            <Trigger Property="IsKeyboardFocused" Value="True">
+              <Setter TargetName="Sel" Property="Visibility" Value="Visible"/>
+              <Setter TargetName="Sel" Property="Background" Value="Transparent"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <!-- Pill dem o day (Border): chu nau; bang 0 chi doi sang chu TextMuted + vien nhat (code), KHONG lam mo -->
+  <Style x:Key="CountPill" TargetType="Border">
+    <Setter Property="CornerRadius" Value="999"/>
+    <Setter Property="BorderThickness" Value="2"/>
+    <Setter Property="Padding" Value="12,4"/>
+    <Setter Property="Margin" Value="0,0,8,0"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
     <Setter Property="TextElement.Foreground" Value="{StaticResource TextPrimary}"/>
   </Style>
 
@@ -782,7 +1048,7 @@
   <!-- Nut trang thai TikTok trong Kho (truong Posted): pill, da dang = Mint -->
   <Style x:Key="BtnTikTok" TargetType="Button" BasedOn="{StaticResource BtnSecondary}">
     <Setter Property="Padding" Value="14,0"/>
-    <Setter Property="MinHeight" Value="40"/>
+    <Setter Property="MinHeight" Value="44"/>
     <Setter Property="FontSize" Value="13"/>
     <Setter Property="Background" Value="{StaticResource LavenderSoft}"/>
     <Style.Triggers>
@@ -831,6 +1097,11 @@
         </ControlTemplate>
       </Setter.Value>
     </Setter>
+  </Style>
+  <Style x:Key="TextBoxPath" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+    <Style.Triggers>
+      <Trigger Property="IsKeyboardFocusWithin" Value="False"><Setter Property="Foreground" Value="Transparent"/></Trigger>
+    </Style.Triggers>
   </Style>
   <Style x:Key="TextBoxMono" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
     <Setter Property="FontFamily" Value="{StaticResource FontMono}"/>
@@ -961,6 +1232,7 @@
 
   <!-- ============================================================ CheckBox / cong tac / RadioButton -->
   <Style TargetType="CheckBox">
+    <Setter Property="MinHeight" Value="44"/>
     <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
     <Setter Property="FontFamily" Value="{DynamicResource FontUi}"/>
     <Setter Property="FontWeight" Value="Bold"/>
@@ -989,7 +1261,8 @@
               <Setter TargetName="Check" Property="Visibility" Value="Visible"/>
             </Trigger>
             <Trigger Property="IsEnabled" Value="False">
-              <Setter Property="Opacity" Value="0.45"/>
+              <Setter Property="Foreground" Value="{StaticResource TextDisabled}"/>
+              <Setter TargetName="Box" Property="Background" Value="{StaticResource NeutralSubtle}"/>
             </Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate>
@@ -999,6 +1272,7 @@
 
   <!-- Cong tac bat/tat (CheckBox): ray 54x30 tron, nut trang truot -->
   <Style x:Key="ToggleSwitch" TargetType="CheckBox">
+    <Setter Property="MinHeight" Value="44"/>
     <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
     <Setter Property="FontFamily" Value="{DynamicResource FontUi}"/>
     <Setter Property="FontWeight" Value="Bold"/>
@@ -1035,6 +1309,7 @@
   </Style>
 
   <Style TargetType="RadioButton">
+    <Setter Property="MinHeight" Value="44"/>
     <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
     <Setter Property="FontFamily" Value="{DynamicResource FontUi}"/>
     <Setter Property="FontWeight" Value="SemiBold"/>
@@ -1062,7 +1337,8 @@
               <Setter TargetName="Dot" Property="Visibility" Value="Visible"/>
             </Trigger>
             <Trigger Property="IsEnabled" Value="False">
-              <Setter Property="Opacity" Value="0.45"/>
+              <Setter Property="Foreground" Value="{StaticResource TextDisabled}"/>
+              <Setter TargetName="Ring" Property="Fill" Value="{StaticResource NeutralSubtle}"/>
             </Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate>
@@ -1087,14 +1363,14 @@
     <Setter Property="Focusable" Value="True"/>
     <Setter Property="IsTabStop" Value="True"/>
     <Setter Property="Cursor" Value="Hand"/>
-    <Setter Property="MinHeight" Value="30"/>
+    <Setter Property="MinHeight" Value="44"/>
     <Setter Property="IsMoveToPointEnabled" Value="True"/>
     <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
     <Setter Property="Template">
       <Setter.Value>
         <ControlTemplate TargetType="Slider">
-          <Grid x:Name="SliderRoot" Background="Transparent" VerticalAlignment="Center" MinHeight="30">
-            <Border x:Name="Rail" Height="12" CornerRadius="6" Background="{StaticResource PinkSoft}" BorderBrush="{StaticResource InkSoft}" BorderThickness="1.5" VerticalAlignment="Center"/>
+          <Grid x:Name="SliderRoot" Background="Transparent" VerticalAlignment="Center" MinHeight="44">
+            <Border x:Name="Rail" Height="9" CornerRadius="5" Background="{StaticResource PinkSoft}" BorderBrush="{StaticResource InkSoft}" BorderThickness="1.5" VerticalAlignment="Center"/>
             <Track x:Name="PART_Track" Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}"
                    Value="{Binding Value, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
                    IsDirectionReversed="{TemplateBinding IsDirectionReversed}">
@@ -1102,7 +1378,7 @@
                 <RepeatButton Command="Slider.DecreaseLarge" Focusable="False" IsTabStop="False">
                   <RepeatButton.Template>
                     <ControlTemplate TargetType="RepeatButton">
-                      <Border Background="Transparent"><Border Height="12" CornerRadius="6" Margin="0,0,-10,0" Background="{StaticResource ProgressFill}" BorderBrush="{StaticResource InkSoft}" BorderThickness="1.5" VerticalAlignment="Center"/></Border>
+                      <Border Background="Transparent"><Border Height="9" CornerRadius="5" Margin="0,0,-10,0" Background="{StaticResource ProgressFill}" BorderBrush="{StaticResource InkSoft}" BorderThickness="1.5" VerticalAlignment="Center"/></Border>
                     </ControlTemplate>
                   </RepeatButton.Template>
                 </RepeatButton>
@@ -1196,6 +1472,63 @@
     </Style.Triggers>
   </Style>
 
+  <!-- ============================================================ ContextMenu / MenuItem sticker -->
+  <Style TargetType="ContextMenu">
+    <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+    <Setter Property="FontFamily" Value="{DynamicResource FontUi}"/>
+    <Setter Property="FontSize" Value="15"/>
+    <Setter Property="HasDropShadow" Value="False"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="ContextMenu">
+          <Grid Margin="0,0,6,6">
+            <Border Margin="4,4,-2,-2" CornerRadius="18" Background="{StaticResource StickerShadow}"/>
+            <Border Background="{StaticResource Surface1}" BorderBrush="{StaticResource Ink}" BorderThickness="2" CornerRadius="18" Padding="6" MinWidth="210">
+              <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle"/>
+            </Border>
+          </Grid>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+  <Style TargetType="MenuItem">
+    <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+    <Setter Property="FontFamily" Value="{DynamicResource FontUi}"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="FontSize" Value="15"/>
+    <Setter Property="Cursor" Value="Hand"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="MenuItem">
+          <Border x:Name="Bd" Background="Transparent" CornerRadius="12" Padding="10,0" MinHeight="44" Margin="0,1" SnapsToDevicePixels="True">
+            <DockPanel>
+              <TextBlock x:Name="Glyph" DockPanel.Dock="Left" Text="{TemplateBinding Tag}" FontFamily="{StaticResource FontIcon}" FontSize="15" Width="24" VerticalAlignment="Center" Foreground="{TemplateBinding Foreground}"/>
+              <TextBlock DockPanel.Dock="Right" Text="{TemplateBinding InputGestureText}" FontSize="13" FontWeight="Normal" Margin="18,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource TextMuted}"/>
+              <ContentPresenter ContentSource="Header" RecognizesAccessKey="True" VerticalAlignment="Center" TextElement.Foreground="{TemplateBinding Foreground}"/>
+            </DockPanel>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsHighlighted" Value="True">
+              <Setter TargetName="Bd" Property="Background" Value="{StaticResource ButterSoft}"/>
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+              <Setter Property="Foreground" Value="{StaticResource TextDisabled}"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+  <Style x:Key="{x:Static MenuItem.SeparatorStyleKey}" TargetType="Separator">
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="Separator">
+          <Border Height="2" CornerRadius="1" Background="{StaticResource InkFaint}" Margin="8,4"/>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
   <!-- ============================================================ ToolTip sticker nho -->
   <Style TargetType="ToolTip">
     <Setter Property="Background" Value="{StaticResource Surface1}"/>
@@ -1246,6 +1579,10 @@
                     VerticalAlignment="Center" Visibility="Collapsed" Opacity="0.4"/>
           </Grid>
           <ControlTemplate.Triggers>
+            <Trigger Property="Value" Value="0">
+              <Setter TargetName="HeadStar" Property="Visibility" Value="Collapsed"/>
+              <Setter TargetName="Fill" Property="Visibility" Value="Collapsed"/>
+            </Trigger>
             <Trigger Property="IsIndeterminate" Value="True">
               <Setter TargetName="PART_Indicator" Property="Visibility" Value="Collapsed"/>
               <Setter TargetName="Indeterminate" Property="Visibility" Value="Visible"/>
@@ -1352,4 +1689,30 @@
       </Setter.Value>
     </Setter>
   </Style>
+
+  <!-- Mau 7 buoc thu gon (man hinh thap): mot dong cham cao 36; ten buoc nam trong tooltip -->
+  <DataTemplate x:Key="StepTemplateCompact">
+    <Grid Height="36" ToolTip="{Binding Detail}" AutomationProperties.Name="{Binding Name}">
+      <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+      <Border x:Name="LineL" Height="4" CornerRadius="2" Background="{StaticResource InkFaint}" VerticalAlignment="Center"/>
+      <Border x:Name="LineR" Grid.Column="1" Height="4" CornerRadius="2" Background="{StaticResource InkFaint}" VerticalAlignment="Center"/>
+      <Border Grid.ColumnSpan="2" Style="{StaticResource StepDot}" Width="28" Height="28" CornerRadius="14" HorizontalAlignment="Center" VerticalAlignment="Center">
+        <Grid>
+          <TextBlock x:Name="StepNo" Text="{Binding No}" FontWeight="ExtraBold" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{StaticResource TextPrimary}"/>
+          <TextBlock x:Name="StepIcon" Text="{Binding Glyph}" Style="{StaticResource StepGlyph}" FontSize="12" Visibility="Collapsed"/>
+        </Grid>
+      </Border>
+    </Grid>
+    <DataTemplate.Triggers>
+      <DataTrigger Binding="{Binding Edge}" Value="first"><Setter TargetName="LineL" Property="Visibility" Value="Hidden"/></DataTrigger>
+      <DataTrigger Binding="{Binding Edge}" Value="last"><Setter TargetName="LineR" Property="Visibility" Value="Hidden"/></DataTrigger>
+      <DataTrigger Binding="{Binding State}" Value="done">
+        <Setter TargetName="StepNo" Property="Visibility" Value="Collapsed"/><Setter TargetName="StepIcon" Property="Visibility" Value="Visible"/>
+        <Setter TargetName="LineL" Property="Background" Value="{StaticResource MintLine}"/><Setter TargetName="LineR" Property="Background" Value="{StaticResource MintLine}"/>
+      </DataTrigger>
+      <DataTrigger Binding="{Binding State}" Value="failed">
+        <Setter TargetName="StepNo" Property="Visibility" Value="Collapsed"/><Setter TargetName="StepIcon" Property="Visibility" Value="Visible"/>
+      </DataTrigger>
+    </DataTemplate.Triggers>
+  </DataTemplate>
 </ResourceDictionary>

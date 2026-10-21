@@ -19,10 +19,10 @@ $candAdb = @(
     (Join-Path $dir 'tools\scrcpy\adb.exe')
 )
 foreach ($c in $candAdb) {
-    if (Test-Path $c) { $toolAdb = $c; break }
+    if (Test-Path -LiteralPath $c) { $toolAdb = $c; break }
 }
 if (-not $toolAdb) {
-    $hit = Get-ChildItem -Path (Join-Path $dir 'tools') -Recurse -Filter 'adb.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    $hit = Get-ChildItem -LiteralPath (Join-Path $dir 'tools') -Recurse -Filter 'adb.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($hit) { $toolAdb = $hit.FullName }
 }
 
@@ -60,7 +60,7 @@ $ldDirs = @(
 
 $ldFound = $null
 foreach ($ld in $ldDirs) {
-    if (Test-Path $ld) {
+    if (Test-Path -LiteralPath $ld) {
         $ldFound = $ld
         Write-Host "    -> Tìm thấy LDPlayer tại: $ldFound" -ForegroundColor Green
         break
@@ -70,7 +70,7 @@ foreach ($ld in $ldDirs) {
 # Dong bo adb voi LDPlayer neu co
 if ($ldFound) {
     $ldAdb = Join-Path $ldFound 'adb.exe'
-    if (Test-Path $ldAdb) {
+    if (Test-Path -LiteralPath $ldAdb) {
         Write-Host "    -> adb của LDPlayer khác phiên bản adb của tool có thể gây xung đột (server version doesn't match)." -ForegroundColor Gray
         Write-Host "       Ghi đè sẽ thay file trong thư mục LDPlayer; file cũ được sao lưu thành adb.exe.bak-<thời gian>." -ForegroundColor Gray
         $canPrompt = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected

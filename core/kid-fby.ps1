@@ -49,7 +49,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { <# bo qua: console khong doi duoc encoding (khong co console) khong anh huong #> }
 $script:Fb = 'com.facebook.katana'
 $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } elseif ($MyInvocation.MyCommand.Path) { Split-Path $MyInvocation.MyCommand.Path -Parent } else { (Get-Location).Path }
 $script:Here = if ((Split-Path $scriptDir -Leaf) -in @('core','src','app')) { Split-Path $scriptDir -Parent } else { $scriptDir }
@@ -111,8 +111,20 @@ function Show-Fail {
 function Quote-Arg {
     param([string]$A)
     if ($null -eq $A -or $A -eq '') { return '""' }
-    if ($A -match '[\s"]') { return '"' + ($A -replace '"', '\"') + '"' }
-    return $A
+    if ($A -notmatch '[\s"]') { return $A }
+    # Quy tac CommandLineToArgvW: n backslash lien truoc dau " (hoac truoc dau " dong cuoi chuoi) phai nhan doi.
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append('"')
+    $bs = 0
+    foreach ($ch in $A.ToCharArray()) {
+        if ($ch -eq [char]'\') { $bs++; continue }
+        if ($ch -eq [char]'"') { [void]$sb.Append([char]92, (2 * $bs + 1)); [void]$sb.Append('"') }
+        else { if ($bs -gt 0) { [void]$sb.Append([char]92, $bs) }; [void]$sb.Append($ch) }
+        $bs = 0
+    }
+    if ($bs -gt 0) { [void]$sb.Append([char]92, (2 * $bs)) }
+    [void]$sb.Append('"')
+    return $sb.ToString()
 }
 
 # Quote cho shell Android (adb shell noi chuoi roi shell thiet bi dien giai ; & | ` $()).
@@ -149,15 +161,15 @@ function Invoke-Exe {
         $exited = $p.WaitForExit($TimeoutMs)
         if (-not $exited) {
             $timedOut = $true
-            try { $p.Kill() } catch { }
-            try { $null = $p.WaitForExit(5000) } catch { }
+            try { $p.Kill() } catch { <# bo qua: tien trinh da thoat truoc khi Kill #> }
+            try { $null = $p.WaitForExit(5000) } catch { <# bo qua: tien trinh da thoat/khong cho duoc, don dep co gioi han #> }
         }
         # Process exit closes the redirected streams. Bound stream completion in case
         # a child inherited a pipe, then close our readers before disposing the process.
-        try { $null = $tO.Wait(10000) } catch { }
-        try { $null = $tE.Wait(10000) } catch { }
-        if (-not $tO.IsCompleted) { try { $p.StandardOutput.Close() } catch { }; try { $null = $tO.Wait(1000) } catch { } }
-        if (-not $tE.IsCompleted) { try { $p.StandardError.Close() } catch { }; try { $null = $tE.Wait(1000) } catch { } }
+        try { $null = $tO.Wait(10000) } catch { <# bo qua: don dep: doc luong con bi treo thi dong ben duoi #> }
+        try { $null = $tE.Wait(10000) } catch { <# bo qua: don dep: doc luong con bi treo thi dong ben duoi #> }
+        if (-not $tO.IsCompleted) { try { $p.StandardOutput.Close() } catch { <# bo qua: don dep: dong luong da dong #> }; try { $null = $tO.Wait(1000) } catch { <# bo qua: don dep: dong luong da dong #> } }
+        if (-not $tE.IsCompleted) { try { $p.StandardError.Close() } catch { <# bo qua: don dep: dong luong da dong #> }; try { $null = $tE.Wait(1000) } catch { <# bo qua: don dep: dong luong da dong #> } }
         $o = if ($tO.IsCompleted -and -not $tO.IsFaulted) { $tO.Result } else { '' }
         $e = if ($tE.IsCompleted -and -not $tE.IsFaulted) { $tE.Result } else { '' }
         if ($null -eq $o) { $o = '' }
@@ -169,14 +181,14 @@ function Invoke-Exe {
         return [pscustomobject]@{ Code = $c; Out = $o; Err = $e }
     } finally {
         if ($started -and -not $p.HasExited) {
-            try { $p.Kill() } catch { }
-            try { $null = $p.WaitForExit(5000) } catch { }
+            try { $p.Kill() } catch { <# bo qua: don dep: tien trinh da thoat #> }
+            try { $null = $p.WaitForExit(5000) } catch { <# bo qua: don dep: tien trinh da thoat #> }
         }
         if ($registered -and $started) {
-            try { $registered.Remove($p.Id) } catch { }
+            try { $registered.Remove($p.Id) } catch { <# bo qua: don dep: da go khoi bang dang ky #> }
         }
-        if ($tO -and -not $tO.IsCompleted) { try { $p.StandardOutput.Close() } catch { }; try { $null = $tO.Wait(1000) } catch { } }
-        if ($tE -and -not $tE.IsCompleted) { try { $p.StandardError.Close() } catch { }; try { $null = $tE.Wait(1000) } catch { } }
+        if ($tO -and -not $tO.IsCompleted) { try { $p.StandardOutput.Close() } catch { <# bo qua: don dep: dong luong da dong #> }; try { $null = $tO.Wait(1000) } catch { <# bo qua: don dep: dong luong da dong #> } }
+        if ($tE -and -not $tE.IsCompleted) { try { $p.StandardError.Close() } catch { <# bo qua: don dep: dong luong da dong #> }; try { $null = $tE.Wait(1000) } catch { <# bo qua: don dep: dong luong da dong #> } }
         $p.Dispose()
     }
 }
@@ -200,7 +212,7 @@ function Find-Tool {
         foreach ($c in $candidates) {
             try {
                 if (Test-Path -LiteralPath $c -ErrorAction SilentlyContinue) { return (Get-Item -LiteralPath $c).FullName }
-            } catch { }
+            } catch { <# bo qua: thu duong dan ung vien tiep theo #> }
         }
     }
 
@@ -215,7 +227,7 @@ function Find-Tool {
         foreach ($ld in $ldCandidates) {
             try {
                 if (Test-Path -LiteralPath $ld -ErrorAction SilentlyContinue) { return (Get-Item -LiteralPath $ld).FullName }
-            } catch { }
+            } catch { <# bo qua: thu duong dan ung vien tiep theo #> }
         }
     }
 
@@ -225,7 +237,7 @@ function Find-Tool {
         if ($cmd -and $cmd.Source -and (Test-Path -LiteralPath $cmd.Source -ErrorAction SilentlyContinue)) {
             return $cmd.Source
         }
-    } catch { }
+    } catch { <# bo qua: khong tim thay qua Get-Command, thu cach khac #> }
 
     # Kiem tra trong WinGet Packages (chua file that) va WinGet Links
     $roots = @(
@@ -239,7 +251,7 @@ function Find-Tool {
                 $hit = Get-ChildItem -LiteralPath $r -Recurse -Filter "$Name.exe" -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 10000 } | Select-Object -First 1
                 if ($hit) { return $hit.FullName }
             }
-        } catch { }
+        } catch { <# bo qua: quet thu muc that bai, coi nhu khong tim thay #> }
     }
     return $null
 }
@@ -274,7 +286,7 @@ function Invoke-Download {
     
     $destParent = Split-Path -Parent $OutFile
     if ($destParent -and -not (Test-Path -LiteralPath $destParent)) {
-        try { New-Item -ItemType Directory -Path $destParent -Force -ErrorAction SilentlyContinue | Out-Null } catch { }
+        try { New-Item -ItemType Directory -Path $destParent -Force -ErrorAction SilentlyContinue | Out-Null } catch { <# bo qua: tao thu muc dich best-effort, buoc sau se bao loi that #> }
     }
 
     $partDir = if ($destParent -and (Test-Path -LiteralPath $destParent)) {
@@ -282,7 +294,7 @@ function Invoke-Download {
     } else {
         $fallback = Join-Path $script:Here 'tools\_download'
         if (-not (Test-Path -LiteralPath $fallback)) {
-            try { New-Item -ItemType Directory -Path $fallback -Force -ErrorAction SilentlyContinue | Out-Null } catch { }
+            try { New-Item -ItemType Directory -Path $fallback -Force -ErrorAction SilentlyContinue | Out-Null } catch { <# bo qua: tao thu muc du phong best-effort, buoc sau se bao loi that #> }
         }
         $fallback
     }
@@ -323,7 +335,7 @@ function Invoke-Download {
         }
     } catch {
         Write-Note "Loi .NET Engine: $($_.Exception.Message)"
-        try { if (Test-Path -LiteralPath $partFile) { [System.IO.File]::Delete($partFile) } } catch { }
+        try { if (Test-Path -LiteralPath $partFile) { [System.IO.File]::Delete($partFile) } } catch { <# bo qua: xoa file .part best-effort #> }
     }
 
     # 2. Thu bang curl.exe, dung chung timeout va registry tien trinh voi engine
@@ -339,7 +351,7 @@ function Invoke-Download {
                 } else {
                     $errText = [string]$curlResult.Err
                     Write-Note "curl tra ve ma $($curlResult.Code)$(if ($errText) { ": $errText" })"
-                    try { if (Test-Path -LiteralPath $partFile) { [System.IO.File]::Delete($partFile) } } catch { }
+                    try { if (Test-Path -LiteralPath $partFile) { [System.IO.File]::Delete($partFile) } } catch { <# bo qua: xoa file .part best-effort #> }
                 }
             } catch {
                 Write-Note "Loi curl: $($_.Exception.Message)"
@@ -356,7 +368,7 @@ function Invoke-Download {
             try {
                 $wc.Proxy = [System.Net.WebRequest]::GetSystemWebProxy()
                 $wc.Proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
-            } catch { }
+            } catch { <# bo qua: proxy he thong khong lay duoc, dung mac dinh #> }
             try {
                 $wc.DownloadFile($Url, $partFile)
             } finally {
@@ -369,7 +381,7 @@ function Invoke-Download {
             $errMsg = $_.Exception.Message
             if ($_.Exception.InnerException) { $errMsg += " (" + $_.Exception.InnerException.Message + ")" }
             Write-Note "Loi WebClient: $errMsg"
-            try { if (Test-Path -LiteralPath $partFile) { [System.IO.File]::Delete($partFile) } } catch { }
+            try { if (Test-Path -LiteralPath $partFile) { [System.IO.File]::Delete($partFile) } } catch { <# bo qua: xoa file .part best-effort #> }
         }
     }
 
@@ -383,7 +395,7 @@ function Invoke-Download {
             }
         } catch {
             Write-Note "Loi Invoke-WebRequest: $($_.Exception.Message)"
-            try { if (Test-Path -LiteralPath $partFile) { [System.IO.File]::Delete($partFile) } } catch { }
+            try { if (Test-Path -LiteralPath $partFile) { [System.IO.File]::Delete($partFile) } } catch { <# bo qua: xoa file .part best-effort #> }
         }
     }
 
@@ -398,7 +410,7 @@ function Invoke-Download {
             }
         } catch {
             Write-Note "Loi BITS: $($_.Exception.Message)"
-            try { if (Test-Path -LiteralPath $partFile) { [System.IO.File]::Delete($partFile) } } catch { }
+            try { if (Test-Path -LiteralPath $partFile) { [System.IO.File]::Delete($partFile) } } catch { <# bo qua: xoa file .part best-effort #> }
         }
     }
 
@@ -406,7 +418,7 @@ function Invoke-Download {
     if ($dlSuccess -and (Test-Path -LiteralPath $partFile)) {
         try {
             if (Test-Path -LiteralPath $OutFile) {
-                try { [System.IO.File]::Delete($OutFile) } catch { }
+                try { [System.IO.File]::Delete($OutFile) } catch { <# bo qua: xoa ban cu best-effort, Move sau se bao loi that #> }
             }
             Move-Item -LiteralPath $partFile -Destination $OutFile -Force
             return (Test-Path -LiteralPath $OutFile)
@@ -421,7 +433,7 @@ function Invoke-Download {
         }
     }
 
-    try { if (Test-Path -LiteralPath $partFile) { [System.IO.File]::Delete($partFile) } } catch { }
+    try { if (Test-Path -LiteralPath $partFile) { [System.IO.File]::Delete($partFile) } } catch { <# bo qua: xoa file .part best-effort #> }
     return $false
 }
 
@@ -507,7 +519,7 @@ function Invoke-SetupDirect {
     foreach ($sub in @('', '_download', 'scrcpy', 'ffmpeg')) {
         $p = if ($sub) { Join-Path $dir $sub } else { $dir }
         if (-not (Test-Path -LiteralPath $p)) {
-            try { New-Item -ItemType Directory -Path $p -Force -ErrorAction SilentlyContinue | Out-Null } catch { }
+            try { New-Item -ItemType Directory -Path $p -Force -ErrorAction SilentlyContinue | Out-Null } catch { <# bo qua: tao thu muc best-effort, buoc sau se bao loi that #> }
         }
     }
     $tmpd = Join-Path $dir '_download'
@@ -559,12 +571,12 @@ function Invoke-SetupDirect {
                     try {
                         $fItem = Get-Item -LiteralPath $srcFile -Force -ErrorAction SilentlyContinue
                         if ($fItem.Target) { $srcFile = $fItem.Target }
-                    } catch { }
+                    } catch { <# bo qua: khong doc duoc dich symlink, dung duong dan goc #> }
 
                     if ($v.Zip) {
                         $destDir = Join-Path $dir $v.Exe
                         if (-not (Test-Path -LiteralPath $destDir)) {
-                            try { New-Item -ItemType Directory -Path $destDir -Force -ErrorAction SilentlyContinue | Out-Null } catch { }
+                            try { New-Item -ItemType Directory -Path $destDir -Force -ErrorAction SilentlyContinue | Out-Null } catch { <# bo qua: tao thu muc best-effort, buoc sau se bao loi that #> }
                         }
                         Copy-Item -LiteralPath $srcFile -Destination (Join-Path $destDir "$($v.Exe).exe") -Force -ErrorAction SilentlyContinue
                         if ($v.SubExe) {
@@ -573,7 +585,7 @@ function Invoke-SetupDirect {
                                 try {
                                     $subItem = Get-Item -LiteralPath $subLocal -Force -ErrorAction SilentlyContinue
                                     if ($subItem.Target) { $subLocal = $subItem.Target }
-                                } catch { }
+                                } catch { <# bo qua: khong doc duoc dich symlink, dung duong dan goc #> }
                                 Copy-Item -LiteralPath $subLocal -Destination (Join-Path $destDir "$($v.SubExe).exe") -Force -ErrorAction SilentlyContinue
                                 Copy-Item -LiteralPath $subLocal -Destination (Join-Path $dir "$($v.SubExe).exe") -Force -ErrorAction SilentlyContinue
                             }
@@ -600,7 +612,7 @@ function Invoke-SetupDirect {
                     try {
                         $destDir = Join-Path $dir 'scrcpy'
                         if (-not (Test-Path -LiteralPath $destDir)) {
-                            try { New-Item -ItemType Directory -Path $destDir -Force -ErrorAction SilentlyContinue | Out-Null } catch { }
+                            try { New-Item -ItemType Directory -Path $destDir -Force -ErrorAction SilentlyContinue | Out-Null } catch { <# bo qua: tao thu muc best-effort, buoc sau se bao loi that #> }
                         }
                         Copy-Item -LiteralPath $ldAdb -Destination (Join-Path $destDir 'adb.exe') -Force -ErrorAction SilentlyContinue
                         Copy-Item -LiteralPath $ldAdb -Destination (Join-Path $dir 'adb.exe') -Force -ErrorAction SilentlyContinue
@@ -617,7 +629,7 @@ function Invoke-SetupDirect {
                             Write-Ok "Da sao chep ADB thanh cong tu gia lap vao thu muc tools"
                             continue
                         }
-                    } catch { }
+                    } catch { Write-Warn2 ('Sao chep ADB tu gia lap loi: ' + $_.Exception.Message) }
                 }
             }
 
@@ -680,7 +692,7 @@ function Invoke-SetupDirect {
                                 Write-Ok "Cai dat thanh cong qua WinGet: $($v.Exe)"
                                 continue
                             }
-                        } catch { }
+                        } catch { Write-Warn2 ('Cai qua WinGet loi: ' + $_.Exception.Message) }
                     }
                 }
                 Write-Bad "Khong the tai $($v.Ten). Vui long kiem tra ket noi mang hoac quyen ghi."
@@ -692,7 +704,7 @@ function Invoke-SetupDirect {
                     Write-Note "Dang giai nen vao tools\$($v.Exe)..."
                     $destDir = Join-Path $dir $v.Exe
                     if (-not (Test-Path -LiteralPath $destDir)) {
-                        try { New-Item -ItemType Directory -Path $destDir -Force -ErrorAction SilentlyContinue | Out-Null } catch { }
+                        try { New-Item -ItemType Directory -Path $destDir -Force -ErrorAction SilentlyContinue | Out-Null } catch { <# bo qua: tao thu muc best-effort, buoc sau se bao loi that #> }
                     }
                     Expand-Archive -Path $file -DestinationPath $destDir -Force
                     Get-ChildItem -LiteralPath $destDir -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
@@ -718,10 +730,10 @@ function Invoke-SetupDirect {
         try {
             if (Test-Path -LiteralPath $tmpd) {
                 Get-ChildItem -LiteralPath $tmpd -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
-                    try { [System.IO.File]::Delete($_.FullName) } catch { }
+                    try { [System.IO.File]::Delete($_.FullName) } catch { <# bo qua: don file tam best-effort #> }
                 }
             }
-        } catch { }
+        } catch { <# bo qua: don thu muc tam best-effort #> }
     }
     Write-Host ''
     Write-Note 'Kiem tra lai toan bo bang lenh: .\kid-fby.ps1 -Check'
@@ -746,7 +758,7 @@ function Test-Ready {
     try {
         $pAdb = Start-Process $tools.adb -ArgumentList "start-server" -NoNewWindow -PassThru -ErrorAction SilentlyContinue
         if ($pAdb) { $pAdb.WaitForExit(4000) }
-    } catch { }
+    } catch { <# bo qua: khoi dong adb server best-effort, buoc sau kiem tra thiet bi #> }
     $dev = Invoke-Exe $tools.adb @('devices') -TimeoutMs 5000
     $lines = @($dev.Out -split "`n" | Where-Object { $_ -match '\sdevice\s*$' })
     if ($lines.Count -eq 0) {
@@ -763,11 +775,11 @@ function Test-Ready {
                         if ($tcp.Connected) {
                             $null = Invoke-Exe $tools.adb @('connect', "127.0.0.1:$port") -TimeoutMs 2000
                         }
-                    } catch { }
+                    } catch { <# bo qua: thu ket noi cong LDPlayer; that bai la binh thuong #> }
                 }
-            } catch { }
+            } catch { <# bo qua: thu ket noi cong LDPlayer; that bai la binh thuong #> }
             finally {
-                try { $tcp.Close() } catch { }
+                try { $tcp.Close() } catch { <# bo qua: dong socket da dong #> }
             }
         }
         Start-Sleep -Milliseconds 200
@@ -874,7 +886,7 @@ function Get-VideoDuration {
             $stream = @($data.streams | Select-Object -First 1)[0]
             $duration = 0.0
             if ($null -ne $stream -and [double]::TryParse([string]$stream.duration, [Globalization.NumberStyles]::Float, [cultureinfo]::InvariantCulture, [ref]$duration) -and -not [double]::IsNaN($duration) -and -not [double]::IsInfinity($duration) -and $duration -gt 0.5) { return $duration }
-        } catch { }
+        } catch { Write-Warn2 ('Doc thoi luong video loi: ' + $_.Exception.Message) }
     }
     Get-Duration $T $File
 }
@@ -1147,6 +1159,11 @@ public class KidFrameSync
         return System.Threading.Tasks.Task.Factory.StartNew<double[]>(delegate { return Match(r0, count, dMin, dMax, minUsed, excl, stride); });
     }
 
+    public System.Threading.Tasks.Task<double[]> MatchLoopAsync(int r0, int count, int dMin, int dMax, int minUsed, int excl, int stride, int loopLen, int minValidD)
+    {
+        return System.Threading.Tasks.Task.Factory.StartNew<double[]>(delegate { return MatchLoop(r0, count, dMin, dMax, minUsed, excl, stride, loopLen, minValidD); });
+    }
+
     public int ValidRef(int r0, int count)
     {
         int c = 0;
@@ -1184,10 +1201,18 @@ public class KidFrameSync
     // d tinh bang khung 30 fps; dSub la noi suy parabol quanh dinh.
     public double[] Match(int r0, int count, int dMin, int dMax, int minUsed, int excl, int stride)
     {
+        return MatchLoop(r0, count, dMin, dMax, minUsed, excl, stride, 0, 0);
+    }
+
+    // Nhu Match, them xu ly Reel ngan tu phat lap: loopLen > 0 (so khung cua video goc) thi cac dinh o best + m*loopLen (+-3 khung)
+    // co tuong quan >= 0.9 x dinh chinh la "lan phat lap" cua cung mot khop: chon dinh SOM NHAT co d >= minValidD (khong co thi giu
+    // dinh chinh), va second bo qua cac dinh lap (khong co dinh nao khac => -1). Phan tu [5] = so lan lap phat hien.
+    public double[] MatchLoop(int r0, int count, int dMin, int dMax, int minUsed, int excl, int stride, int loopLen, int minValidD)
+    {
         if (dMin < 0) dMin = 0;
         if (stride < 1) stride = 1;
         int n = dMax - dMin + 1;
-        if (n < 1) return new double[] { 0, -1, -1, 0, 0 };
+        if (n < 1) return new double[] { 0, -1, -1, 0, 0, 0 };
         double[] sc = new double[n]; int[] us = new int[n];
         for (int d = dMin; d <= dMax; d++)
         {
@@ -1197,8 +1222,40 @@ public class KidFrameSync
         }
         int best = 0;
         for (int k = 1; k < n; k++) if (sc[k] > sc[best]) best = k;
+        int loops = 0;
+        System.Collections.Generic.List<int> cand = new System.Collections.Generic.List<int>();
+        cand.Add(best);
+        if (loopLen >= 30 && sc[best] > 0)
+        {
+            int maxM = n / loopLen + 1;
+            for (int m = -maxM; m <= maxM; m++)
+            {
+                if (m == 0) continue;
+                long center = (long)best + (long)m * loopLen;
+                if (center < -3 || center > n - 1 + 3) continue;
+                int lo = (int)Math.Max(0, center - 3), hi = (int)Math.Min(n - 1, center + 3);
+                if (hi < lo) continue;
+                int jm = lo;
+                for (int k = lo + 1; k <= hi; k++) if (sc[k] > sc[jm]) jm = k;
+                if (sc[jm] >= 0.9 * sc[best]) cand.Add(jm);
+            }
+            cand.Sort();
+            loops = cand.Count - 1;
+            if (loops > 0)
+            {
+                int chosen = best;
+                foreach (int c in cand) { if (dMin + c >= minValidD) { chosen = c; break; } }
+                best = chosen;
+            }
+        }
         double second = -1.0;
-        for (int k = 0; k < n; k++) if (Math.Abs(k - best) >= excl && sc[k] > second) second = sc[k];
+        for (int k = 0; k < n; k++)
+        {
+            bool near = false;
+            foreach (int c in cand) { if (Math.Abs(k - c) < excl) { near = true; break; } }
+            if (loops == 0) near = Math.Abs(k - best) < excl;
+            if (!near && sc[k] > second) second = sc[k];
+        }
         double sub = best;
         if (best > 0 && best < n - 1 && sc[best - 1] > -1.0 && sc[best + 1] > -1.0)
         {
@@ -1206,7 +1263,7 @@ public class KidFrameSync
             double den = y0 - 2 * y1 + y2;
             if (Math.Abs(den) > 1e-9) { double off = 0.5 * (y0 - y2) / den; if (off > -1 && off < 1) sub = best + off; }
         }
-        return new double[] { dMin + sub, sc[best], second, dMin + best, us[best] };
+        return new double[] { dMin + sub, sc[best], second, dMin + best, us[best], loops };
     }
 }
 '@
@@ -1275,6 +1332,10 @@ function Wait-KidTask {
 # Goi KidFrameSync.Match: co Tok thi chay async + Wait-KidTask (Dung co hieu luc trong <= 100 ms); khong thi goi dong bo.
 function Invoke-KidMatch {
     param($K, $Tok, [object[]]$A)
+    if ($A.Count -ge 9) {
+        if ($null -ne $Tok) { return (Wait-KidTask -Task $K.MatchLoopAsync($A[0], $A[1], $A[2], $A[3], $A[4], $A[5], $A[6], $A[7], $A[8]) -Tok $Tok) }
+        return $K.MatchLoop($A[0], $A[1], $A[2], $A[3], $A[4], $A[5], $A[6], $A[7], $A[8])
+    }
     if ($null -ne $Tok) { return (Wait-KidTask -Task $K.MatchAsync($A[0], $A[1], $A[2], $A[3], $A[4], $A[5], $A[6]) -Tok $Tok) }
     return $K.Match($A[0], $A[1], $A[2], $A[3], $A[4], $A[5], $A[6])
 }
@@ -1284,9 +1345,11 @@ function Invoke-KidMatch {
 # D tra ve = bac thap nhat dang tin (audio la dong ho chu, hinh chi co the tre them), khong co bac => d toan cuc.
 function Measure-FrameSync {
     # MaxOffsetFrames > 0: chi tim d trong [0, MaxOffsetFrames] khung (Reel chi co the mo trong khoang vai chuc giay dau cua ban thu).
-    param($K, [int]$MaxOffsetFrames = 0, $Tok = $null)
+    # LoopFrames > 0: so khung video goc, bat xu ly Reel tu phat lap (xem KidFrameSync.MatchLoop); MinValidFrames: d nho nhat hop le
+    # khi chon dinh som nhat trong cac lan phat lap (= tOpen - tRec - 0.3 s).
+    param($K, [int]$MaxOffsetFrames = 0, $Tok = $null, [int]$LoopFrames = 0, [int]$MinValidFrames = 0)
     $inv = [cultureinfo]::InvariantCulture
-    $o = @{ Ok = $false; Reason = ''; Geometry = ''; D = $null; DGlobal = $null; Peak = $null; Ratio = $null; StartPeak = $null; StartVisible = $null; DriftMs = $null; SegText = ''; Plateaus = '' }
+    $o = @{ Ok = $false; Loops = 0; Reason = ''; Geometry = ''; D = $null; DGlobal = $null; Peak = $null; Ratio = $null; StartPeak = $null; StartVisible = $null; DriftMs = $null; SegText = ''; Plateaus = '' }
     $refN = $K.RefCount; $scrN = $K.ScrCount
     if ($refN -lt 60 -or $scrN -lt 60) { $o.Reason = 'too-few-frames'; return $o }
     $validRef = $K.ValidRef(0, $refN)
@@ -1296,7 +1359,8 @@ function Measure-FrameSync {
     $dMaxCoarse = $scrN - 1
     if ($MaxOffsetFrames -gt 0) { $dMaxCoarse = [int][Math]::Min($dMaxCoarse, $MaxOffsetFrames) }
     $coarseMinUsed = [int][Math]::Max(10, [Math]::Floor($minUsed / 3))
-    $coarse = Invoke-KidMatch -K $K -Tok $Tok -A @(0, $refN, 0, $dMaxCoarse, $coarseMinUsed, 10, 3)
+    $coarse = Invoke-KidMatch -K $K -Tok $Tok -A @(0, $refN, 0, $dMaxCoarse, $coarseMinUsed, 10, 3, $LoopFrames, $MinValidFrames)
+    $o.Loops = [int]$coarse[5]
     if ($coarse[1] -le 0) { $o.Reason = 'no-match'; $o.Peak = [Math]::Round($coarse[1], 3); return $o }
     $dc = [int]$coarse[3]
     $fine = (Invoke-KidMatch -K $K -Tok $Tok -A @(0, $refN, ($dc - 4), ($dc + 4), $minUsed, 2, 1))
@@ -1304,6 +1368,8 @@ function Measure-FrameSync {
     $o.DGlobal = [double]$fine[0]
     $o.Peak = [double]$fine[1]
     $o.Ratio = [Math]::Min(10.0, [double]$coarse[1] / [Math]::Max(0.01, [double]$coarse[2]))
+    # Co lan lap nhung khong con dinh nao khac (ngoai cac lan lap) => khop khong mo ho: ty le 9.99.
+    if ($o.Loops -gt 0 -and [double]$coarse[2] -le -1.0) { $o.Ratio = 9.99 }
     $dg = [int][Math]::Round($o.DGlobal)
     $o.D = $o.DGlobal
 
@@ -1370,10 +1436,11 @@ function Measure-FrameSync {
 function Find-VideoSyncOffset {
     # MaxOffsetSec > 0: gioi han tim t0 trong [0, MaxOffsetSec] giay cua ban thu (= tOpen - tRec + 20 s); 0 = khong gioi han.
     # Video goc dai hon $script:KidSyncLongRefSec (300 s): chi lay chu ky 3 doan 6 s (dau/giua/cuoi) de nhanh va nhe bo nho.
-    param($T, [string]$RefVideo, [string]$RecFile, [string]$Work, [double]$MaxOffsetSec = 0, [double]$RefDuration = 0)
+    # MinOffsetSec: d nho nhat hop le (= tOpen - tRec - 0.3 s) khi chon lan phat dau trong Reel lap; 0 = khong rang buoc.
+    param($T, [string]$RefVideo, [string]$RecFile, [string]$Work, [double]$MaxOffsetSec = 0, [double]$RefDuration = 0, [double]$MinOffsetSec = 0)
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $inv = [cultureinfo]::InvariantCulture
-    $out = @{ Ok = $false; Reason = 'unknown'; T0 = $null; Peak = $null; Ratio = $null; Geometry = ''; StartPeak = $null; DriftMs = $null; SegText = ''; Plateaus = ''; DGlobalSec = $null; ElapsedSec = 0.0; Mode = 'full' }
+    $out = @{ Ok = $false; Reason = 'unknown'; Loops = 0; T0 = $null; Peak = $null; Ratio = $null; Geometry = ''; StartPeak = $null; DriftMs = $null; SegText = ''; Plateaus = ''; DGlobalSec = $null; ElapsedSec = 0.0; Mode = 'full' }
     $tok = $null
     try {
         if (-not $T.ffmpeg -or -not $T.ffprobe) { $out.Reason = 'no-ffmpeg'; return $out }
@@ -1440,7 +1507,9 @@ function Find-VideoSyncOffset {
         for ($i = 0; $i -lt $geoms.Count; $i++) {
             $g = $geoms[$i]
             $k = Wait-KidTask -Task ([KidFrameSync]::CreateAsync($refSig.Paths[$i], $scrSig.Paths[$i], [int]$g.W, [int]$g.H, $segStart, $segCount, $refTotal, $scrCapFrames, $tok)) -Tok $tok
-            $m = Measure-FrameSync -K $k -MaxOffsetFrames $maxOffsetFrames -Tok $tok
+            $loopFrames = if ($out.Mode -eq 'full' -and $refDur -gt 0) { [int][Math]::Round($refDur * 30.0) } else { 0 }
+            $minValidFrames = if ($MinOffsetSec -gt 0) { [int][Math]::Floor($MinOffsetSec * 30.0) } else { 0 }
+            $m = Measure-FrameSync -K $k -MaxOffsetFrames $maxOffsetFrames -Tok $tok -LoopFrames $loopFrames -MinValidFrames $minValidFrames
             $k = $null
             $m.Geometry = $g.Name
             if (-not $m.Ok) { if ($null -eq $best) { $best = $m }; continue }
@@ -1448,6 +1517,8 @@ function Find-VideoSyncOffset {
             if ($m.Peak -ge 0.6 -and $m.Ratio -ge 1.15) { $best = $m; break }
         }
         if ($null -eq $best -or -not $best.Ok) { $out.Reason = if ($best) { 'match-' + $best.Reason } else { 'no-geometry' }; return $out }
+        $out.Loops = [int]$best.Loops
+        if ($out.Loops -gt 0) { Write-Note ('SYNC_LOOP: ' + $out.Loops + ' lan lap (Reel phat lap trong ban thu; lay lan phat som nhat hop le).') }
         $out.Geometry = $best.Geometry; $out.Peak = [Math]::Round($best.Peak, 3); $out.Ratio = [Math]::Round($best.Ratio, 2)
         $out.StartPeak = if ($null -ne $best.StartPeak) { [Math]::Round($best.StartPeak, 3) } else { $null }
         $out.DriftMs = $best.DriftMs; $out.SegText = $best.SegText; $out.Plateaus = $best.Plateaus; $out.DGlobalSec = [Math]::Round($best.DGlobal / 30.0, 3)
@@ -1516,7 +1587,7 @@ function Get-DubbingVietnameseChoice {
             if (-not $bounds) { continue }
             return [pscustomobject]@{X=$bounds.X;Y=$bounds.Y;Label=$label;Selected=($row.GetAttribute('checked') -eq 'true' -and $otherSelected.Count -eq 0);Clickable=($row.GetAttribute('clickable') -eq 'true')}
         }
-    } catch { }
+    } catch { Write-Warn2 ('Phan tich giao dien chon long tieng loi: ' + $_.Exception.Message) }
     return $null
 }
 
@@ -1549,7 +1620,7 @@ function Get-UiNodeBounds {
             }
             if ($found) { break }
         }
-    } catch { }
+    } catch { Write-Warn2 ('Doc giao dien (uiautomator) loi: ' + $_.Exception.Message) }
     finally {
         Remove-Item -LiteralPath $xmlLocal -Force -ErrorAction SilentlyContinue
         $null = Invoke-Adb $T @('shell','rm','-f',$remoteXml)
@@ -1870,7 +1941,7 @@ function Ensure-VietnameseDubbing {
                 $scroll = Get-VisibleUiBounds -Node $node
                 if ($scroll) { break }
             }
-        } catch { }
+        } catch { Write-Warn2 ('Tim vung cuon tren giao dien loi: ' + $_.Exception.Message) }
         if (-not $scroll) { break }
         $fromY = [int]($scroll.Top + ($scroll.Bottom-$scroll.Top)*0.8)
         $toY = [int]($scroll.Top + ($scroll.Bottom-$scroll.Top)*0.2)
@@ -1999,7 +2070,7 @@ function Test-GifFile {
     # Giai ma toan bo animation bang FFmpeg de kiem tra du lieu pixel/LZW thuc te (fail-fast, timeout guard)
     $ffmpegExe = $null
     if (Get-Command 'Find-Tool' -ErrorAction SilentlyContinue) {
-        try { $ffmpegExe = Find-Tool 'ffmpeg' } catch { }
+        try { $ffmpegExe = Find-Tool 'ffmpeg' } catch { <# bo qua: khong tim thay ffmpeg, bo qua kiem tra giai ma GIF bang ffmpeg #> }
     }
     if (-not $ffmpegExe) {
         $candBases = @(
@@ -2242,7 +2313,7 @@ function Invoke-ReeditVideo {
         if ($GifEnabled) {
             if ([string]::IsNullOrWhiteSpace($GifFile)) {
                 Show-Fail -Message 'Bat tuy chon GIF (-GifWatermark hoac -GifEnabled) nhung chua cung cap duong dan file GIF (-GifFile).'
-                exit 1
+                throw 'Bat tuy chon GIF nhung chua cung cap file GIF (-GifFile).'
             }
             Test-GifFile -File $GifFile
             $resolvedGif = (Resolve-Path -LiteralPath $GifFile).Path
@@ -2373,7 +2444,11 @@ function Remove-StalePublishDirs {
     param([string]$Dest)
     if (-not (Test-Path -LiteralPath $Dest -PathType Container)) { return }
     $destFull = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Dest).Path).TrimEnd('\') + '\'
-    foreach ($d in @(Get-ChildItem -LiteralPath $Dest -Directory -Force -Filter '.kidfby-publish-*' -ErrorAction SilentlyContinue)) {
+    # Ban moi: thu muc giao dich nam trong .cache; ban cu: o goc thu muc xuat.
+    $scanDirs = @($Dest)
+    $cacheScan = Get-ReelCacheDir -Dest $Dest
+    if (Test-Path -LiteralPath $cacheScan -PathType Container) { $scanDirs += $cacheScan }
+    foreach ($d in @($scanDirs | ForEach-Object { Get-ChildItem -LiteralPath $_ -Directory -Force -Filter '.kidfby-publish-*' -ErrorAction SilentlyContinue })) {
         try {
             if ($d.Name -notmatch '^\.kidfby-publish-[0-9a-f]{32}$') { continue }
             if (([DateTime]::UtcNow - $d.LastWriteTimeUtc).TotalHours -lt 24) { continue }
@@ -2391,33 +2466,73 @@ function Remove-StalePublishDirs {
     }
 }
 
+# Loi publish co ma ly do de GUI dich: Data['KidReason'] = 'output-locked' | 'publish-failed'.
+function New-PublishException {
+    param([string]$Reason, [string]$Message)
+    $ex = New-Object System.IO.IOException($Message)
+    $ex.Data['KidReason'] = $Reason
+    return $ex
+}
+
+# Thu mo doc quyen (FileShare.None) file dich da co: that bai vi dang mo o ung dung khac (vi pham chia se) => $true.
+# Loi khac (khong quyen, v.v.) khong phai khoa: de buoc ghi/hoan tac that su xu ly va bao loi.
+function Test-FileOpenElsewhere {
+    param([string]$Path)
+    if (-not [IO.File]::Exists($Path)) { return $false }
+    $fs = $null
+    try {
+        $fs = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+        return $false
+    } catch [System.IO.IOException] {
+        $hr = $_.Exception.HResult -band 0xFFFF
+        return ($hr -eq 32 -or $hr -eq 33)
+    } catch {
+        return $false   # bo qua: khong phai loi chia se (vd UnauthorizedAccess), de buoc ghi bao loi dung
+    } finally {
+        if ($null -ne $fs) { $fs.Dispose() }
+    }
+}
+
 function Publish-ReelFiles {
     param([System.Collections.IDictionary[]]$Pairs, [string]$Dest)
     if (-not (Test-Path -LiteralPath $Dest -PathType Container)) {
         New-Item -ItemType Directory -Path $Dest -Force | Out-Null
     }
     $destFull = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Dest).Path).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-    $txnName = '.kidfby-publish-' + [Guid]::NewGuid().ToString('N')
-    $txnPath = [IO.Path]::GetFullPath((Join-Path $destFull $txnName))
     $prefix = $destFull + [IO.Path]::DirectorySeparatorChar
-    if (-not $txnPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Publish transaction path is outside the destination directory.' }
+    # [L2] Kiem dich hop le (nam o thu muc xuat hoac .cache) truoc khi tao bat ky thu muc giao dich nao.
+    foreach ($pair in $Pairs) {
+        $destParent = [IO.Path]::GetFullPath((Split-Path ([string]$pair.Destination) -Parent)).TrimEnd('\')
+        if ($destParent -ieq $destFull) { continue }
+        if ($destParent -ieq (Get-ReelCacheDir -Dest $destFull)) { continue }
+        throw "Publish destination is outside the allowed folders: $($pair.Destination)"
+    }
+    # Giao dich nam trong .cache (an), khong o goc thu muc xuat.
+    $cacheDir = Initialize-ReelCacheDir -Dest $destFull
+    $cachePrefix = ([IO.Path]::GetFullPath($cacheDir)).TrimEnd('\') + '\'
+    foreach ($pair in $Pairs) {
+        $source = [string]$pair.Source
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or (Get-Item -LiteralPath $source).Length -le 0) { throw "Publish source is missing or empty: $source" }
+    }
+    # [M4] Dich dang mo o ung dung khac (FileShare.Read...) => dung som, chua dong vao file nao, chua tao thu muc giao dich.
+    foreach ($pair in $Pairs) {
+        if (Test-FileOpenElsewhere -Path ([string]$pair.Destination)) {
+            Write-Warn2 ('Dich dang bi mo o ung dung khac: ' + [string]$pair.Destination)
+            throw (New-PublishException 'output-locked' 'File video dang duoc mo o ung dung khac; dong trinh xem roi thu lai.')
+        }
+    }
+    $txnName = '.kidfby-publish-' + [Guid]::NewGuid().ToString('N')
+    $txnPath = [IO.Path]::GetFullPath((Join-Path $cachePrefix $txnName))
+    if (-not $txnPath.StartsWith($cachePrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Publish transaction path is outside the cache directory.' }
     New-Item -ItemType Directory -Path $txnPath -Force | Out-Null
     $staging = Join-Path $txnPath 'staging'
     $backups = Join-Path $txnPath 'backups'
     New-Item -ItemType Directory -Path $staging,$backups -Force | Out-Null
-    # Dich nam trong .cache: tao + an truoc khi di chuyen; moi dich phai nam duoi thu muc xuat.
-    foreach ($pair in $Pairs) {
-        $destParent = [IO.Path]::GetFullPath((Split-Path ([string]$pair.Destination) -Parent)).TrimEnd('\')
-        if ($destParent -ieq $destFull) { continue }
-        if ($destParent -ieq (Get-ReelCacheDir -Dest $destFull)) { [void](Initialize-ReelCacheDir -Dest $destFull); continue }
-        throw "Publish destination is outside the allowed folders: $($pair.Destination)"
-    }
-    $hadOld = @(); $attempted = @(); $rollbackErrors = @(); $safeCleanup = $true; $committed = $false; $publishError = ''
+    $hadOld = @(); $attempted = @(); $rollbackErrors = @(); $safeCleanup = $true; $committed = $false; $publishError = ''; $failedIndex = -1
     try {
         for ($i = 0; $i -lt $Pairs.Count; $i++) {
             $source = [string]$Pairs[$i].Source
             $destination = [string]$Pairs[$i].Destination
-            if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or (Get-Item -LiteralPath $source).Length -le 0) { throw "Publish source is missing or empty: $source" }
             $stagedFile = Join-Path $staging ([IO.Path]::GetFileName($destination))
             Copy-Item -LiteralPath $source -Destination $stagedFile -Force -ErrorAction Stop
             $backupFile = Join-Path $backups ([IO.Path]::GetFileName($destination))
@@ -2428,15 +2543,32 @@ function Publish-ReelFiles {
         for ($i = 0; $i -lt $Pairs.Count; $i++) {
             $destination = [string]$Pairs[$i].Destination
             $stagedFile = Join-Path $staging ([IO.Path]::GetFileName($destination))
-            $attempted += $i
+            $failedIndex = $i
             Move-Item -LiteralPath $stagedFile -Destination $destination -Force -ErrorAction Stop
+            $attempted += $i
+            $failedIndex = -1
         }
         $committed = $true
     } catch {
         $publishError = $_.Exception.Message
     } finally {
         if (-not $committed) {
-            foreach ($i in @($attempted | Sort-Object -Descending)) {
+            $toRestore = @($attempted)
+            # Buoc Move that bai: chi hoan tac khi dich da bi doi so voi ban sao luu (tranh bao "Rollback failed" khi file khong he doi).
+            if ($failedIndex -ge 0 -and $failedIndex -lt $Pairs.Count) {
+                $fd = [string]$Pairs[$failedIndex].Destination
+                $fb = Join-Path $backups ([IO.Path]::GetFileName($fd))
+                $changed = $true
+                try {
+                    if ($hadOld[$failedIndex]) {
+                        $changed = -not ([IO.File]::Exists($fd) -and ((Get-FileHash -LiteralPath $fd -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $fb -Algorithm SHA256).Hash))
+                    } else {
+                        $changed = [IO.File]::Exists($fd)
+                    }
+                } catch { Write-Warn2 ('Khong so duoc dich voi ban sao luu, se hoan tac de an toan: ' + $_.Exception.Message) }
+                if ($changed) { $toRestore += $failedIndex }
+            }
+            foreach ($i in @($toRestore | Sort-Object -Descending)) {
                 $destination = [string]$Pairs[$i].Destination
                 try {
                     if ($hadOld[$i]) {
@@ -2449,17 +2581,19 @@ function Publish-ReelFiles {
             }
             if ($rollbackErrors.Count -gt 0) {
                 $safeCleanup = $false
-                throw "Publish failed: $publishError. Rollback failed: $($rollbackErrors -join '; '). Recoverable backups are in $txnPath"
+                Write-Warn2 ("Publish failed: $publishError. Rollback failed: $($rollbackErrors -join '; '). Recoverable backups are in $txnPath")
+                throw (New-PublishException 'publish-failed' "Publish failed and rollback was incomplete; backups kept in $txnPath")
             }
         }
         if ($safeCleanup -and (Test-Path -LiteralPath $txnPath)) {
             $resolvedTxn = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $txnPath).Path)
-            if ($resolvedTxn.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
-                Remove-Item -LiteralPath $resolvedTxn -Recurse -Force -ErrorAction SilentlyContinue
+            if ($resolvedTxn.StartsWith($cachePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                try { Remove-Item -LiteralPath $resolvedTxn -Recurse -Force -ErrorAction Stop }
+                catch { Write-Warn2 ('Khong don duoc thu muc giao dich xuat ban: ' + $resolvedTxn + '; ' + $_.Exception.Message) }
             }
         }
     }
-    if (-not $committed) { throw "Publish failed and previous destinations were restored: $publishError" }
+    if (-not $committed) { throw (New-PublishException 'publish-failed' "Publish failed and previous destinations were restored: $publishError") }
 }
 
 # ---------------------------------------------------------- xu ly 1 link ----
@@ -2806,9 +2940,13 @@ function Invoke-OneLink {
             if ($withVideo) {
                 Write-Note 'Khop khung hinh man hinh voi video goc de xac dinh t0...'
                 # Gioi han tim t0: Reel mo luc (tOpen - tRec) trong file thu; cho them 20 s. Khong biet tOpen => khong gioi han.
-                $syncMaxSec = 0.0
-                if ($null -ne $tOpen) { $syncMaxSec = [Math]::Max(0.0, [double]$tOpen - $(if ($null -ne $res.tRec) { [double]$res.tRec } else { 0.0 })) + 20.0 }
-                $sync = Find-VideoSyncOffset -T $T -RefVideo $vf.FullName -RecFile $rec -Work $tmp -MaxOffsetSec $syncMaxSec -RefDuration $dur
+                $syncMaxSec = 0.0; $syncMinSec = 0.0
+                if ($null -ne $tOpen) {
+                    $openRel = [Math]::Max(0.0, [double]$tOpen - $(if ($null -ne $res.tRec) { [double]$res.tRec } else { 0.0 }))
+                    $syncMaxSec = $openRel + 20.0
+                    $syncMinSec = [Math]::Max(0.0, $openRel - 0.3)
+                }
+                $sync = Find-VideoSyncOffset -T $T -RefVideo $vf.FullName -RecFile $rec -Work $tmp -MaxOffsetSec $syncMaxSec -RefDuration $dur -MinOffsetSec $syncMinSec
                 if ($null -ne $sync.Peak) { $res.syncConfidence = [double]$sync.Peak }
                 Write-Note ([string]::Format($inv, 'Khop hinh: ket qua {0}, hinh hoc {1}, dinh {2}, ty le {3}, dinh dau video {4}, d toan cuc {5} s, bac d (khung) [{6}], 3 doan (ms so voi t0) {7}, mat {8:0.0} s', $sync.Reason, $sync.Geometry, $sync.Peak, $sync.Ratio, $sync.StartPeak, $sync.DGlobalSec, $sync.Plateaus, $sync.SegText, [double]$sync.ElapsedSec))
                 if ($sync.Ok) {
@@ -2917,7 +3055,7 @@ function Invoke-OneLink {
                     $flt = "loudnorm=I=-16:TP=-1.5:LRA=11:measured_I=$($j.input_i):measured_TP=$($j.input_tp)" +
                            ":measured_LRA=$($j.input_lra):measured_thresh=$($j.input_thresh):offset=$($j.target_offset):linear=true,aresample=48000"
                 }
-            } catch { }
+            } catch { Write-Warn2 ('Do loudnorm loi, dung bo loc mac dinh: ' + $_.Exception.Message) }
         }
 
         $cutResult = Invoke-Exe $T.ffmpeg @('-hide_banner','-loglevel','error','-y','-i',$analysisFile,'-vn',
@@ -3023,11 +3161,25 @@ function Invoke-OneLink {
             Set-KidResultState $res 'failed' 'publish-failed' 'Luu am thanh that bai.'
             return $null
         }
-        Publish-ReelFiles -Dest $Dest -Pairs @(
-            @{ Source = $fGoc; Destination = $finalGoc },
-            @{ Source = $fAm; Destination = $finalAm },
-            @{ Source = $out; Destination = $finalOut }
-        )
+        try {
+            Publish-ReelFiles -Dest $Dest -Pairs @(
+                @{ Source = $fGoc; Destination = $finalGoc },
+                @{ Source = $fAm; Destination = $finalAm },
+                @{ Source = $out; Destination = $finalOut }
+            )
+        } catch {
+            # [L7] Chi tiet ky thuat (duong dan, loi .NET) chi vao log; RESULT.message khong dau, khong duong dan.
+            $pubReason = [string]$_.Exception.Data['KidReason']
+            Write-Warn2 ('Xuat ban that bai: ' + $_.Exception.Message)
+            if ($pubReason -eq 'output-locked') {
+                Show-Fail -Message 'File video dang duoc mo o ung dung khac.' -Fix @('Dong trinh xem/ung dung dang mo file -3-hoan-chinh.mp4 roi thu lai.')
+                Set-KidResultState $res 'failed' 'output-locked' 'File video dang duoc mo o ung dung khac; dong trinh xem roi thu lai.'
+            } else {
+                Show-Fail -Message 'Xuat ban file that bai.' -Fix @('Kiem tra o dia con trong va quyen ghi thu muc xuat; xem log de biet chi tiet.')
+                Set-KidResultState $res 'failed' 'publish-failed' 'Xuat ban file that bai; file cu duoc giu nguyen (xem log de biet chi tiet).'
+            }
+            return $null
+        }
 
         $res.id = [string]$vid
         $res.video = $finalOut; $res.source = $finalGoc; $res.audio = $finalAm
@@ -3196,7 +3348,8 @@ if ($Check) {
 }
 
 if (-not $OutDir -or $OutDir -eq '') {
-    $base = $PSScriptRoot
+    # Mac dinh = <goc app>\output (cung noi GUI doc), khong phai core\output.
+    $base = $script:Here
     if (-not $base) { $base = (Get-Location).Path }
     $OutDir = Join-Path $base 'output'
 }

@@ -13,3 +13,4 @@ core/_backup/
 *.private.xml
 update-signing-*.xml
 _handoff/
+core/.resources-stamp

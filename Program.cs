@@ -54,6 +54,48 @@ namespace KidFBY
             }
         }
 
+        // U-INST: lan mo thu 2 -> dua cua so GUI dang chay len truoc thay vi hop thoai xam.
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool IsWindow(IntPtr hWnd);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool IsIconic(IntPtr hWnd);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr hWnd);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+        // GUI ghi core\_update\gui.hwnd = "<pid>|<hwnd>|<gio khoi dong UTC (ticks)>" khi mo cua so, xoa khi thoat.
+        // Chi kich hoat khi pid + thoi diem khoi dong + chu so huu cua so deu khop (tranh nham cua so khac sau khi crash).
+        static bool TryActivateRunningWindow(string baseDir)
+        {
+            try
+            {
+                string f = Path.Combine(Path.Combine(Path.Combine(baseDir, "core"), "_update"), "gui.hwnd");
+                if (!File.Exists(f)) return false;
+                string[] p = File.ReadAllText(f).Trim().Split('|');
+                int pid; long hwndValue; long ticks;
+                if (p.Length < 3 || !int.TryParse(p[0], out pid) || !long.TryParse(p[1], out hwndValue) || !long.TryParse(p[2], out ticks)) return false;
+                IntPtr hwnd = new IntPtr(hwndValue);
+                if (!IsWindow(hwnd)) return false;
+                uint ownerPid;
+                GetWindowThreadProcessId(hwnd, out ownerPid);
+                if ((int)ownerPid != pid) return false;
+                using (Process proc = Process.GetProcessById(pid))
+                {
+                    if (proc.HasExited) return false;
+                    if (Math.Abs(proc.StartTime.ToUniversalTime().Ticks - ticks) > TimeSpan.TicksPerSecond) return false;
+                }
+                if (IsIconic(hwnd)) ShowWindow(hwnd, 9); // SW_RESTORE chi khi dang thu nho (khong bo phong to)
+                BringWindowToTop(hwnd);
+                bool ok = SetForegroundWindow(hwnd);
+                Log("U-INST: da dua cua so Kid FB.Y dang chay len truoc (pid " + pid + ", foreground=" + ok + ").");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log("U-INST: khong dua duoc cua so dang chay len truoc: " + ex.Message);
+                return false;
+            }
+        }
+
         static void Notify(string text, MessageBoxIcon icon)
         {
             Log(text.Replace("\r", "").Replace("\n", " | "));
@@ -106,6 +148,7 @@ namespace KidFBY
                         single.Dispose();
                         single = null;
                         Environment.ExitCode = 2;
+                        if (TryActivateRunningWindow(baseDir)) return; // da dua cua so dang mo len truoc: khong can hop thoai
                         Notify("Kid FB.Y đang chạy.\nHãy dùng cửa sổ Kid FB.Y đang mở.", MessageBoxIcon.Information);
                         return;
                     }
