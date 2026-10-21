@@ -79,7 +79,7 @@ Engine in thêm các dòng máy đọc `@@KIDFBY_STAGE` và `@@KIDFBY_RESULT` (�
 
 Build không làm mới manifest. `publish.ps1 -Version x.y.z -NoPush` chuẩn bị phiên bản mới, ký manifest và ghi `version.json`/`version.json.sig`, vẫn thay file cục bộ. Không chạy `publish.ps1` không có `-NoPush` nếu chưa muốn commit/tag/push. Chép riêng EXE mới lên thư mục `core` cũ không cập nhật các script đã tồn tại; xem cơ chế cập nhật trong bàn giao.
 
-**Trạng thái cập nhật tự động:** manifest được ký RSA-SHA256, nhưng cặp khóa ký **chưa được tạo** và `core/updater.ps1` vẫn chứa placeholder khóa công khai, nên bản nguồn này chưa kiểm tra/tải cập nhật được và `publish.ps1` từ chối chạy. Tạo khóa bằng `new-signing-key.ps1` (khóa riêng nằm ngoài repo) là việc cần làm trước lần phát hành đầu tiên. `version.json` trong cây hiện là manifest cũ, chưa ký.
+**Trạng thái cập nhật tự động:** bản 2.1.0 đã phát hành (tag `v2.1.0` trên GitHub); `version.json` và `version.json.sig` đã ký RSA-SHA256 và nằm trên nhánh `main`. Khóa công khai đã gắn trong `core/updater.ps1`. Khóa riêng nằm ngoài repo ở `%USERPROFILE%\.kidfby\update-signing-private.xml` trên máy phát hành; **phải sao lưu**, vì mất khóa thì không phát hành được cập nhật cho máy đã cài. Không đưa khóa riêng vào repo. Đã kiểm đường cập nhật thật từ 2.0.1 lên 2.1.0. Lưu ý: sau khi cập nhật từ 2.0.1, mở app thêm một lần để có phông Nunito, vì phông không nằm trong manifest mà đến qua EXE mới.
 
 ## Đọc tiếp
 
