@@ -33,6 +33,15 @@ foreach ($scriptName in @('kid-fby-gui.ps1','kid-fby.ps1','whisper-language.ps1'
     [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $Root ('core/'+$scriptName)),[ref]$scriptTokens,[ref]$scriptErrors)
     if ($scriptErrors.Count) { throw ('PowerShell parse failed: '+$scriptName) }
 }
+# Giao dien WPF: XAML phai la XML hop le, UTF-8 BOM + CRLF (giong file .ps1).
+foreach ($xamlName in @('ui/Theme.xaml','ui/MainWindow.xaml')) {
+    $xamlPath=Join-Path $Root ('core/'+$xamlName)
+    $xamlBytes=[IO.File]::ReadAllBytes($xamlPath)
+    if ($xamlBytes.Length -lt 3 -or $xamlBytes[0] -ne 0xEF -or $xamlBytes[1] -ne 0xBB -or $xamlBytes[2] -ne 0xBF) { throw ('XAML must be UTF-8 with BOM: '+$xamlName) }
+    $xamlText=[Text.Encoding]::UTF8.GetString($xamlBytes)
+    if ([regex]::IsMatch($xamlText,'(?<!\r)\n')) { throw ('XAML must use CRLF line endings: '+$xamlName) }
+    try { [void]([xml]$xamlText.TrimStart([char]0xFEFF)) } catch { throw ('XAML is not well-formed: '+$xamlName+' '+$_.Exception.Message) }
+}
 $compiler='C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if(-not (Test-Path -LiteralPath $compiler -PathType Leaf)){throw 'C# compiler is unavailable.'}
 # Keep generated compiler input outside the checkout and retire only this owned directory.
@@ -55,13 +64,14 @@ try{
     & $compiler /nologo /target:winexe /out:Kid-FB.Y.exe /win32icon:core\Kid-FB.Y.ico /optimize+ /r:System.Windows.Forms.dll `
         /res:core\kid-fby-gui.ps1,kid-fby-gui.ps1 /res:core\kid-fby.ps1,kid-fby.ps1 `
         /res:core\whisper-language.ps1,whisper-language.ps1 /res:core\facebook-links.ps1,facebook-links.ps1 `
-        /res:core\fix-ket-noi.ps1,fix-ket-noi.ps1 /res:core\kid-logo.zip,kid-logo.zip /res:core\Kid-FB.Y.ico,Kid-FB.Y.ico Program.cs $assemblyInfo
+        /res:core\fix-ket-noi.ps1,fix-ket-noi.ps1 /res:core\kid-logo.zip,kid-logo.zip /res:core\Kid-FB.Y.ico,Kid-FB.Y.ico `
+        /res:core\ui\Theme.xaml,ui.Theme.xaml /res:core\ui\MainWindow.xaml,ui.MainWindow.xaml Program.cs $assemblyInfo
     if($LASTEXITCODE -ne 0){throw 'Local EXE compile failed.'}
     $launcherMetadata=[Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $Root 'Kid-FB.Y.exe'))
     if ($launcherMetadata.FileVersion -ne ($buildVersion+'.0') -or $launcherMetadata.ProductVersion -ne $buildVersion) {
         throw 'Launcher version metadata does not match core/version.txt.'
     }
-    Write-Output ('Local EXE v'+$buildVersion+' compiled with synchronized GIF source and seven embedded resources.')
+    Write-Output ('Local EXE v'+$buildVersion+' compiled with synchronized GIF source and nine embedded resources.')
 }finally{
     if ($locationPushed) { Pop-Location }
     $resolvedAssembly=[IO.Path]::GetFullPath($assemblyTempDir)
@@ -96,13 +106,13 @@ try {
         throw 'Fresh launcher SelfTest exceeded 30 seconds.'
     }
     if ($buildProcess.ExitCode -ne 0) { throw ('Fresh launcher SelfTest failed: '+$buildProcess.ExitCode) }
-    foreach ($resource in @('kid-fby-gui.ps1','kid-fby.ps1','whisper-language.ps1','facebook-links.ps1','fix-ket-noi.ps1','Kid-FB.Y.ico','kid-logo.zip')) {
+    foreach ($resource in @('kid-fby-gui.ps1','kid-fby.ps1','whisper-language.ps1','facebook-links.ps1','fix-ket-noi.ps1','Kid-FB.Y.ico','kid-logo.zip','ui/Theme.xaml','ui/MainWindow.xaml')) {
         $expected=(Get-FileHash -LiteralPath (Join-Path $Root ('core/'+$resource))).Hash
         $actual=(Get-FileHash -LiteralPath (Join-Path $buildCheckDir ('core/'+$resource))).Hash
         if ($actual -ne $expected) { throw ('Embedded resource mismatch: '+$resource) }
     }
     if (-not (Test-Path -LiteralPath (Join-Path $buildCheckDir 'core/_update/BOOT_OK'))) { throw 'Fresh GUI did not report BOOT_OK.' }
-    Write-Output 'PASS: fresh launcher SelfTest and all seven embedded resource hashes.'
+    Write-Output 'PASS: fresh launcher SelfTest and all nine embedded resource hashes.'
 } finally {
     if ($buildProcess) { $buildProcess.Dispose() }
     $resolvedCheck=[IO.Path]::GetFullPath($buildCheckDir)

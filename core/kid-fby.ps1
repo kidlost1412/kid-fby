@@ -44,6 +44,7 @@ param(
     [string]$WatermarkVideo,
     [string]$ReeditVideo,
     [switch]$ForceRetryRejected,
+    [switch]$AllowOnsetSync,
     [System.Collections.IDictionary]$ProcessRegistry
 )
 
@@ -1184,6 +1185,276 @@ function Get-AudioOnsetInfo {
     $info.Reason = 'ok'
     return $info
 }
+# ------------------------------------------------ dong bo theo hinh (khop khung hinh) ----
+# Khop khung hinh man hinh (ban thu scrcpy, cung dong ho voi audio) voi video goc tai ve de tim t0 = thoi diem
+# khung 0 cua video goc xuat hien tren truc pts cua file thu. Khong dua vao noi dung audio (long tieng khac audio goc).
+$script:KidSyncSource = @'
+using System;
+using System.IO;
+
+public class KidFrameSync
+{
+    int N;
+    float[][] Ref;
+    float[][] Scr;
+    public int RefCount { get { return Ref.Length; } }
+    public int ScrCount { get { return Scr.Length; } }
+
+    // Moi khung: tru trung binh, chia do lech chuan (null neu gan den hoac phang).
+    static float[][] LoadFrames(string path, int n)
+    {
+        byte[] b = File.ReadAllBytes(path);
+        int cnt = b.Length / n;
+        float[][] fr = new float[cnt][];
+        for (int f = 0; f < cnt; f++)
+        {
+            double sum = 0; int o = f * n;
+            for (int k = 0; k < n; k++) sum += b[o + k];
+            double mean = sum / n, ss = 0;
+            for (int k = 0; k < n; k++) { double d = b[o + k] - mean; ss += d * d; }
+            double sd = Math.Sqrt(ss / n);
+            if (sd < 3.0 || mean < 6.0) { fr[f] = null; continue; }
+            float[] v = new float[n];
+            double inv = 1.0 / (sd * Math.Sqrt(n));
+            for (int k = 0; k < n; k++) v[k] = (float)((b[o + k] - mean) * inv);
+            fr[f] = v;
+        }
+        return fr;
+    }
+
+    public KidFrameSync(string refPath, string scrPath, int w, int h)
+    {
+        N = w * h;
+        Ref = LoadFrames(refPath, N);
+        Scr = LoadFrames(scrPath, N);
+    }
+
+    public int ValidRef(int r0, int count)
+    {
+        int c = 0;
+        for (int i = 0; i < count; i++) { int ri = r0 + i; if (ri >= 0 && ri < Ref.Length && Ref[ri] != null) c++; }
+        return c;
+    }
+
+    // Pearson tren chuoi (pixel x thoi gian) sau khi tru khung trung binh cua cua so: bo nen tinh, giu chuyen dong.
+    // Cap (ref[r0+i], scr[r0+i+d]), i buoc theo stride; chi tinh khi ca hai khung hop le.
+    public double Score(int r0, int count, int d, int stride, out int used)
+    {
+        double dot = 0; used = 0;
+        float[] sa = new float[N]; float[] sb = new float[N];
+        for (int i = 0; i < count; i += stride)
+        {
+            int ri = r0 + i; int sj = ri + d;
+            if (ri < 0 || ri >= Ref.Length || sj < 0 || sj >= Scr.Length) continue;
+            float[] a = Ref[ri], b = Scr[sj];
+            if (a == null || b == null) continue;
+            double s = 0;
+            for (int k = 0; k < N; k++) { float x = a[k], y = b[k]; s += x * y; sa[k] += x; sb[k] += y; }
+            dot += s; used++;
+        }
+        if (used < 2) return -1.0;
+        double saa = 0, sbb = 0, sab = 0;
+        for (int k = 0; k < N; k++) { saa += sa[k] * sa[k]; sbb += sb[k] * sb[k]; sab += sa[k] * sb[k]; }
+        double u = used;
+        double va = u - saa / u, vb = u - sbb / u;
+        if (va <= 1e-6 || vb <= 1e-6) return -1.0;
+        return (dot - sab / u) / Math.Sqrt(va * vb);
+    }
+
+    // Tra ve [dSub, peak, second, dInt, used]. second = dinh cao nhat cach dinh chinh >= excl khung.
+    // d tinh bang khung 30 fps; dSub la noi suy parabol quanh dinh.
+    public double[] Match(int r0, int count, int dMin, int dMax, int minUsed, int excl, int stride)
+    {
+        if (dMin < 0) dMin = 0;
+        if (stride < 1) stride = 1;
+        int n = dMax - dMin + 1;
+        if (n < 1) return new double[] { 0, -1, -1, 0, 0 };
+        double[] sc = new double[n]; int[] us = new int[n];
+        for (int d = dMin; d <= dMax; d++)
+        {
+            int u; double s = Score(r0, count, d, stride, out u);
+            if (u < minUsed) s = -1.0;
+            sc[d - dMin] = s; us[d - dMin] = u;
+        }
+        int best = 0;
+        for (int k = 1; k < n; k++) if (sc[k] > sc[best]) best = k;
+        double second = -1.0;
+        for (int k = 0; k < n; k++) if (Math.Abs(k - best) >= excl && sc[k] > second) second = sc[k];
+        double sub = best;
+        if (best > 0 && best < n - 1 && sc[best - 1] > -1.0 && sc[best + 1] > -1.0)
+        {
+            double y0 = sc[best - 1], y1 = sc[best], y2 = sc[best + 1];
+            double den = y0 - 2 * y1 + y2;
+            if (Math.Abs(den) > 1e-9) { double off = 0.5 * (y0 - y2) / den; if (off > -1 && off < 1) sub = best + off; }
+        }
+        return new double[] { dMin + sub, sc[best], second, dMin + best, us[best] };
+    }
+}
+'@
+
+# Hinh hoc khung: Scr/Ref la bo loc crop (ty le theo iw/ih). 'fit' = vung giua man hinh Facebook Reel (bo thanh tren/duoi, cot nut ben phai);
+# video hien tren man hinh 720x1280 lech len ~4% so voi video goc (do thuc nghiem tren LDPlayer), nen vung Ref doi xuong 0.04.
+# 'mid' = cung vung crop hai ben; 'full' = khong crop. Thu lan luot, lay hinh hoc dau tien dat nguong.
+$script:KidSyncGeoms = @(
+    @{ Name = 'fit';  W = 24; H = 42; Scr = 'crop=iw*0.80:ih*0.60:iw*0.02:ih*0.10'; Ref = 'crop=iw*0.80:ih*0.60:iw*0.02:ih*0.14' },
+    @{ Name = 'mid';  W = 24; H = 42; Scr = 'crop=iw*0.80:ih*0.60:iw*0.02:ih*0.10'; Ref = 'crop=iw*0.80:ih*0.60:iw*0.02:ih*0.10' },
+    @{ Name = 'full'; W = 32; H = 56; Scr = ''; Ref = '' }
+)
+
+# Mot lan giai ma, tao raw gray 30 fps cho moi hinh hoc. Khung k = thoi diem k/30 s tren truc pts cua file vao
+# (fps start_time=0 dem khung dau neu video bat dau muon; rawvideo khong doi pts).
+function New-FrameSignatures {
+    param($T, [string]$File, [string]$Side, $Geoms, [string]$Work)
+    $n = $Geoms.Count
+    $labels = ''
+    for ($i = 0; $i -lt $n; $i++) { $labels += "[s$i]" }
+    $fc = "[0:v:0]fps=30:start_time=0,split=$n$labels"
+    $paths = @()
+    for ($i = 0; $i -lt $n; $i++) {
+        $g = $Geoms[$i]
+        $crop = [string]$g[$Side]
+        $chain = if ($crop) { $crop + ',' } else { '' }
+        $fc += (";[s$i]" + $chain + 'scale=' + $g.W + ':' + $g.H + ':flags=area,format=gray' + "[o$i]")
+        $paths += (Join-Path $Work ("sig-$Side-" + $g.Name + '.raw'))
+    }
+    $a = @('-hide_banner','-loglevel','error','-y','-i',$File,'-an','-filter_complex',$fc)
+    for ($i = 0; $i -lt $n; $i++) { $a += @('-map',"[o$i]",'-f','rawvideo',$paths[$i]) }
+    $r = Invoke-Exe $T.ffmpeg $a -TimeoutMs 600000
+    if ($r.Code -ne 0) { return @{ Ok = $false; Err = [string]$r.Err } }
+    foreach ($p in $paths) {
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf) -or (Get-Item -LiteralPath $p).Length -le 0) { return @{ Ok = $false; Err = ('Khong co du lieu khung: ' + $p) } }
+    }
+    return @{ Ok = $true; Paths = $paths }
+}
+
+# Danh gia mot hinh hoc: khop toan bo video goc -> d toan cuc (do tin cay), cac cua so 1.5 s -> cac "bac" d (player Facebook co the
+# dung hinh vai tram ms trong khi audio van chay => d tang theo bac), kiem tra dau video co tren man hinh.
+# D tra ve = bac thap nhat dang tin (audio la dong ho chu, hinh chi co the tre them), khong co bac => d toan cuc.
+function Measure-FrameSync {
+    param($K)
+    $inv = [cultureinfo]::InvariantCulture
+    $o = @{ Ok = $false; Reason = ''; Geometry = ''; D = $null; DGlobal = $null; Peak = $null; Ratio = $null; StartPeak = $null; StartVisible = $null; DriftMs = $null; SegText = ''; Plateaus = '' }
+    $refN = $K.RefCount; $scrN = $K.ScrCount
+    if ($refN -lt 60 -or $scrN -lt 60) { $o.Reason = 'too-few-frames'; return $o }
+    $validRef = $K.ValidRef(0, $refN)
+    if ($validRef -lt 45) { $o.Reason = 'ref-no-signal'; return $o }
+    $minUsed = [int][Math]::Max(30, [Math]::Floor(0.5 * $validRef))
+    # Tho (buoc 3 khung) toan khoang, roi tinh chinh +-4 khung buoc 1.
+    $coarse = $K.Match(0, $refN, 0, ($scrN - 1), [int][Math]::Max(10, [Math]::Floor($minUsed / 3)), 10, 3)
+    if ($coarse[1] -le 0) { $o.Reason = 'no-match'; $o.Peak = [Math]::Round($coarse[1], 3); return $o }
+    $dc = [int]$coarse[3]
+    $fine = $K.Match(0, $refN, ($dc - 4), ($dc + 4), $minUsed, 2, 1)
+    if ($fine[1] -le 0) { $o.Reason = 'no-match'; return $o }
+    $o.DGlobal = [double]$fine[0]
+    $o.Peak = [double]$fine[1]
+    $o.Ratio = [Math]::Min(10.0, [double]$coarse[1] / [Math]::Max(0.01, [double]$coarse[2]))
+    $dg = [int][Math]::Round($o.DGlobal)
+    $o.D = $o.DGlobal
+
+    # Cua so 1.5 s (45 khung), buoc 0.5 s, tim d cuc bo trong +-30 khung quanh d toan cuc; giu cua so dang tin (dinh >= 0.65, ty le >= 1.25).
+    $wl = [int][Math]::Min(45, [Math]::Floor($refN / 3))
+    $locals = New-Object 'System.Collections.Generic.List[double]'
+    $startConf = 0
+    if ($wl -ge 30) {
+        for ($r0 = 0; $r0 -le ($refN - $wl); $r0 += 15) {
+            $m = $K.Match($r0, $wl, ($dg - 30), ($dg + 30), [int]($wl * 0.5), 8, 1)
+            if ($m[1] -ge 0.65 -and ($m[1] / [Math]::Max(0.01, $m[2])) -ge 1.25) {
+                $locals.Add([double]$m[0])
+                if ($r0 -ge 30 -and $r0 -le 60) { $startConf++ }
+            }
+        }
+    }
+    # Gom d thanh bac (neo = gia tri thap nhat, dung sai 2.5 khung ~ 83 ms); bac hop le can >= 2 cua so dang tin.
+    $sortedD = @($locals | Sort-Object)
+    $plateaus = New-Object 'System.Collections.Generic.List[double]'
+    $cur = New-Object 'System.Collections.Generic.List[double]'
+    foreach ($v in $sortedD) {
+        if ($cur.Count -gt 0 -and ($v - $cur[0]) -gt 2.5) {
+            if ($cur.Count -ge 2) { $plateaus.Add([double]$cur[[int][Math]::Floor($cur.Count / 2)]) }
+            $cur = New-Object 'System.Collections.Generic.List[double]'
+        }
+        $cur.Add([double]$v)
+    }
+    if ($cur.Count -ge 2) { $plateaus.Add([double]$cur[[int][Math]::Floor($cur.Count / 2)]) }
+    if ($plateaus.Count -ge 1) {
+        $dLow = [double]$plateaus[0]
+        if ($dLow -ge ($o.DGlobal - 40.0)) { $o.D = $dLow }
+        $o.DriftMs = [Math]::Round(([double]$plateaus[$plateaus.Count - 1] - [double]$plateaus[0]) / 30.0 * 1000.0, 1)
+        $o.Plateaus = (($plateaus | ForEach-Object { [string]::Format($inv, '{0:0.0}', $_) }) -join ' ')
+    }
+    $dUse = [int][Math]::Round($o.D)
+
+    # Dau video co hien tren man hinh khong? Xet doan 1.0-3.5 s (bo giay dau: Facebook hay giu khung dau/hieu ung nap): can >= 2 trong
+    # 3 cua so bat dau 1.0/1.5/2.0 s khop dang tin. Reel tiep tuc tu giua => doan nay khong co tren man hinh.
+    # Neu doan nay cua video goc toi/phang (it khung hop le) thi khong ket luan duoc (coi la hien).
+    if ($wl -ge 30 -and $refN -ge 105) {
+        if ($K.ValidRef(30, 75) -ge 23) { $o.StartVisible = ($startConf -ge 2) }
+        $sc = $K.Match(30, 75, ($dUse - 6), ($dUse + 20), 10, 2, 1)
+        if ($sc[1] -gt -1.0) { $o.StartPeak = [double]$sc[1] }
+    }
+
+    # Chan doan: 3 doan (dau, giua, cuoi) toi da 4 s, d tung doan so voi D (ms); 'n/a' neu doan khong khop dang tin.
+    $sl = [int][Math]::Min(120, [Math]::Floor($refN / 3))
+    if ($sl -ge 30) {
+        $txt = @()
+        foreach ($s0 in @(0, [int][Math]::Floor(($refN - $sl) / 2), ($refN - $sl))) {
+            $m = $K.Match($s0, $sl, ($dUse - 10), ($dUse + 30), [int]($sl / 3), 4, 1)
+            if ($m[1] -ge 0.5) { $txt += ([string]::Format($inv, '{0:0.0}', ([double]$m[0] - $o.D) / 30.0 * 1000.0)) } else { $txt += 'n/a' }
+        }
+        $o.SegText = ($txt -join '/')
+    }
+    $o.Ok = $true
+    return $o
+}
+
+# Tra ve @{ Ok; Reason; T0; Peak; Ratio; Geometry; StartPeak; DriftMs; SegText; Plateaus; DGlobalSec; ElapsedSec }.
+# Ok=$true khi dinh >= 0.6 va ty le >= 1.15 va dau video hien tren man hinh.
+# Reason='start-missing' khi khop tin cay nhung dau video khong co trong ban thu (Reel chay tiep tu giua).
+function Find-VideoSyncOffset {
+    param($T, [string]$RefVideo, [string]$RecFile, [string]$Work)
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $out = @{ Ok = $false; Reason = 'unknown'; T0 = $null; Peak = $null; Ratio = $null; Geometry = ''; StartPeak = $null; DriftMs = $null; SegText = ''; Plateaus = ''; DGlobalSec = $null; ElapsedSec = 0.0 }
+    try {
+        if (-not $T.ffmpeg -or -not $T.ffprobe) { $out.Reason = 'no-ffmpeg'; return $out }
+        $pv = Invoke-Exe $T.ffprobe @('-v','error','-select_streams','v:0','-show_entries','stream=codec_type','-of','csv=p=0',$RecFile) -TimeoutMs 30000
+        if ($pv.Code -ne 0 -or ([string]$pv.Out) -notmatch 'video') { $out.Reason = 'rec-no-video'; return $out }
+        if (-not ('KidFrameSync' -as [type])) { Add-Type -TypeDefinition $script:KidSyncSource -Language CSharp -ErrorAction Stop }
+        $geoms = $script:KidSyncGeoms
+        $refSig = New-FrameSignatures -T $T -File $RefVideo -Side 'Ref' -Geoms $geoms -Work $Work
+        if (-not $refSig.Ok) { $out.Reason = 'ref-decode-failed'; Write-Warn2 ('Giai ma video goc de khop hinh loi: ' + $refSig.Err); return $out }
+        $scrSig = New-FrameSignatures -T $T -File $RecFile -Side 'Scr' -Geoms $geoms -Work $Work
+        if (-not $scrSig.Ok) { $out.Reason = 'rec-decode-failed'; Write-Warn2 ('Giai ma hinh man hinh de khop hinh loi: ' + $scrSig.Err); return $out }
+        $best = $null
+        for ($i = 0; $i -lt $geoms.Count; $i++) {
+            $g = $geoms[$i]
+            $k = New-Object KidFrameSync($refSig.Paths[$i], $scrSig.Paths[$i], [int]$g.W, [int]$g.H)
+            $m = Measure-FrameSync -K $k
+            $m.Geometry = $g.Name
+            if (-not $m.Ok) { if ($null -eq $best) { $best = $m }; continue }
+            if ($null -eq $best -or -not $best.Ok -or $m.Peak -gt $best.Peak) { $best = $m }
+            if ($m.Peak -ge 0.6 -and $m.Ratio -ge 1.15) { $best = $m; break }
+        }
+        if ($null -eq $best -or -not $best.Ok) { $out.Reason = if ($best) { 'match-' + $best.Reason } else { 'no-geometry' }; return $out }
+        $out.Geometry = $best.Geometry; $out.Peak = [Math]::Round($best.Peak, 3); $out.Ratio = [Math]::Round($best.Ratio, 2)
+        $out.StartPeak = if ($null -ne $best.StartPeak) { [Math]::Round($best.StartPeak, 3) } else { $null }
+        $out.DriftMs = $best.DriftMs; $out.SegText = $best.SegText; $out.Plateaus = $best.Plateaus; $out.DGlobalSec = [Math]::Round($best.DGlobal / 30.0, 3)
+        if ($best.Peak -lt 0.6 -or $best.Ratio -lt 1.15) {
+            $out.Reason = [string]::Format([cultureinfo]::InvariantCulture, 'low-confidence peak={0:0.000} ratio={1:0.00}', $best.Peak, $best.Ratio)
+            return $out
+        }
+        $out.T0 = [Math]::Round($best.D / 30.0, 3)
+        if ($best.StartVisible -eq $false) { $out.Reason = 'start-missing'; return $out }
+        $out.Ok = $true; $out.Reason = 'ok'
+        return $out
+    } catch {
+        $out.Reason = 'exception'
+        Write-Warn2 ('Khop khung hinh loi: ' + $_.Exception.Message)
+        return $out
+    } finally {
+        $out.ElapsedSec = [Math]::Round($sw.Elapsed.TotalSeconds, 2)
+    }
+}
+
 # ------------------------------------------------------------ thao tac app ----
 function Open-Reel {
     param($T, [string]$Url)
@@ -2157,7 +2428,8 @@ function Invoke-OneLink {
 
     # Ket qua may doc, phat dung 1 lan trong finally (hop dong GUI muc 1).
     $res = [ordered]@{ v = 1; status = 'failed'; id = ''; url = $Url; video = ''; source = ''; audio = ''
-                       reason = 'unknown'; message = ''; t0 = $null; tOpen = $null; tRec = $null; gapFilledSec = $null; encoder = ''; durationSec = $null }
+                       reason = 'unknown'; message = ''; t0 = $null; tOpen = $null; tRec = $null; gapFilledSec = $null; encoder = ''; durationSec = $null
+                       syncMethod = $null; syncConfidence = $null; t0Onset = $null; syncDriftMs = $null; captureAttempts = $null }
     $inv = [cultureinfo]::InvariantCulture
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ("kidfby-" + [Guid]::NewGuid().ToString('N').Substring(0,8))
     $rejectedForLanguage = $false
@@ -2242,148 +2514,281 @@ function Invoke-OneLink {
         Write-Step 5 "Thu am thanh tu Giay 0 (thoi luong video $([Math]::Round($dur, 2))s, ghi buffer ${recLen}s)"
         Write-Host '       DUNG THAO TAC TREN MAN HINH KHI DANG THU' -ForegroundColor Yellow
 
-        # Dung Facebook de dua ve trang thai moi
-        $null = Invoke-Adb $T @('shell','am','force-stop',$script:Fb)
-        Start-Sleep -Milliseconds 600
+        $vf = $null
+        for ($attempt = 1; $attempt -le 2; $attempt++) {
+            $res.captureAttempts = $attempt
+            $res.tOpen = $null; $res.tRec = $null; $tOpen = $null
+            $withVideo = $false; $rec = $null; $swScrcpy = $null
+            # Lan 1 thu kem hinh; neu scrcpy khong chay duoc voi video thi lan 2 chi thu am thanh (dong bo bang onset).
+            foreach ($capMode in @('video','audio')) {
+                $withVideo = ($capMode -eq 'video')
+                $swScrcpy = $null
+                # Dung Facebook de dua ve trang thai moi
+                $null = Invoke-Adb $T @('shell','am','force-stop',$script:Fb)
+                Start-Sleep -Milliseconds 600
 
-        $rec = Join-Path $tmp 'rec.m4a'
+                $rec = Join-Path $tmp $(if ($withVideo) { 'rec.mkv' } else { 'rec.m4a' })
 
-        # Khoi dong scrcpy thu am truoc trong background (an hoan toan cua so va icon)
-        $captureArgs = @(
-            '--serial', $T.Serial,
-            '--no-video',
-            '--no-window',
-            '--no-audio-playback',
-            '--audio-codec=aac',
-            '--require-audio',
-            "--time-limit=$recLen",
-            "--record=$rec"
-        )
-        $captureCmd = ($captureArgs | ForEach-Object { Quote-Arg $_ }) -join ' '
+                # Khoi dong scrcpy thu am truoc trong background (an hoan toan cua so va icon)
+                $captureArgs = @(
+                    '--serial', $T.Serial,
+                    '--no-window',
+                    '--no-audio-playback',
+                    '--audio-codec=aac',
+                    '--require-audio',
+                    "--time-limit=$recLen",
+                    "--record=$rec"
+                )
+                if ($withVideo) {
+                    # Thu kem hinh man hinh do phan giai thap cung dong ho voi audio (dung de khop khung hinh voi video goc).
+                    $captureArgs += @('--max-size=480','--video-bit-rate=2M','--max-fps=30','--video-codec=h264')
+                } else {
+                    $captureArgs += '--no-video'
+                }
+                $captureCmd = ($captureArgs | ForEach-Object { Quote-Arg $_ }) -join ' '
 
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName               = $T.scrcpy
-        $psi.Arguments              = $captureCmd
-        $psi.UseShellExecute        = $false
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError  = $true
-        $psi.CreateNoWindow         = $true
-        $psi.WindowStyle            = [System.Diagnostics.ProcessWindowStyle]::Hidden
+                $psi = New-Object System.Diagnostics.ProcessStartInfo
+                $psi.FileName               = $T.scrcpy
+                $psi.Arguments              = $captureCmd
+                $psi.UseShellExecute        = $false
+                $psi.RedirectStandardOutput = $true
+                $psi.RedirectStandardError  = $true
+                $psi.CreateNoWindow         = $true
+                $psi.WindowStyle            = [System.Diagnostics.ProcessWindowStyle]::Hidden
 
-        $proc = New-Object System.Diagnostics.Process
-        $proc.StartInfo = $psi
-        $procStarted = $false
-        $procRegistry = $script:ProcessRegistry
-        $captureOut = ''; $captureErr = ''; $captureCode = -1; $captureTimedOut = $false
-        $pump = $null
-        try {
-            [void]$proc.Start()
-            $swScrcpy = [Diagnostics.Stopwatch]::StartNew()
-            $procStarted = $true
-            if ($procRegistry) { $procRegistry[$proc.Id] = $proc }
-            $pump = @{ Proc = $proc; Sw = $swScrcpy; TRec = $null
-                       Tasks = @{ Out = $null; Err = $null }; Eof = @{ Out = $false; Err = $false }
-                       Text = @{ Out = (New-Object Text.StringBuilder); Err = (New-Object Text.StringBuilder) } }
+                $proc = New-Object System.Diagnostics.Process
+                $proc.StartInfo = $psi
+                $procStarted = $false
+                $procRegistry = $script:ProcessRegistry
+                $captureOut = ''; $captureErr = ''; $captureCode = -1; $captureTimedOut = $false
+                $pump = $null
+                try {
+                    [void]$proc.Start()
+                    $swScrcpy = [Diagnostics.Stopwatch]::StartNew()
+                    $procStarted = $true
+                    if ($procRegistry) { $procRegistry[$proc.Id] = $proc }
+                    $pump = @{ Proc = $proc; Sw = $swScrcpy; TRec = $null
+                               Tasks = @{ Out = $null; Err = $null }; Eof = @{ Out = $false; Err = $false }
+                               Text = @{ Out = (New-Object Text.StringBuilder); Err = (New-Object Text.StringBuilder) } }
 
-            # Cho 1.8 giay de scrcpy ket noi am thanh Android HAL (van doc output de bat moc ghi am)
-            while ($swScrcpy.ElapsedMilliseconds -lt 1800) { Receive-ProcLines $pump; Start-Sleep -Milliseconds 40 }
+                    # Cho 1.8 giay de scrcpy ket noi am thanh Android HAL (van doc output de bat moc ghi am)
+                    while ($swScrcpy.ElapsedMilliseconds -lt 1800) { Receive-ProcLines $pump; Start-Sleep -Milliseconds 40 }
 
-            # Mo lai Reel sau khi recorder san sang; onset am thanh duoc uoc tinh o buoc sau
-            $tOpen = $swScrcpy.Elapsed.TotalSeconds
-            $res.tOpen = [Math]::Round($tOpen, 3)
-            Receive-ProcLines $pump
-            if ($null -ne $pump.TRec) { $res.tRec = [Math]::Round([double]$pump.TRec, 3) }
-            $null = Open-Reel $T $Url
+                    # Mo lai Reel sau khi recorder san sang; onset am thanh duoc uoc tinh o buoc sau
+                    $tOpen = $swScrcpy.Elapsed.TotalSeconds
+                    $res.tOpen = [Math]::Round($tOpen, 3)
+                    Receive-ProcLines $pump
+                    if ($null -ne $pump.TRec) { $res.tRec = [Math]::Round([double]$pump.TRec, 3) }
+                    $null = Open-Reel $T $Url
 
-            # Cho scrcpy thu am dung thoi han va tu dong dong file hoan chinh (van doc output, khong chan pipe).
-            $captureWaitMs = [int][Math]::Min([int]::MaxValue, ([double]($recLen + 30) * 1000))
-            $swWait = [Diagnostics.Stopwatch]::StartNew()
-            while (-not $proc.HasExited -and $swWait.ElapsedMilliseconds -lt $captureWaitMs) {
-                Receive-ProcLines $pump
-                Start-Sleep -Milliseconds 50
+                    # Cho scrcpy thu am dung thoi han va tu dong dong file hoan chinh (van doc output, khong chan pipe).
+                    $captureWaitMs = [int][Math]::Min([int]::MaxValue, ([double]($recLen + 30) * 1000))
+                    $swWait = [Diagnostics.Stopwatch]::StartNew()
+                    while (-not $proc.HasExited -and $swWait.ElapsedMilliseconds -lt $captureWaitMs) {
+                        Receive-ProcLines $pump
+                        Start-Sleep -Milliseconds 50
+                    }
+                    if (-not $proc.HasExited) {
+                        $captureTimedOut = $true
+                        try { $proc.Kill() } catch { Write-Warn2 ('Khong dung duoc scrcpy: ' + $_.Exception.Message) }
+                        try { $null = $proc.WaitForExit(5000) } catch { Write-Warn2 ('Cho scrcpy thoat loi: ' + $_.Exception.Message) }
+                    }
+                    $swDrain = [Diagnostics.Stopwatch]::StartNew()
+                    while (($swDrain.ElapsedMilliseconds -lt 10000) -and -not ($pump.Eof.Out -and $pump.Eof.Err)) {
+                        Receive-ProcLines $pump
+                        Start-Sleep -Milliseconds 50
+                    }
+                    Receive-ProcLines $pump
+                    if ($null -ne $pump.TRec -and $null -eq $res.tRec) { $res.tRec = [Math]::Round([double]$pump.TRec, 3) }
+                    $captureOut = $pump.Text.Out.ToString()
+                    $captureErr = $pump.Text.Err.ToString()
+                    if ($proc.HasExited -and -not $captureTimedOut) { $captureCode = $proc.ExitCode }
+                } finally {
+                    if ($procStarted -and -not $proc.HasExited) {
+                        try { $proc.Kill() } catch { }
+                        try { $null = $proc.WaitForExit(5000) } catch { }
+                    }
+                    if ($procRegistry -and $procStarted) {
+                        try { $procRegistry.Remove($proc.Id) } catch { }
+                    }
+                    if ($procStarted) {
+                        # Dong stream truoc Dispose de task ReadLineAsync dang treo khong giu handle.
+                        try { $proc.StandardOutput.Close() } catch { Write-Warn2 ('Dong stdout scrcpy loi: ' + $_.Exception.Message) }
+                        try { $proc.StandardError.Close() } catch { Write-Warn2 ('Dong stderr scrcpy loi: ' + $_.Exception.Message) }
+                    }
+                    $proc.Dispose()
+                }
+
+                # Dung Facebook
+                $null = Invoke-Adb $T @('shell','am','force-stop',$script:Fb)
+                $capFast = ($captureTimedOut -or $captureCode -ne 0) -and $swScrcpy -and ($swScrcpy.Elapsed.TotalSeconds -lt 15)
+                if ($withVideo -and $capFast) {
+                    $why = ((([string]$captureErr) + ' ' + ([string]$captureOut)).Trim())
+                    if ($why.Length -gt 300) { $why = $why.Substring($why.Length - 300) }
+                    Write-Warn2 ('scrcpy khong thu duoc hinh man hinh (ma ' + $captureCode + '); thu lai chi voi am thanh, dong bo bang onset. ' + $why)
+                    $res.tOpen = $null; $res.tRec = $null; $tOpen = $null
+                    continue
+                }
+                break
             }
-            if (-not $proc.HasExited) {
-                $captureTimedOut = $true
-                try { $proc.Kill() } catch { Write-Warn2 ('Khong dung duoc scrcpy: ' + $_.Exception.Message) }
-                try { $null = $proc.WaitForExit(5000) } catch { Write-Warn2 ('Cho scrcpy thoat loi: ' + $_.Exception.Message) }
-            }
-            $swDrain = [Diagnostics.Stopwatch]::StartNew()
-            while (($swDrain.ElapsedMilliseconds -lt 10000) -and -not ($pump.Eof.Out -and $pump.Eof.Err)) {
-                Receive-ProcLines $pump
-                Start-Sleep -Milliseconds 50
-            }
-            Receive-ProcLines $pump
-            if ($null -ne $pump.TRec -and $null -eq $res.tRec) { $res.tRec = [Math]::Round([double]$pump.TRec, 3) }
-            $captureOut = $pump.Text.Out.ToString()
-            $captureErr = $pump.Text.Err.ToString()
-            if ($proc.HasExited -and -not $captureTimedOut) { $captureCode = $proc.ExitCode }
-        } finally {
-            if ($procStarted -and -not $proc.HasExited) {
-                try { $proc.Kill() } catch { }
-                try { $null = $proc.WaitForExit(5000) } catch { }
-            }
-            if ($procRegistry -and $procStarted) {
-                try { $procRegistry.Remove($proc.Id) } catch { }
-            }
-            if ($procStarted) {
-                # Dong stream truoc Dispose de task ReadLineAsync dang treo khong giu handle.
-                try { $proc.StandardOutput.Close() } catch { Write-Warn2 ('Dong stdout scrcpy loi: ' + $_.Exception.Message) }
-                try { $proc.StandardError.Close() } catch { Write-Warn2 ('Dong stderr scrcpy loi: ' + $_.Exception.Message) }
-            }
-            $proc.Dispose()
-        }
 
-        # Dung Facebook
-        $null = Invoke-Adb $T @('shell','am','force-stop',$script:Fb)
+            if ($captureTimedOut -or $captureCode -ne 0) {
+                Show-Fail -Message 'Thu am that bai.' -Fix @('scrcpy bi qua thoi gian hoac ket thuc voi loi.', $captureErr, $captureOut)
+                Set-KidResultState $res 'failed' 'capture-failed' 'Thu am that bai: scrcpy qua thoi gian hoac ket thuc voi loi.'
+                return $null
+            }
+            if (-not (Test-Path -LiteralPath $rec) -or (Get-Item -LiteralPath $rec).Length -lt 1000) {
+                Show-Fail -Message 'Thu am that bai.' -Fix @('Kiem tra ket noi thiet bi.', $captureErr, $captureOut)
+                Set-KidResultState $res 'failed' 'capture-failed' 'Thu am that bai: file thu rong hoac khong ton tai.'
+                return $null
+            }
 
-        if ($captureTimedOut -or $captureCode -ne 0) {
-            Show-Fail -Message 'Thu am that bai.' -Fix @('scrcpy bi qua thoi gian hoac ket thuc voi loi.', $captureErr, $captureOut)
-            Set-KidResultState $res 'failed' 'capture-failed' 'Thu am that bai: scrcpy qua thoi gian hoac ket thuc voi loi.'
-            return $null
-        }
-        if (-not (Test-Path -LiteralPath $rec) -or (Get-Item -LiteralPath $rec).Length -lt 1000) {
-            Show-Fail -Message 'Thu am that bai.' -Fix @('Kiem tra ket noi thiet bi.', $captureErr, $captureOut)
-            Set-KidResultState $res 'failed' 'capture-failed' 'Thu am that bai: file thu rong hoac khong ton tai.'
-            return $null
-        }
+            if ($KeepFiles) { Write-Note ('KEEP_RAW_CAPTURE: ' + $rec) }
 
-        if ($KeepFiles) { Write-Note ('KEEP_RAW_CAPTURE: ' + $rec) }
+            # Chuan hoa mot lan: lap khoang trong pts bang im lang => truc mau = truc pts (dong ho that).
+            $recFixedPath = Join-Path $tmp 'rec-fixed.wav'
+            $fixedInfo = ConvertTo-FixedRecording -T $T -Rec $rec -Out $recFixedPath
+            if (-not $fixedInfo) {
+                Show-Fail -Message 'Chuan hoa ban thu (lap khoang trong pts) that bai.' -Fix @('Chay lai thu.')
+                Set-KidResultState $res 'failed' 'audio-failed' 'Chuan hoa ban thu that bai.'
+                return $null
+            }
+            $res.gapFilledSec = [Math]::Round([double]$fixedInfo.GapFilledSec, 3)
+            Write-Ok ([string]::Format($inv, 'Lap khoang trong pts: {0:0.000} s', [double]$fixedInfo.GapFilledSec))
+            if ($fixedInfo.Warning) { Write-Warn2 $fixedInfo.Warning }
+            if ($KeepFiles) { Write-Note ('KEEP_FIXED_CAPTURE: ' + $recFixedPath) }
+            $analysisFile = $recFixedPath
+            # ---------- 6. do onset t0 va cat am thanh chuan ----------
+            Write-Step 6 'Xac dinh diem khoi dau Giay 0 va cat am thanh'
+            $tOpenValue = if ($null -ne $tOpen) { [double]$tOpen } else { 0.0 }
+            # Moc 0 cua file thu = luc recorder that su bat dau (tRec tinh tu luc scrcpy start); Reel mo tai ~ tOpen - tRec.
+            if ($null -ne $res.tRec) {
+                $tRecValue = [double]$res.tRec
+                $searchFrom = [Math]::Max(0.0, $tOpenValue - $tRecValue - 0.3)
+            } else {
+                $tRecValue = $null
+                $searchFrom = [Math]::Max(0.0, $tOpenValue - 1.5)
+                Write-Warn2 'Khong bat duoc dong "Recording started" cua scrcpy; dung SearchFrom du phong = tOpen - 1.5s.'
+            }
+            $onsetInfo = Get-AudioOnsetInfo -T $T -File $analysisFile -SearchFrom $searchFrom
+            $t0Onset = $null
+            if ($null -ne $onsetInfo.Onset) {
+                $t0Onset = [double]$onsetInfo.Onset
+                $res.t0Onset = [Math]::Round($t0Onset, 3)
+                Write-Ok ([string]::Format($inv, 'Onset am thanh = {0:0.000}s (tOpen {1:0.000}s, tRec {2}, nen {3:0.0} dB, noi dung L {4:0.0} dB, nguong {5:0.0} dB)', $t0Onset, $tOpenValue, $(if ($null -ne $tRecValue) { $tRecValue.ToString('0.000', $inv) + 's' } else { 'n/a' }), [double]$onsetInfo.NoiseFloorDb, [double]$onsetInfo.ContentDb, [double]$onsetInfo.ThresholdDb))
+            } else {
+                Write-Warn2 ('Khong xac dinh duoc onset am thanh (ly do: ' + [string]$onsetInfo.Reason + ').')
+            }
+            Write-Ok 'Da chap nhan lua chon Tieng Viet tu UI Meta; bat dau tai phan hinh HD.'
 
-        # Chuan hoa mot lan: lap khoang trong pts bang im lang => truc mau = truc pts (dong ho that).
-        $recFixedPath = Join-Path $tmp 'rec-fixed.wav'
-        $fixedInfo = ConvertTo-FixedRecording -T $T -Rec $rec -Out $recFixedPath
-        if (-not $fixedInfo) {
-            Show-Fail -Message 'Chuan hoa ban thu (lap khoang trong pts) that bai.' -Fix @('Chay lai thu.')
-            Set-KidResultState $res 'failed' 'audio-failed' 'Chuan hoa ban thu that bai.'
-            return $null
+            if ($null -eq $vf) {
+            # Uu tien do phan giai, fps, bitrate trong cac dinh dang yt-dlp doc duoc
+            # Loi tai video: thu lai toi da 2 lan, cach 3 s va 8 s.
+            $retryDelays = @(3, 8)
+            $dlr = $null; $vf = $null
+            for ($dlAttempt = 0; $dlAttempt -le $retryDelays.Count; $dlAttempt++) {
+                if ($dlAttempt -gt 0) {
+                    Write-Warn2 ("Tai video loi (ma {0}); thu lai lan {1}/{2} sau {3} giay..." -f $dlr.Code, $dlAttempt, $retryDelays.Count, $retryDelays[$dlAttempt - 1])
+                    Start-Sleep -Seconds $retryDelays[$dlAttempt - 1]
+                }
+                $dlr = Invoke-Exe $T.ytdlp @('--ignore-config','--no-playlist','-S','res,fps,br','-f','bestvideo/best','--no-warnings','-o',"$tmp\v.%(ext)s",$Url) -TimeoutMs 600000
+                $vf = Get-ChildItem -LiteralPath $tmp -File -ErrorAction SilentlyContinue | Where-Object {
+                    $_.Name -like 'v.*' -and $_.Name -notmatch '\.(part|ytdl|tmp)$' -and $_.Extension.ToLowerInvariant() -notin @('.part','.ytdl','.tmp')
+                } | Select-Object -First 1
+                if ($dlr.Code -eq 0 -and $vf) { break }
+            }
+            if ($dlr.Code -ne 0 -or -not $vf) {
+                Show-Fail -Message 'Tai video that bai.' -Fix @('Kiem tra mang.','Video co the da bi xoa hoac rieng tu.', $dlr.Err)
+                Set-KidResultState $res 'failed' 'download-failed' 'Tai video that bai sau 3 lan thu.'
+                return $null
+            }
+
+            $actualDuration = Get-VideoDuration $T $vf.FullName
+            if ($actualDuration -le 0.5) {
+                Show-Fail -Message "Do dai video bat thuong ($actualDuration giay)." -Fix @('Chay lai thu.')
+                Set-KidResultState $res 'failed' 'invalid-duration' 'Do dai video tai ve bat thuong.'
+                return $null
+            }
+            if ([Math]::Abs($actualDuration - $dur) -gt 0.5) {
+                Set-KidResultState $res 'failed' 'duration-mismatch' 'Do dai video doi sau khi thu am; khong xuat ban.'
+                throw 'Video duration changed after language capture; no output was published.'
+            }
+            $dur = $actualDuration
+            $res.durationSec = [Math]::Round($dur, 3)
+            $sz = Get-VideoSize $T $vf.FullName
+            $cv = Get-VideoCodec -T $T -File $vf.FullName
+            Write-Ok "$($sz.W)x$($sz.H)  $cv  |  $([Math]::Round($dur, 2)) giay  |  $([Math]::Round($vf.Length/1MB, 1)) MB"
+            }
+
+            # t0 theo hinh: khop khung hinh man hinh (cung dong ho voi audio) voi video goc vua tai.
+            # Khong dat (start-missing / do tin cay thap) => lan 1 thu lai 1 lan; onset chi dung khi khong thu duoc video va co -AllowOnsetSync.
+            $t0 = $null
+            $syncMethod = ''
+            $syncDriftMs = $null
+            $okMessage = 'Hoan tat.'
+            $syncFinalFail = ''
+            if ($withVideo) {
+                Write-Note 'Khop khung hinh man hinh voi video goc de xac dinh t0...'
+                $sync = Find-VideoSyncOffset -T $T -RefVideo $vf.FullName -RecFile $rec -Work $tmp
+                if ($null -ne $sync.Peak) { $res.syncConfidence = [double]$sync.Peak }
+                Write-Note ([string]::Format($inv, 'Khop hinh: ket qua {0}, hinh hoc {1}, dinh {2}, ty le {3}, dinh dau video {4}, d toan cuc {5} s, bac d (khung) [{6}], 3 doan (ms so voi t0) {7}, mat {8:0.0} s', $sync.Reason, $sync.Geometry, $sync.Peak, $sync.Ratio, $sync.StartPeak, $sync.DGlobalSec, $sync.Plateaus, $sync.SegText, [double]$sync.ElapsedSec))
+                if ($sync.Ok) {
+                    $t0 = [double]$sync.T0
+                    $syncMethod = 'video'
+                    $syncDriftMs = $sync.DriftMs
+                    $res.syncDriftMs = $syncDriftMs
+                    $diffTxt = if ($null -ne $t0Onset) { [string]::Format($inv, '{0:0} ms', ($t0 - $t0Onset) * 1000.0) } else { 'n/a' }
+                    Write-Ok ([string]::Format($inv, 't0 theo hinh = {0:0.000}s (do tin cay {1:0.000}, ty le {2:0.00}, lech onset {3})', $t0, [double]$sync.Peak, [double]$sync.Ratio, $diffTxt))
+                    if ($null -ne $syncDriftMs -and $syncDriftMs -gt 80.0) {
+                        Write-Warn2 ([string]::Format($inv, 'sync-drift: hinh man hinh dung/tre {0:0} ms giua cac doan (player Facebook); t0 lay theo doan som nhat (audio la dong ho chu); van xuat ban.', $syncDriftMs))
+                        $okMessage = [string]::Format($inv, 'Hoan tat (canh bao sync-drift: hinh man hinh dung/tre {0:0} ms giua cac doan; t0 theo doan som nhat).', $syncDriftMs)
+                    }
+                    break
+                }
+                $syncCode = if ($sync.Reason -eq 'start-missing') { 'start-missing' } elseif ($sync.Reason -like 'low-confidence*' -or $sync.Reason -like 'match-*') { 'low-confidence' } else { 'no-video-sync' }
+                if ($syncCode -ne 'no-video-sync' -and $attempt -lt 2) {
+                    Write-Note ('SYNC_RETRY: ' + $syncCode + ' (' + [string]$sync.Reason + '); thu lai lan 2: force-stop Facebook, mo lai Reel tu dau; khong tai lai video goc, khong chay lai buoc chon Tieng Viet (lua chon da luu trong Facebook).')
+                    if ($KeepFiles -and (Test-Path -LiteralPath $rec)) { Move-Item -LiteralPath $rec -Destination (Join-Path $tmp 'rec-attempt1.mkv') -Force -ErrorAction SilentlyContinue }
+                    continue
+                }
+                $syncFinalFail = $syncCode
+                Write-Warn2 ('Khop khung hinh khong dat (' + [string]$sync.Reason + ') sau ' + $attempt + ' lan thu.')
+            } else {
+                Write-Warn2 'Ban thu khong co hinh man hinh (scrcpy video loi).'
+                $syncFinalFail = 'no-video-sync'
+            }
+            break
         }
-        $res.gapFilledSec = [Math]::Round([double]$fixedInfo.GapFilledSec, 3)
-        Write-Ok ([string]::Format($inv, 'Lap khoang trong pts: {0:0.000} s', [double]$fixedInfo.GapFilledSec))
-        if ($fixedInfo.Warning) { Write-Warn2 $fixedInfo.Warning }
-        if ($KeepFiles) { Write-Note ('KEEP_FIXED_CAPTURE: ' + $recFixedPath) }
-        $analysisFile = $recFixedPath
-        # ---------- 6. do onset t0 va cat am thanh chuan ----------
-        Write-Step 6 'Xac dinh diem khoi dau Giay 0 va cat am thanh'
-        $tOpenValue = if ($null -ne $tOpen) { [double]$tOpen } else { 0.0 }
-        # Moc 0 cua file thu = luc recorder that su bat dau (tRec tinh tu luc scrcpy start); Reel mo tai ~ tOpen - tRec.
-        if ($null -ne $res.tRec) {
-            $tRecValue = [double]$res.tRec
-            $searchFrom = [Math]::Max(0.0, $tOpenValue - $tRecValue - 0.3)
-        } else {
-            $tRecValue = $null
-            $searchFrom = [Math]::Max(0.0, $tOpenValue - 1.5)
-            Write-Warn2 'Khong bat duoc dong "Recording started" cua scrcpy; dung SearchFrom du phong = tOpen - 1.5s.'
+        if ($null -eq $t0) {
+            if ($syncFinalFail -eq 'start-missing') {
+                Show-Fail -Message 'Dau video goc khong co trong ban thu sau 2 lan thu: Reel chay tiep tu giua, khong bat dau tu giay 0.' -Fix @('Thu lai sau.', 'Cat theo onset se lech am thanh so voi hinh nen khong xuat ban.')
+                Set-KidResultState $res 'unverified' 'start-missing' 'Reel khong bat dau tu giay 0 trong ban thu sau 2 lan thu (khop hinh); khong xuat ban.'
+                return $null
+            }
+            if ($syncFinalFail -eq 'low-confidence') {
+                Show-Fail -Message 'Khop khung hinh khong du tin cay sau 2 lan thu.' -Fix @('Thu lai sau.', 'Khong xac nhan duoc audio khop hinh nen khong xuat ban.')
+                Set-KidResultState $res 'unverified' 'low-confidence' 'Khop khung hinh khong du tin cay sau 2 lan thu; khong xuat ban.'
+                return $null
+            }
+            # no-video-sync: thiet bi khong thu duoc video man hinh. Chi dung onset khi co -AllowOnsetSync.
+            if (-not $AllowOnsetSync) {
+                Show-Fail -Message 'Khong thu duoc hinh man hinh de dong bo; khong xuat ban.' -Fix @('Kiem tra scrcpy/thiet bi co thu video duoc khong.', 'Co the bat -AllowOnsetSync de dong bo theo am thanh (co the lech 0.5-1.2 s).')
+                Set-KidResultState $res 'unverified' 'no-video-sync' 'Khong thu duoc hinh man hinh de dong bo; khong xuat ban (can -AllowOnsetSync de dung onset).'
+                return $null
+            }
+            if ($null -eq $t0Onset) {
+                Show-Fail -Message 'Khong xac dinh duoc diem bat dau tieng trong ban thu.' -Fix @(('Ly do: ' + [string]$onsetInfo.Reason), 'Kiem tra Reel co phat tieng khong, roi thu lai.')
+                Set-KidResultState $res 'unverified' 'no-onset' 'Khong xac dinh duoc diem bat dau tieng trong ban thu; khong xuat ban.'
+                return $null
+            }
+            $t0 = $t0Onset
+            $syncMethod = 'onset'
+            $okMessage = 'Hoan tat. Dong bo theo am thanh, co the lech 0.5-1.2 s.'
+            Write-Warn2 'Dong bo theo am thanh, co the lech 0.5-1.2 s (onset khong chinh xac, khong co khop hinh).'
+            Write-Ok ([string]::Format($inv, 't0 = {0:0.000}s (theo onset am thanh)', $t0))
         }
-        $onsetInfo = Get-AudioOnsetInfo -T $T -File $analysisFile -SearchFrom $searchFrom
-        if ($null -eq $onsetInfo.Onset) {
-            Show-Fail -Message 'Khong xac dinh duoc diem bat dau tieng trong ban thu.' -Fix @(('Ly do: ' + [string]$onsetInfo.Reason), 'Kiem tra Reel co phat tieng khong, roi thu lai.')
-            Set-KidResultState $res 'unverified' 'no-onset' 'Khong xac dinh duoc diem bat dau tieng trong ban thu; khong xuat ban.'
-            return $null
-        }
-        $t0 = [double]$onsetInfo.Onset
         $res.t0 = [Math]::Round($t0, 3)
-        Write-Ok ([string]::Format($inv, 't0 = {0:0.000}s (tOpen {1:0.000}s, tRec {2}, nen {3:0.0} dB, noi dung L {4:0.0} dB, nguong {5:0.0} dB)', $t0, $tOpenValue, $(if ($null -ne $tRecValue) { $tRecValue.ToString('0.000', $inv) + 's' } else { 'n/a' }), [double]$onsetInfo.NoiseFloorDb, [double]$onsetInfo.ContentDb, [double]$onsetInfo.ThresholdDb))
-
+        $res.syncMethod = $syncMethod
         # Kiem tra thoi luong thuc te dam bao video da phat tron ven; thieu => khong xuat ban
         $recDur = [double]$fixedInfo.FixedSec
         if (($recDur - $t0) -lt ($dur - 0.5)) {
@@ -2435,45 +2840,6 @@ function Invoke-OneLink {
             Set-KidResultState $res 'unverified' 'silent-capture' 'Ban thu im lang hoac khong doc duoc muc am; khong xuat ban.'
             return $null
         }
-
-        Write-Ok 'Da chap nhan lua chon Tieng Viet tu UI Meta; bat dau tai phan hinh HD.'
-
-        # Uu tien do phan giai, fps, bitrate trong cac dinh dang yt-dlp doc duoc
-        # Loi tai video: thu lai toi da 2 lan, cach 3 s va 8 s.
-        $retryDelays = @(3, 8)
-        $dlr = $null; $vf = $null
-        for ($dlAttempt = 0; $dlAttempt -le $retryDelays.Count; $dlAttempt++) {
-            if ($dlAttempt -gt 0) {
-                Write-Warn2 ("Tai video loi (ma {0}); thu lai lan {1}/{2} sau {3} giay..." -f $dlr.Code, $dlAttempt, $retryDelays.Count, $retryDelays[$dlAttempt - 1])
-                Start-Sleep -Seconds $retryDelays[$dlAttempt - 1]
-            }
-            $dlr = Invoke-Exe $T.ytdlp @('--ignore-config','--no-playlist','-S','res,fps,br','-f','bestvideo/best','--no-warnings','-o',"$tmp\v.%(ext)s",$Url) -TimeoutMs 600000
-            $vf = Get-ChildItem -LiteralPath $tmp -File -ErrorAction SilentlyContinue | Where-Object {
-                $_.Name -like 'v.*' -and $_.Name -notmatch '\.(part|ytdl|tmp)$' -and $_.Extension.ToLowerInvariant() -notin @('.part','.ytdl','.tmp')
-            } | Select-Object -First 1
-            if ($dlr.Code -eq 0 -and $vf) { break }
-        }
-        if ($dlr.Code -ne 0 -or -not $vf) {
-            Show-Fail -Message 'Tai video that bai.' -Fix @('Kiem tra mang.','Video co the da bi xoa hoac rieng tu.', $dlr.Err)
-            Set-KidResultState $res 'failed' 'download-failed' 'Tai video that bai sau 3 lan thu.'
-            return $null
-        }
-
-        $actualDuration = Get-VideoDuration $T $vf.FullName
-        if ($actualDuration -le 0.5) {
-            Show-Fail -Message "Do dai video bat thuong ($actualDuration giay)." -Fix @('Chay lai thu.')
-            Set-KidResultState $res 'failed' 'invalid-duration' 'Do dai video tai ve bat thuong.'
-            return $null
-        }
-        if ([Math]::Abs($actualDuration - $dur) -gt 0.5) {
-            Set-KidResultState $res 'failed' 'duration-mismatch' 'Do dai video doi sau khi thu am; khong xuat ban.'
-            throw 'Video duration changed after language capture; no output was published.'
-        }
-        $dur = $actualDuration
-        $res.durationSec = [Math]::Round($dur, 3)
-        $sz = Get-VideoSize $T $vf.FullName
-        $cv = Get-VideoCodec -T $T -File $vf.FullName
-        Write-Ok "$($sz.W)x$($sz.H)  $cv  |  $([Math]::Round($dur, 2)) giay  |  $([Math]::Round($vf.Length/1MB, 1)) MB"
 
         # ---------- 7. ghep video HD va xuat file ----------
         Write-Step 7 'Ghep video HD va xuat file'
@@ -2569,7 +2935,7 @@ function Invoke-OneLink {
         $res.video = $finalOut; $res.source = $finalGoc; $res.audio = $finalAm
         $res.encoder = $encoderUsed
         $res.durationSec = [Math]::Round($dur, 3)
-        Set-KidResultState $res 'ok' 'ok' 'Hoan tat.'
+        Set-KidResultState $res 'ok' 'ok' $okMessage
         if ($ForceRetryRejected -and (Get-Command Remove-RejectedReel -CommandType Function -ErrorAction SilentlyContinue)) {
             try {
                 if (Remove-RejectedReel -Root $script:Here -VideoId $vid) { Write-Note ('REEL_REJECTED_CLEARED: id=' + $vid) }

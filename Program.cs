@@ -310,10 +310,22 @@ namespace KidFBY
 
         static readonly string[] EmbeddedResources = new string[] {
             "kid-fby-gui.ps1", "kid-fby.ps1", "whisper-language.ps1", "facebook-links.ps1", "fix-ket-noi.ps1",
-            "Kid-FB.Y.ico", "kid-logo.zip" };
+            "Kid-FB.Y.ico", "kid-logo.zip", "ui/Theme.xaml", "ui/MainWindow.xaml" };
+
+        // Ten resource trong EXE: "ui/Theme.xaml" -> "ui.Theme.xaml" (csc /res:core\ui\Theme.xaml,ui.Theme.xaml).
+        static string ResourceLogicalName(string relativePath)
+        {
+            return relativePath.Replace('/', '.').Replace('\\', '.');
+        }
+
+        static string ResourceTargetPath(string coreDir, string relativePath)
+        {
+            return Path.Combine(coreDir, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        }
 
         static byte[] ReadResource(Assembly asm, string resName)
         {
+            resName = ResourceLogicalName(resName);
             string match = null;
             foreach (string n in asm.GetManifestResourceNames())
             {
@@ -384,7 +396,9 @@ namespace KidFBY
             for (int i = 0; i < count; i++)
             {
                 if (data[i] == null) continue;
-                string target = Path.Combine(coreDir, EmbeddedResources[i]);
+                string target = ResourceTargetPath(coreDir, EmbeddedResources[i]);
+                string targetDir = Path.GetDirectoryName(target);
+                if (!Directory.Exists(targetDir)) Directory.CreateDirectory(targetDir);
                 bool write;
                 if (!File.Exists(target) || new FileInfo(target).Length == 0) write = true;
                 else write = stale && !updaterNewer && Hash(target) != hashes[i];

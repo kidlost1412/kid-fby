@@ -105,7 +105,18 @@ $coreFiles = Get-ChildItem -LiteralPath (Join-Path $root 'core') -File | Where-O
         size   = $_.Length
     }
 }
-$coreFiles = @($coreFiles) + @([ordered]@{
+# Giao dien WPF tach file (core/ui/*.xaml): GUI nap luc chay, launcher cung nhung san.
+$uiFiles = @(Get-ChildItem -LiteralPath (Join-Path $root 'core\ui') -File -Filter '*.xaml' -ErrorAction Stop | ForEach-Object {
+    [ordered]@{
+        path   = "core/ui/$($_.Name)"
+        sha256 = (Get-NormalizedFileHash $_)
+        size   = $_.Length
+    }
+})
+foreach ($requiredUi in @('core/ui/Theme.xaml', 'core/ui/MainWindow.xaml')) {
+    if (-not ($uiFiles | Where-Object { $_.path -eq $requiredUi })) { throw "Thieu file giao dien trong manifest: $requiredUi" }
+}
+$coreFiles = @($coreFiles) + $uiFiles + @([ordered]@{
     path = 'Kid-FB.Y.exe'
     sha256 = (Get-FileHash -LiteralPath (Join-Path $root 'Kid-FB.Y.exe') -Algorithm SHA256).Hash
     size = (Get-Item -LiteralPath (Join-Path $root 'Kid-FB.Y.exe')).Length
