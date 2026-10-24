@@ -188,13 +188,14 @@ Giữ media đầu vào/bản hoàn chỉnh/lịch sử/công cụ đang dùng. 
 
 ## 8. Tích hợp TikTok cục bộ — 24/10/2026, local, chưa phát hành
 
-Mục đích: đăng video từ Kho lên TikTok qua autotok đã cài, không sao chép file tay. Facebook vẫn là luồng chính; tích hợp này không đổi engine tải Facebook, ngưỡng đồng bộ, giao thức STAGE/RESULT, phiên bản 2.1.0 hay manifest đã ký.
+Mục đích: đăng video từ Kho lên TikTok qua autotok (`integrations/autotok/`, trong repo), không sao chép file tay. Facebook vẫn là luồng chính; tích hợp này không đổi engine tải Facebook, ngưỡng đồng bộ, giao thức STAGE/RESULT, phiên bản 2.1.0 hay manifest đã ký.
 
 ### Bật hay tắt
 
 - `Get-TikTokIntegration` đọc biến `KID_FBY_AUTOTOK_STARTER` hoặc `integrations/tiktok/local.json` (`{"Starter": "..."}`, file này nằm trong `.gitignore`). Starter phải tồn tại; quy tắc giống `integrations/tiktok/start.ps1`. Đánh giá một lần lúc khởi động.
 - **Không cấu hình**: đúng hành vi trước tích hợp. Nút "Sao chép để đăng", badge thẻ bật/tắt dấu đã đăng thủ công, không có timer đồng bộ, không băm SHA256.
 - **Có cấu hình**: nút "Đăng video" dưới preview mở hộp đăng; "Sao chép để đăng" nằm trong menu thêm của thẻ; Ctrl+C vẫn sao chép. Được đăng khi hàng đợi tải đang chạy.
+- Trên máy này `integrations/tiktok/local.json` trỏ tới `integrations/autotok/start.ps1`.
 
 ### Trạng thái đồng bộ (`reup-status.json`)
 
@@ -227,6 +228,32 @@ Mục này thay phần hộp đăng và đồng bộ của bản 23/10 (đã b�
 - Worker chết và backend 404 quá 2 phút, hoặc `transfer_failed`: "Chưa chuyển được", không chặn. Có "Thử chuyển lại" (cùng `.job`, cùng request_id) và "Bỏ biên nhận" (đổi tên `.archived-<ts>`, không xóa).
 - Thăm dò luân phiên, tối đa 20 GET mỗi nhịp. Xóa video bị từ chối khi còn khóa worker. Dọn cache giữ `.cache\tiktok-posts`.
 
+### Hẹn giờ trên TikTok (24/10/2026)
+
+- Hẹn giờ đặt lịch trên TikTok, không giữ lịch chờ trên máy. Job gửi ngay kèm `schedule_time` (giây UTC) qua uploader.
+- Khoảng cho phép: từ bây giờ + 20 phút (làm tròn lên phút) đến + 10 ngày. Chế độ riêng tư không hẹn được.
+- Thành công: `status` = `succeeded`, `link_state` = `scheduled_on_tiktok`, `tiktok_schedule_time` có giá trị. Thẻ hiện "Đã hẹn trên TikTok"; chỉ tắt máy khi thẻ hiện dòng này.
+- Đổi giờ hoặc hủy làm trong TikTok Studio (PATCH đổi giờ trả 409). Xóa trong app chỉ xóa bản ghi của app.
+- Job chờ cục bộ cũ, trễ hơn 2 giờ: đánh `failed` "Lỡ giờ khi máy tắt — chưa đăng" (chưa đăng). Bấm thử lại job này sẽ đăng ngay.
+- GUI tắt chức năng hẹn khi backend cũ (`/health` không có `native_schedule`).
+- Chưa kiểm: bài hẹn có lên đúng giờ khi máy tắt.
+
+### Link bài đăng (24/10/2026)
+
+- Uploader lấy mã bài từ các khóa rõ ràng của phản hồi publish (`item_id`, `aweme_id`, `single_post_resp_list[].item_id`, `data.item_id`...). Phản hồi đã lọc (bỏ khóa và giá trị nhạy cảm) lưu ở `publish_response_json` để sau này xem dạng thật.
+- Cột DB mới (`SCHEMA_VERSION` 3): `post_id`, `post_url`, `creation_id`, `link_state`, `link_attempts`, `link_next_at`, `tiktok_schedule_time`, `publish_response_json`, `caption`.
+- `post_url` = `https://www.tiktok.com/@<tài khoản>/video/<id>` chỉ khi nhãn tài khoản là handle hợp lệ; nếu không, chỉ hiện "Mã bài" để sao chép.
+- Tra cứu dự phòng `find_post` (`autotok/posts.py`) là STUB, luôn trả None: `link_state` đi từ pending sang gave_up. "Thử lấy lại link" gọi `POST /api/history/<key>/refresh-link` (chỉ đọc, không đăng lại).
+- GUI: "Mở bài đăng" (kiểm URL trước khi mở), "Sao chép link", "Sao chép mã bài", "Thử lấy lại link".
+- Chưa kiểm: phản hồi publish thật có chứa mã bài hay không.
+
+### Hashtag hay dùng (24/10/2026)
+
+- Lưu ở `data\tiktok-hashtags.json`, riêng từng máy; không đưa vào git.
+- Chip "Hashtag hay dùng" hiện dưới ô caption, tối đa 20 mục theo số lần dùng. Gõ một phần hashtag để lọc.
+- Học khi bấm đăng; tối đa 300 mục. Chuột phải hoặc phím Delete → "Xóa khỏi gợi ý".
+- File hỏng: đổi tên `.corrupt-<ts>`, coi như rỗng.
+
 ### Engine (`core/kid-fby.ps1`) — áp dụng cho mọi `-3`, kể cả khi tắt tích hợp
 
 - `Get-CleanOutputArgs` bỏ metadata: `-map_metadata -1`, `-map_chapters -1`, bitexact, tag handler/encoder rỗng, lọc SEI (`remove_types=6`) với H.264.
@@ -234,17 +261,21 @@ Mục này thay phần hộp đăng và đồng bộ của bản 23/10 (đã b�
 - `Invoke-CleanVideoMux` cho đường stream-copy: so keyframe và số khung giải mã với bản copy thường (`Get-VideoFrameCounts`); mất thì re-encode libx264 (open-GOP). Nguồn HEVC chuyển sang H.264. Đường logo/GIF giữ timing cũ.
 - Cần ffmpeg ≥ 5.1 (`-fps_mode`); bản đi kèm là 8.1.2. `-3` cũ vẫn có Lavc trong AAC cho tới khi re-encode lúc đăng.
 
-### Backend (ngoài repo)
+### Backend (`integrations/autotok/`, trong repo)
 
-- Thư mục `C:\Users\hp\Documents\Codex\2026-10-23\ti\work\TiktokAutoUploader`, sửa cục bộ, chưa đẩy đi đâu. Gồm bridge trạng thái với attempt token và heartbeat; `preparing` hết hạn sau 10 phút (`AUTOTOK_DESKTOP_STALE_MINUTES`); worker bị fence theo attempt; `prior_uncertain` (đơn điệu) trong history và API lịch; DB `SCHEMA_VERSION` 2; lookup chia lô.
-- Theo ghi nhận đưa vào tài liệu: 338 test pass (chưa chạy lại trong phiên rà này).
-- Starter `outputs\start-autotok-dashboard.ps1`, đã sửa cho PS 5.1 và dịch vụ đang chạy dở; `/health` báo `history_version` 2. Launcher `outputs\tiktok-v2\Mo-Kid-FBY-TikTok.cmd` kiểm SHA256 của EXE: phải cập nhật sau mỗi lần build.
+- Mã nguồn `integrations/autotok/src` là bản upstream makiisthenes/TiktokAutoUploader (AGPL-3.0, giữ `LICENSE`) cộng sửa đổi của dự án. Giữ ghi công upstream.
+- Cài: `cai-dat.ps1` tạo `.venv`, cài requirements, ghi `config.json` (`DataDir`) và `integrations/tiktok/local.json` nếu chưa có. Cần Python 3.11+ và Chrome.
+- Chạy: `start.ps1` bật api, control, scheduler (cổng 8765 và 17900); kiểm PID, giờ bắt đầu và tên tiến trình; trạng thái chạy ở `integrations/autotok/runtime`. `dung.ps1` chỉ dừng tiến trình đã ghi; không có `-Force` thì từ chối khi còn job đang chạy hoặc đang chờ. Hướng dẫn: `integrations/autotok/README-VI.md`.
+- Dữ liệu (tài khoản, phiên đăng nhập, DB, thư viện) nằm NGOÀI repo: mặc định `%LOCALAPPDATA%\KidFBY\autotok-data`; đổi bằng biến `AUTOTOK_DATA_DIR` hoặc `DataDir` trong `config.json`. `.venv`, `runtime`, `config.json`, `data`, `node_modules`, `__pycache__` nằm trong `.gitignore`.
+- Máy này: dữ liệu đã chép sang `%LOCALAPPDATA%`. Thư mục cũ `...\Codex\2026-10-23\ti\work` không còn dùng.
+- `/health`: `history_version` 2, `native_schedule` 1, `post_links` 1. DB `SCHEMA_VERSION` 3.
+- Test backend: 428 passed, 5 skipped, 1 xfailed (pytest chạy trong `integrations/autotok/src`).
 
 ### Giới hạn và chưa kiểm
 
 - Hai request_id khác nhau cho cùng video và tài khoản (từ hai máy) vẫn tạo hai tác vụ; server chưa khử trùng.
 - Thành công muộn của attempt đã bị thay thế không chặn được, chỉ gắn `prior_uncertain`. Stale worker còn rủi ro đua khi người dùng thử lại sau timeout. Không tuyên bố chống đăng trùng tuyệt đối.
 - Không truy vấn được bài đăng thủ công ngoài app.
-- Máy và scheduler phải chạy đúng giờ hẹn. Chưa cài dịch vụ Windows, chưa tự khởi động cùng máy.
-- **Chưa kiểm**: đăng video TikTok thật; xác minh bài trên hồ sơ; Reel Facebook thật; nhiều DPI cho hộp đăng. Kiểm bằng fixture và backend giả lập: harness WPF Windows PowerShell 5.1 STA; test làm sạch và đồng bộ trên fixture.
-- Phiên bản vẫn 2.1.0; `version.json` và `version.json.sig` không đổi; thay đổi nằm trên nhánh `audit-fixes-2.1`, chưa qua `publish.ps1`.
+- Hẹn mới đã chuyển lên TikTok, nhưng job chờ cục bộ cũ vẫn cần scheduler autotok chạy đúng giờ. Chưa cài dịch vụ Windows, chưa tự khởi động cùng máy.
+- **Chưa kiểm**: đăng video TikTok thật; xác minh bài trên hồ sơ; Reel Facebook thật; nhiều DPI cho hộp đăng; phản hồi publish có mã bài; bài hẹn lên đúng giờ khi máy tắt. Kiểm bằng fixture và backend giả lập: harness WPF Windows PowerShell 5.1 STA; test làm sạch và đồng bộ trên fixture.
+- Phiên bản vẫn 2.1.0; `version.json` và `version.json.sig` không đổi; thay đổi nằm trên nhánh `audit-fixes-2.1` (commit `f5c9809`, EXE build lại 24/10/2026), chưa qua `publish.ps1`.

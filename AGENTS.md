@@ -19,6 +19,7 @@
 | GIF WPF | `core/wpf-gif-player.cs` |
 | Launcher, single-instance, resource nhúng, giao dịch update | `Program.cs`, `core/updater.ps1` |
 | Build, ký manifest và chuẩn bị phát hành | `build-local.ps1`, `publish.ps1`, `new-signing-key.ps1` |
+| Tích hợp TikTok: hộp đăng, hàng chuyển, hashtag, link bài | `core/kid-fby-gui.ps1`; làm sạch video `core/kid-fby.ps1`; backend `integrations/autotok/` |
 
 ## Chạy, kiểm, build, phát hành
 
@@ -51,7 +52,9 @@
 - Tích hợp TikTok (mục 8–9 BAN-GIAO): `reup-status.json` chỉ ghi qua `Update-ReupMetadata`; không ghi tay hoặc đặt `Posted` trực tiếp. Đồng bộ không ghi đè `ManualPosted`.
 - `.cache\tiktok-posts` (`.job`, `.lock`, `.clean.mp4`) là trạng thái giao dịch: không xóa khi worker còn giữ `.lock`; "Bỏ biên nhận" chỉ đổi tên.
 - Đổi `Get-CleanOutputArgs`, `Invoke-CleanVideoMux` hoặc `Test-TikTokCleanFile` phải chạy lại kiểm số keyframe và số khung trên fixture.
-- `integrations/tiktok/local.json`, khóa, cookie và dữ liệu backend không đưa vào git hay tài liệu. Không đăng TikTok thật khi chủ dự án chưa cho phép.
+- Hẹn giờ TikTok (`link_state` = `scheduled_on_tiktok`): đổi/hủy làm trong TikTok Studio; app chỉ xóa bản ghi của mình.
+- `integrations/autotok/` là mã AGPL-3.0 (upstream + sửa đổi): giữ `LICENSE` và ghi công. `.venv`, `runtime`, `config.json`, `data` không đưa vào git.
+- `integrations/tiktok/local.json`, khóa, cookie và dữ liệu backend (mặc định `%LOCALAPPDATA%\KidFBY\autotok-data`, hoặc `DataDir`) không đưa vào git hay tài liệu. Không đăng TikTok thật khi chủ dự án chưa cho phép.
 
 ## Dữ liệu cần giữ
 
