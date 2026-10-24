@@ -8,11 +8,15 @@ if (-not (Test-Path -LiteralPath $taskPython -PathType Leaf)) { throw 'Chua cai 
 New-Item -ItemType Directory -Path $taskRuntime -Force | Out-Null
 
 # Check step: resolve paths/Chrome via the host itself (single source of truth) and verify the CLI.
-$taskCheckLines = @(& $taskPython $taskHost --check)
+# -X utf8 + UTF-8 decoding: a cp1252 pipe cannot carry Vietnamese characters in the paths (the check would crash).
+$taskOldOutput = [Console]::OutputEncoding
+try { [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false) } catch { <# bo qua: khong co console, giu ma hoa mac dinh; SRC duoc kiem ben duoi #> }
+try { $taskCheckLines = @(& $taskPython -X utf8 $taskHost --check) } finally { try { [Console]::OutputEncoding = $taskOldOutput } catch { <# bo qua: nhu tren #> } }
 if ($LASTEXITCODE -ne 0) { throw 'Host check failed.' }
 $taskCheck = @{}
 foreach ($taskLine in $taskCheckLines) { if ("$taskLine" -match '^(SRC|DATA|DIST|CHROME)=(.*)$') { $taskCheck[$Matches[1]] = $Matches[2] } }
 if (-not $taskCheck.DATA -or -not $taskCheck.SRC) { throw 'Host check returned no paths.' }
+if (-not (Test-Path -LiteralPath $taskCheck.SRC -PathType Container)) { throw "Host check returned a garbled path: $($taskCheck.SRC)" }
 if ($taskCheck.CHROME -like 'NOT FOUND*') { throw 'Chrome was not found.' }
 if ($taskCheck.DIST -notlike '*index.html=True') { throw 'Frontend build (web\frontend\dist) is missing.' }
 $taskData = $taskCheck.DATA

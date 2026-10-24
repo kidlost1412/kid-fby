@@ -909,6 +909,29 @@
                     </Grid>
                   </StackPanel>
                 </ContentControl>
+                <!-- Bo dang TikTok: cai/cap nhat mot cham (integrations\autotok\kid-install.ps1) -->
+                <ContentControl Style="{DynamicResource StickerCard}" Padding="20,16" Margin="0,0,0,14">
+                  <StackPanel>
+                    <DockPanel>
+                      <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Border x:Name="BadgeAutotok" Style="{DynamicResource Badge}" Margin="0,0,12,0">
+                          <TextBlock x:Name="TxtAutotokBadge" Text="Đang kiểm tra…" FontSize="13"/>
+                        </Border>
+                        <Button x:Name="BtnAutotokInstall" Style="{DynamicResource BtnPrimary}" Content="Cài bộ đăng TikTok" MinWidth="128"
+                                AutomationProperties.Name="Cài hoặc cập nhật bộ đăng TikTok"/>
+                      </WrapPanel>
+                      <StackPanel Margin="0,0,16,0">
+                        <TextBlock Text="Bộ đăng TikTok" Style="{DynamicResource TextHeading}"/>
+                        <TextBlock x:Name="TxtAutotokInfo" Style="{DynamicResource TextMutedStyle}" TextWrapping="Wrap" Margin="0,4,0,0"
+                                   Text="Đăng và hẹn giờ video lên TikTok ngay trong app. Cần Google Chrome và mạng; cài một lần, khoảng 5 phút."/>
+                      </StackPanel>
+                    </DockPanel>
+                    <TextBlock x:Name="TxtAutotokProgress" Visibility="Collapsed" TextWrapping="Wrap" Margin="0,10,0,0" FontWeight="SemiBold"/>
+                    <ProgressBar x:Name="BarAutotok" Visibility="Collapsed" Height="8" Minimum="0" Maximum="100" Margin="0,6,0,0"/>
+                    <Button x:Name="BtnAutotokChrome" Visibility="Collapsed" Style="{DynamicResource BtnGhost}" HorizontalAlignment="Left" Margin="0,10,0,0"
+                            Content="Tải Google Chrome" ToolTip="Mở https://www.google.com/chrome/" AutomationProperties.Name="Tải Google Chrome"/>
+                  </StackPanel>
+                </ContentControl>
                 <ContentControl Style="{DynamicResource StickerCard}" Padding="20,16">
                   <DockPanel>
                     <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">

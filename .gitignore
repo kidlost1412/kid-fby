@@ -21,3 +21,12 @@ integrations/autotok/config.json
 integrations/autotok/data/
 **/__pycache__/
 integrations/autotok/src/web/frontend/node_modules/
+# One-click TikTok backend (kid-install.ps1): machine-local state, never in git
+integrations/autotok-releases/
+integrations/autotok-python311/
+integrations/autotok-python311.*/
+integrations/autotok-current.json
+integrations/autotok-config.json
+integrations/autotok-start.ps1
+integrations/autotok-install.log
+integrations/autotok-*.lock

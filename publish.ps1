@@ -42,6 +42,10 @@ if ([System.IO.File]::ReadAllText((Join-Path $root 'core\updater.ps1')) -match '
     throw 'core\updater.ps1 van la placeholder khoa ky: ban phat hanh se lam khach mat tu cap nhat. Chay .\new-signing-key.ps1, dan chuoi khoa cong khai vao $UpdatePublicKeyXml trong core\updater.ps1, roi phat hanh lai (ke ca -NoPush).'
 }
 
+# Goi bo dang TikTok (core\autotok-bundle.zip) dung lai tu danh sach cho phep, TRUOC khi doi version: loi -> chua doi gi.
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'build-autotok-bundle.ps1') -Root $root
+if ($LASTEXITCODE -ne 0) { throw 'Khong dong goi duoc bo dang TikTok (build-autotok-bundle.ps1). Dung phat hanh.' }
+
 Write-Host "=== PHAT HANH PHIEN BAN MOI: v$Version (hien tai: v$old) ===" -ForegroundColor Cyan
 
 # 1. Tu dong khoi tao git neu chua co
@@ -136,6 +140,9 @@ $coreFiles = @($coreFiles) + $uiFiles + $fontFiles + @([ordered]@{
     sha256 = (Get-FileHash -LiteralPath (Join-Path $root 'Kid-FB.Y.exe') -Algorithm SHA256).Hash
     size = (Get-Item -LiteralPath (Join-Path $root 'Kid-FB.Y.exe')).Length
 })
+
+# Bo cai mot cham (kid-install.ps1) chi nhan goi da duoc manifest ky xac nhan.
+if (-not (@($coreFiles) | Where-Object { $_.path -eq 'core/autotok-bundle.zip' })) { throw 'Thieu core/autotok-bundle.zip trong manifest. Dung phat hanh.' }
 
 $man = [ordered]@{
     version     = $Version

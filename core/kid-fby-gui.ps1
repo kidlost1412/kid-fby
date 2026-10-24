@@ -50,6 +50,13 @@ if($TikTokJobFile){
         $job.Record | Add-Member -NotePropertyName SourceSha256 -NotePropertyValue (& $sha ([string]$job.Record.SourcePath)) -Force
         $job.Record | Add-Member -NotePropertyName UploadSha256 -NotePropertyValue (& $sha $clean) -Force
         $job.Payload | Add-Member -NotePropertyName source_sha256 -NotePropertyValue $job.Record.SourceSha256 -Force
+        # kid-install.ps1 is switching backend releases (upgrade lock held): wait up to 10 minutes before sending.
+        $upgradeLock=Join-Path $appRoot 'integrations\autotok-upgrade.lock';$waitUntil=[DateTime]::UtcNow.AddMinutes(10)
+        while([IO.File]::Exists($upgradeLock) -and [DateTime]::UtcNow -lt $waitUntil){
+            try{[IO.File]::Open($upgradeLock,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite).Dispose();break}
+            catch [IO.FileNotFoundException]{break}
+            catch{Start-Sleep -Seconds 2}
+        }
         try{
             $result=& $script:tikTokWorker 'create' (Get-TikTokEndpoint) $clean ($job.Payload | ConvertTo-Json -Depth 6 -Compress) ([string]$job.Record.RequestId) ''
             $response=$result | ConvertFrom-Json
@@ -588,6 +595,7 @@ $script:uiNames = @(
     'BadgeStatusScrcpy','TxtStatusScrcpy','BtnInstallScrcpy','BadgeStatusAdb','TxtStatusAdb','BtnInstallAdb',
     'BadgeStatusYtdlp','TxtStatusYtdlp','BtnInstallYtdlp','BadgeStatusFfmpeg','TxtStatusFfmpeg','BtnInstallFfmpeg',
     'BadgeStatusWhisper','TxtStatusWhisper','BtnInstallWhisper','BtnCheckTools','BtnOpenUninstall',
+    'BadgeAutotok','TxtAutotokBadge','BtnAutotokInstall','TxtAutotokInfo','TxtAutotokProgress','BarAutotok','BtnAutotokChrome',
     'ViewLogs','TxtLogPath','BtnCopyLog','BtnOpenLogFolder','BtnClearLog','TxtLog',
     'ViewUpdate','BtnUpdate','TxtUpdateButton','TxtUpdateInfo','ViewAbout','TxtAboutVersion',
     'PreviewPane','BadgeRes','TxtRes','BtnTrackB','BtnTrackA','PanelRev','BtnCopyReup','BtnRedo','BtnFolder','BtnDeleteCurrent',
@@ -1148,6 +1156,219 @@ function Get-TikTokEndpoint {
     $uri = [Uri]$value
     if ($uri.Scheme -ne 'http' -or $uri.Host -ne '127.0.0.1' -or $uri.AbsolutePath -ne '/' -or $uri.Query -or $uri.UserInfo) { throw 'Bộ đăng TikTok phải chạy tại http://127.0.0.1 trên máy này.' }
     return $value
+}
+
+# ------------------------------------------------------------- bo dang TikTok: cai mot cham ----
+# core\autotok-bundle.zip (delivered by the signed app update) carries integrations\autotok\kid-install.ps1.
+# The installer runs in its own hidden process; the GUI only polls its progress file (no UI blocking).
+function Get-AutotokPaths {
+    $integrations = Join-Path $root 'integrations'
+    return @{
+        Integrations = $integrations; Bundle = (Join-Path $root 'core\autotok-bundle.zip')
+        Current = (Join-Path $integrations 'autotok-current.json'); Launcher = (Join-Path $integrations 'autotok-start.ps1')
+        UpgradeLock = (Join-Path $integrations 'autotok-upgrade.lock'); InstallLock = (Join-Path $integrations 'autotok-install.lock')
+        LocalJson = (Join-Path $integrations 'tiktok\local.json')
+    }
+}
+
+function Test-AutotokLockHeld {
+    # kid-install.ps1 holds its lock files with FileShare.None + DeleteOnClose; a file nobody holds is a leftover.
+    param([string]$Path)
+    if (-not [IO.File]::Exists($Path)) { return $false }
+    try { [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite).Dispose(); return $false }
+    catch [IO.FileNotFoundException] { return $false }
+    catch { return $true }
+}
+
+function Test-AutotokUpgradeActive {
+    # True for the whole installer run (install lock) and while it switches releases (upgrade lock).
+    $paths = Get-AutotokPaths
+    return ([bool]$script:autotokInstall -or (Test-AutotokLockHeld $paths.InstallLock) -or (Test-AutotokLockHeld $paths.UpgradeLock))
+}
+
+function Find-AutotokChrome {
+    # Same places as run_autotok_web.py find_chrome().
+    foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
+        if (-not $base) { continue }
+        $exe = Join-Path $base 'Google\Chrome\Application\chrome.exe'
+        if ([IO.File]::Exists($exe)) { return $exe }
+    }
+    return ''
+}
+
+function Get-AutotokInstallState {
+    $paths = Get-AutotokPaths
+    $state = @{ BundleSha = ''; Chrome = (Find-AutotokChrome); Installed = $false; Version = ''; Sha = ''; Foreign = ''
+        EnvStarter = [string]$env:KID_FBY_AUTOTOK_STARTER; Installing = ([bool]$script:autotokInstall -or (Test-AutotokLockHeld $paths.InstallLock)) }
+    if ([IO.File]::Exists($paths.Bundle)) {
+        # Hash cached by size + time: the zip only changes with an app update.
+        $fi = [IO.FileInfo]::new($paths.Bundle); $stamp = '{0}|{1}' -f $fi.Length, $fi.LastWriteTimeUtc.Ticks
+        if (-not $script:autotokBundleCache -or $script:autotokBundleCache.Stamp -ne $stamp) {
+            $script:autotokBundleCache = @{ Stamp = $stamp; Sha = (Get-FileHash -LiteralPath $paths.Bundle -Algorithm SHA256).Hash.ToLowerInvariant() }
+        }
+        $state.BundleSha = $script:autotokBundleCache.Sha
+    }
+    if ([IO.File]::Exists($paths.Current)) {
+        try {
+            $current = [IO.File]::ReadAllText($paths.Current, [Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop
+            $release = [string]$current.release
+            if ($release -match '^[0-9a-f]{12}-[0-9]{8}-[0-9]{6}$' -and [IO.File]::Exists((Join-Path $paths.Integrations "autotok-releases\$release\.kid-release-ok"))) {
+                $state.Installed = $true; $state.Version = [string]$current.version; $state.Sha = [string]$current.sha
+                $state.Verified = ($null -eq $current.PSObject.Properties['verified']) -or [bool]$current.verified
+            }
+        } catch { Write-FileLog "WARN autotok-current.json: $($_.Exception.Message)" }
+    }
+    if ([IO.File]::Exists($paths.LocalJson)) {
+        try {
+            $starter = [string]([IO.File]::ReadAllText($paths.LocalJson) | ConvertFrom-Json -ErrorAction Stop).Starter
+            if ($starter -and [IO.Path]::GetFullPath($starter) -ine $paths.Launcher) { $state.Foreign = $starter }
+        } catch { $state.Foreign = $paths.LocalJson }
+    }
+    return $state
+}
+
+function Update-AutotokSection {
+    if (-not $ui.BtnAutotokInstall) { return }
+    $s = Get-AutotokInstallState
+    $short = $(if ($s.Sha) { ' (' + $s.Sha.Substring(0, [Math]::Min(8, $s.Sha.Length)) + ')' } else { '' })
+    $color = 'Coral'; $label = 'Cài bộ đăng TikTok'; $enabled = $true
+    $info = 'Đăng và hẹn giờ video lên TikTok ngay trong app. Cần Google Chrome và mạng; cài một lần, khoảng 5 phút.'
+    if ($s.Installing) { $badge = 'Đang cài…'; $color = 'Butter'; $label = 'Đang cài…'; $enabled = $false }
+    elseif ($s.EnvStarter) { $badge = 'Tự cấu hình'; $color = 'Sky'; $enabled = $false; $info = 'Đang dùng bộ đăng theo biến môi trường KID_FBY_AUTOTOK_STARTER. Bỏ biến này nếu muốn dùng bản cài một chạm.' }
+    elseif (-not $s.BundleSha -and -not $s.Installed) { $badge = 'Chưa có gói cài'; $enabled = $false; $info = 'Bản Kid FB.Y này chưa kèm bộ đăng TikTok. Vào thẻ Cập nhật để nhận bản mới rồi quay lại đây.' }
+    elseif ($s.Foreign) { $badge = 'Bản tự cài'; $color = 'Sky'; $label = 'Chuyển sang bản một chạm'; $enabled = [bool]$s.BundleSha; $info = "Đang dùng bộ đăng tự cài: $($s.Foreign). Có thể chuyển sang bản cài một chạm; tài khoản và dữ liệu giữ nguyên." }
+    elseif (-not $s.Installed) { $badge = 'Chưa cài' }
+    elseif (-not $s.Verified) { $badge = 'Cần kiểm tra'; $color = 'Butter'; $label = 'Kiểm tra / sửa'; $enabled = [bool]$s.BundleSha; $info = 'Lần cài trước bị ngắt giữa chừng. Bấm Kiểm tra / sửa: app chạy thử bản mới, lỗi thì quay lại bản cũ.' }
+    elseif ($s.BundleSha -and $s.BundleSha -ne $s.Sha) { $badge = 'Có bản mới'; $color = 'Butter'; $label = 'Cập nhật bộ đăng'; $info = "Đang dùng bản $($s.Version)$short. Bản cập nhật của app có bộ đăng mới hơn; video đang gửi sẽ được đợi xong trước khi chuyển." }
+    else { $badge = "Đã cài · $($s.Version)"; $color = 'Mint'; $label = 'Kiểm tra / sửa'; $enabled = [bool]$s.BundleSha; $info = "Bộ đăng TikTok đã sẵn sàng$short. Bấm Kiểm tra / sửa nếu đăng bài bị lỗi." }
+    if (-not $s.Chrome -and -not $s.Installing) { $enabled = $false; $info += ' Cần cài Google Chrome trước.' }
+    $ui.TxtAutotokBadge.Text = $badge
+    $ui.BadgeAutotok.Background = Get-Brush ($color + 'Soft'); $ui.BadgeAutotok.BorderBrush = Get-Brush ($color + 'Line')
+    $ui.BtnAutotokInstall.Content = $label; $ui.BtnAutotokInstall.IsEnabled = $enabled
+    $ui.TxtAutotokInfo.Text = $info
+    $ui.BtnAutotokChrome.Visibility = $(if ($s.Chrome) { 'Collapsed' } else { 'Visible' })
+}
+
+function Test-AutotokTransfersActive {
+    # A background TikTok transfer still running would lose its backend mid-upload.
+    try {
+        $text = [string]$ui.TxtOut.Text
+        if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+        $out = Get-CanonicalPath $text
+        $dir = Join-Path $out '.cache\tiktok-posts'
+        if (-not [IO.Directory]::Exists($dir)) { return $false }
+        foreach ($lock in [IO.DirectoryInfo]::new($dir).GetFiles('*.lock')) {
+            if ($lock.Name -match '^([a-f0-9]{32})\.lock$' -and (Test-TikTokWorkerAlive $out $Matches[1])) { return $true }
+        }
+    } catch { Write-FileLog "WARN autotok transfer check: $($_.Exception.Message)" }
+    return $false
+}
+
+function Enable-TikTokIntegrationLive {
+    # After a successful install: TikTok features on without restarting the app.
+    $was = Test-TikTokEnabled
+    $script:tikTok = Get-TikTokIntegration
+    if (-not (Test-TikTokEnabled)) { return $false }
+    if (-not $was) { Set-TikTokPostingUi }
+    if (-not $script:tikTokSyncTimer) { Start-TikTokStatusSync }
+    try { Update-Gallery } catch { Write-FileLog "WARN Update-Gallery after TikTok install: $($_.Exception.Message)" }
+    return $true
+}
+
+function Start-AutotokInstall {
+    if ($script:autotokInstall) { return }
+    $s = Get-AutotokInstallState
+    if ($s.Installing) { Show-Toast 'Đang có một lần cài bộ đăng TikTok chạy.' -Kind warning; return }
+    if ($s.EnvStarter) { Show-Toast 'Đang dùng KID_FBY_AUTOTOK_STARTER; bản cài một chạm không thay được cấu hình này.' -Kind warning; return }
+    if (-not $s.BundleSha) { Show-Toast 'Bản này chưa kèm gói bộ đăng TikTok. Vào Cập nhật để nhận bản mới.' -Kind warning; return }
+    if (-not $s.Chrome) { Show-Toast 'Cần cài Google Chrome trước (https://www.google.com/chrome/).' -Kind warning; Update-AutotokSection; return }
+    if ((Test-TikTokEnabled) -and (Test-AutotokTransfersActive)) { Show-Toast 'Đang có video chuyển lên TikTok. Đợi xong rồi cài.' -Kind warning; return }
+    $takeOver = $false
+    if ($s.Foreign) {
+        $takeOver = Show-ConfirmDialog -Title 'Chuyển sang bộ đăng cài một chạm?' -ConfirmText 'Chuyển' -Message (
+            "Kid FB.Y đang dùng bộ đăng tự cài:`r`n$($s.Foreign)`r`n`r`n" +
+            "Bản cài một chạm dùng chung thư mục dữ liệu, nên tài khoản TikTok và lịch sử giữ nguyên. " +
+            "Bản tự cài sẽ được dừng sau khi các video đang gửi xong; nếu bản mới lỗi, app tự quay lại bản cũ.")
+        if (-not $takeOver) { return }
+    }
+    $paths = Get-AutotokPaths
+    $work = Join-Path ([IO.Path]::GetTempPath()) ('KidFBY-autotok-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        # Run the installer from the bundle only when it matches the bundle's own file list.
+        New-Item -ItemType Directory -Path $work -Force | Out-Null
+        $script = Join-Path $work 'kid-install.ps1'
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [IO.Compression.ZipFile]::OpenRead($paths.Bundle)
+        try {
+            $manifestEntry = $zip.GetEntry('bundle.json'); $entry = $zip.GetEntry('autotok/kid-install.ps1')
+            if (-not $manifestEntry -or -not $entry) { throw 'Gói cài thiếu bundle.json hoặc kid-install.ps1.' }
+            $reader = New-Object IO.StreamReader($manifestEntry.Open(), [Text.Encoding]::UTF8)
+            try { $manifest = $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
+            $expected = [string](@($manifest.files | Where-Object { [string]$_.path -ceq 'autotok/kid-install.ps1' }) | Select-Object -First 1).sha256
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $script, $false)
+        } finally { $zip.Dispose() }
+        if (-not $expected -or (Get-FileHash -LiteralPath $script -Algorithm SHA256).Hash -ne $expected.ToUpperInvariant()) { throw 'kid-install.ps1 không khớp gói cài.' }
+        $progress = Join-Path $work 'progress.txt'
+        $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $script + '"'), '-Root', ('"' + $root.TrimEnd('\') + '"'),
+            '-Bundle', ('"' + $paths.Bundle + '"'), '-ProgressFile', ('"' + $progress + '"'))
+        if ($takeOver) { $argList += '-TakeOverStarter' }
+        $process = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -WindowStyle Hidden -PassThru
+        $null = $process.Handle
+    } catch {
+        try { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction Stop } catch { Write-FileLog "WARN autotok temp cleanup: $($_.Exception.Message)" }
+        Show-Toast ('Không bắt đầu cài được bộ đăng TikTok: ' + $_.Exception.Message) -Kind error
+        return
+    }
+    Write-FileLog "AUTOTOK install started pid=$($process.Id) takeover=$takeOver"
+    $script:autotokInstall = @{ Process = $process; Progress = $progress; Work = $work; Timer = (New-Object Windows.Threading.DispatcherTimer) }
+    $ui.TxtAutotokProgress.Text = 'Đang bắt đầu…'; $ui.TxtAutotokProgress.Visibility = 'Visible'
+    $ui.BarAutotok.Value = 0; $ui.BarAutotok.Visibility = 'Visible'
+    Update-AutotokSection
+    $script:autotokInstall.Timer.Interval = [TimeSpan]::FromMilliseconds(500)
+    $script:autotokInstall.Timer.Add_Tick({
+        try { Invoke-AutotokInstallTick } catch { Write-FileLog "WARN autotok install tick: $($_.Exception.Message)" }
+    })
+    $script:autotokInstall.Timer.Start()
+}
+
+function Read-AutotokProgress {
+    # Last step and the result line from the installer's progress file (@@AUTOTOK_STEP / @@AUTOTOK_RESULT).
+    param([string]$Path)
+    $out = @{ Pct = -1; Message = ''; Result = '' }
+    if (-not [IO.File]::Exists($Path)) { return $out }
+    $fs = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    try { $text = (New-Object IO.StreamReader($fs, [Text.Encoding]::UTF8)).ReadToEnd() } finally { $fs.Dispose() }
+    foreach ($line in ($text -split "`n")) {
+        if ($line -match '^@@AUTOTOK_STEP (\S+) (\d+) (.*)$') { $out.Pct = [int]$Matches[2]; $out.Message = $Matches[3].Trim() }
+        elseif ($line -match '^@@AUTOTOK_RESULT (ok|failed) (\S+) ?(.*)$') { $out.Result = $Matches[1]; $out.Reason = $Matches[2]; $out.Message = $Matches[3].Trim() }
+    }
+    return $out
+}
+
+function Invoke-AutotokInstallTick {
+    $job = $script:autotokInstall
+    if (-not $job) { return }
+    $p = Read-AutotokProgress $job.Progress
+    if ($p.Pct -ge 0) { $ui.BarAutotok.Value = $p.Pct }
+    if ($p.Message) { $ui.TxtAutotokProgress.Text = $p.Message }
+    if (-not $job.Process.HasExited) { return }
+    $p = Read-AutotokProgress $job.Progress
+    $job.Timer.Stop(); $script:autotokInstall = $null
+    try { Remove-Item -LiteralPath $job.Work -Recurse -Force -ErrorAction Stop } catch { Write-FileLog "WARN autotok temp cleanup: $($_.Exception.Message)" }
+    Write-FileLog "AUTOTOK install finished exit=$($job.Process.ExitCode) result=$($p.Result) reason=$($p.Reason)"
+    $ui.BarAutotok.Visibility = 'Collapsed'
+    if ($p.Result -eq 'ok') {
+        $ui.TxtAutotokProgress.Text = $p.Message
+        if (Enable-TikTokIntegrationLive) { Show-Toast ($p.Message + ' Nút Đăng video đã sẵn sàng.') -Kind success }
+        else { Show-Toast ($p.Message + ' Nhưng app chưa nhận cấu hình TikTok; mở lại app.') -Kind warning }
+    } else {
+        $message = $(if ($p.Result -and $p.Message) { $p.Message }
+            elseif ($p.Message) { "Trình cài dừng bất thường ở bước: $($p.Message) (mã $($job.Process.ExitCode)). Xem integrations\autotok-install.log." }
+            else { "Trình cài dừng bất thường (mã $($job.Process.ExitCode)). Xem integrations\autotok-install.log." })
+        $ui.TxtAutotokProgress.Text = $message
+        Show-Toast ('Chưa cài được bộ đăng TikTok: ' + $message) -Kind error
+    }
+    Update-AutotokSection
 }
 
 $script:tikTokWorker = {
@@ -2339,8 +2560,10 @@ function Show-TikTokPublishDialog {
         $active=@($own | Where-Object {$_.status -in $blocking})
         $repeat=@($own | Where-Object {$_.status -eq 'succeeded' -or $_.publish_uncertain -or $_.prior_uncertain})
         $c.ConfirmRepost.Visibility=$(if($repeat.Count){'Visible'}else{'Collapsed'})
-        $c.Submit.IsEnabled=(-not $state.Submitted -and $state.Ready -and $state.SelectedAccount -and -not $active.Count -and (-not $repeat.Count -or $c.ConfirmRepost.IsChecked))
+        $state.Upgrading=Test-AutotokUpgradeActive
+        $c.Submit.IsEnabled=(-not $state.Submitted -and -not $state.Upgrading -and $state.Ready -and $state.SelectedAccount -and -not $active.Count -and (-not $repeat.Count -or $c.ConfirmRepost.IsChecked))
         if($state.Submitted){return}
+        if($state.Upgrading){$c.Status.Text='Đang cài hoặc cập nhật bộ đăng TikTok. Đợi xong rồi đăng.';return}
         if($active.Count){$c.Status.Text='Tài khoản này đã có tác vụ cho video này. Xem Lịch đăng để theo dõi; không cần gửi thêm.'}
         elseif($repeat.Count -and -not $c.ConfirmRepost.IsChecked){$c.Status.Text='Video đã được gửi trên tài khoản này hoặc kết quả chưa rõ. Chọn tài khoản khác, hoặc xác nhận đăng lại sau khi kiểm tra.'}
         elseif($state.Ready){$c.Status.Text='Nhập caption rồi bấm Đăng và chạy nền. Anh có thể tiếp tục dùng app ngay.'}
@@ -2491,6 +2714,8 @@ function Show-TikTokPublishDialog {
     }.GetNewClosure())
     $timer=New-Object Windows.Threading.DispatcherTimer;$timer.Interval=[TimeSpan]::FromMilliseconds(250)
     $timer.Add_Tick({
+        # Upgrade lock appeared/disappeared while the dialog is open: re-evaluate Submit.
+        if($state.Ready -and -not $state.Submitted -and [bool]$state.Upgrading -ne (Test-AutotokUpgradeActive)){& $updateSelection}
         if(-not $state.Task -or -not $state.Task.Async.IsCompleted){return}
         $task=$state.Task;$state.Task=$null
         try{
@@ -2577,6 +2802,7 @@ Set-TikTokPostingUi
 
 $win.Add_Closed({
     if ($script:tikTokSyncTimer) { $script:tikTokSyncTimer.Stop() }
+    if ($script:autotokInstall) { $script:autotokInstall.Timer.Stop() }
     if ($script:tikTokSync -and $script:tikTokSync.Task) { Stop-TikTokTask $script:tikTokSync.Task; $script:tikTokSync.Task = $null }
 })
 
@@ -4703,6 +4929,7 @@ function Show-GalleryCardMenu {
             $specs+=,@('Thử lấy lại link',0xE72C,'refreshlink')
         }
     }
+    if(-not (Test-TikTokEnabled)){$specs+=,@('Cài bộ đăng TikTok…',0xE896,'installtiktok')}
     $specs+=,@('Sao chép để đăng',0xE8C8,'copy')
     $specs+=,@('Mở thư mục',0xE838,'folder')
     $specs+=,@('Xem lớn',0xE740,'view')
@@ -4728,6 +4955,7 @@ function Show-GalleryCardMenu {
                 'copyid' {Copy-TikTokPostId ([string]$context.PostId)}
                 'refreshlink' {Start-TikTokLinkRefresh ([string]$context.LinkKey)}
                 'copy' {Copy-ToClipboard $filePath}
+                'installtiktok' {Show-Page 'settings' -Sub 'tools'}
                 'folder' {Open-GalleryFile $filePath}
                 'view' {if(Invoke-GalleryView -FilePath $filePath -Controls $ui -NoAutoPlay){Set-PreviewBig $true}}
                 'redo' {
@@ -4864,6 +5092,7 @@ function Update-ToolsStatus {
     $missing = @(); foreach ($k in @('adb', 'scrcpy', 'ffmpeg', 'ffprobe', 'ytdlp')) { if (-not $script:toolPresence[$k]) { $missing += $(if ($k -eq 'ytdlp') { 'yt-dlp' } else { $k }) } }
     Set-HeaderChip -Chip 'Tools' -State $(if ($missing.Count) { 'bad' } else { 'ok' }) -Text $(if ($missing.Count) { 'Thiếu công cụ' } else { 'Công cụ' }) `
         -Tip $(if ($missing.Count) { 'Thiếu: ' + ($missing -join ', ') + '. Bấm để mở Cài đặt › Công cụ.' } else { 'Đã có ADB, scrcpy, FFmpeg, ffprobe, yt-dlp.' })
+    try { Update-AutotokSection } catch { Write-FileLog "WARN Update-AutotokSection: $($_.Exception.Message)" }
 }
 
 function Set-HeaderChip {
@@ -5898,6 +6127,8 @@ $ui.BtnInstallYtdlp.Add_Click({    Install-ToolGUI 'ytdlp' })
 $ui.BtnInstallFfmpeg.Add_Click({   Install-ToolGUI 'ffmpeg' })
 $ui.BtnInstallWhisper.Add_Click({  Install-ToolGUI 'whisper' })
 $ui.BtnCheckTools.Add_Click({      Update-ToolsStatus })
+$ui.BtnAutotokInstall.Add_Click({  Start-AutotokInstall })
+$ui.BtnAutotokChrome.Add_Click({   Start-Process 'https://www.google.com/chrome/' })
 $ui.BtnOpenUninstall.Add_Click({
     if (Test-AppBusy) { Show-Toast 'Đang chạy tác vụ hoặc hàng đợi — không thể gỡ thư viện lúc này.' -Kind warning; return }
     $confirmed = Show-ConfirmDialog -Title 'Gỡ thư viện công cụ?' -ConfirmText 'Gỡ thư viện' -Danger -Message (
