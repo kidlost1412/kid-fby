@@ -697,7 +697,21 @@
                                   </Style>
                                 </TextBlock.Style>
                               </TextBlock>
-                              <TextBlock Text="{Binding PostedShort}" TextTrimming="CharacterEllipsis" MaxWidth="136"/>
+                              <TextBlock Text="{Binding PostedShort}" MaxWidth="136">
+                                <TextBlock.Style>
+                                  <Style TargetType="TextBlock">
+                                    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                                    <Style.Triggers>
+                                      <!-- Nhan 2 dong (trang thai + gio dang TikTok) -->
+                                      <DataTrigger Binding="{Binding PostedMultiline}" Value="True">
+                                        <Setter Property="TextWrapping" Value="Wrap"/>
+                                        <Setter Property="FontSize" Value="11"/>
+                                        <Setter Property="LineHeight" Value="13"/>
+                                      </DataTrigger>
+                                    </Style.Triggers>
+                                  </Style>
+                                </TextBlock.Style>
+                              </TextBlock>
                             </StackPanel>
                           </Button>
                         </Grid>

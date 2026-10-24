@@ -2131,6 +2131,17 @@ function Get-OptimalVideoEncoder {
 }
 
 # Tham so encoder video dung chung (CRF/CQ co dinh, High profile, yuv420p).
+# Xoa metadata nhan dang (nguon + cong cu) khoi file xuat cuoi. Khong dong den thoi gian/dong bo.
+function Get-CleanOutputArgs {
+    param([string]$Codec = 'h264')
+    $c = @('-map_metadata','-1','-map_chapters','-1','-fflags','+bitexact','-flags:v','+bitexact','-flags:a','+bitexact',
+           '-metadata:s:v','handler_name=','-metadata:s:a','handler_name=','-metadata:s:v','encoder=')
+    # Bo SEI (chuoi "x264 core ..." / SEI cua nguon) khi stream-copy hoac ma hoa H.264/HEVC.
+    if ($Codec -match '^(h264|avc)') { $c += @('-bsf:v','filter_units=remove_types=6') }
+    elseif ($Codec -match '^(hevc|h265)') { $c += @('-bsf:v','filter_units=remove_types=39|40') }
+    return $c
+}
+
 function Get-VideoEncoderArgs {
     param([string]$Encoder = 'libx264')
     switch ($Encoder) {
@@ -2139,6 +2150,44 @@ function Get-VideoEncoderArgs {
         'h264_amf'   { return @('-c:v','h264_amf','-rc','cqp','-qp_i','20','-qp_p','22','-profile:v','high','-pix_fmt','yuv420p') }
         default      { return @('-c:v','libx264','-crf','19','-preset','medium','-profile:v','high','-pix_fmt','yuv420p') }
     }
+}
+
+# So keyframe va so khung giai ma duoc cua stream video dau tien.
+function Get-VideoFrameCounts {
+    param($T, [string]$File, [int]$TimeoutMs = 1800000)
+    $k = Invoke-Exe $T.ffprobe @('-v','error','-select_streams','v:0','-show_entries','packet=flags','-of','csv=p=0',$File) -TimeoutMs $TimeoutMs
+    $n = Invoke-Exe $T.ffprobe @('-v','error','-select_streams','v:0','-count_frames','-show_entries','stream=nb_read_frames','-of','csv=p=0',$File) -TimeoutMs $TimeoutMs
+    $frames = 0
+    # Dong co the kem du lieu phu (vd. rotation: '180,'): lay so dau tien.
+    $mm = [regex]::Match([string]$n.Out, '\d+')
+    if ($k.Code -ne 0 -or $n.Code -ne 0 -or -not $mm.Success -or -not [int]::TryParse($mm.Value, [ref]$frames)) { return $null }
+    return @{ Keys = @(([string]$k.Out -split "`r?`n") | Where-Object { $_ -cmatch '^K' }).Count; Frames = $frames }
+}
+
+# Ghep video + audio da cat, xoa metadata (Get-CleanOutputArgs). H.264 duoc copy; bo SEI co the lam mat co keyframe
+# (GOP mo, SEI recovery point) hoac bo khung dau (bat dau bang I khong IDR) -> so voi ban copy khong loc, khac thi
+# ma hoa lai libx264. HEVC/AV1/VP9 luon ma hoa H.264 (x265 ghi thong tin encoder trong hvcC, bo loc khong xoa duoc).
+function Invoke-CleanVideoMux {
+    param($T, [string]$Video, [string]$Audio, [string]$AudioMap, [string]$Output, [string]$DurationText, [string]$Codec, [int]$TimeoutMs)
+    $head = @('-hide_banner','-loglevel','error','-y','-i',$Video,'-i',$Audio,'-map','0:v:0','-map',$AudioMap)
+    if ($Codec -notmatch 'av1|av01|vp9|vp09|hevc|h265') {
+        $r = Invoke-Exe $T.ffmpeg ($head + @('-c:v','copy','-c:a','copy','-t',$DurationText) + (Get-CleanOutputArgs -Codec $Codec) + @('-movflags','+faststart',$Output)) -TimeoutMs $TimeoutMs
+        if ($r.Code -ne 0) { return @{ Result = $r; Encoder = 'copy' } }
+        $ref = Join-Path ([IO.Path]::GetDirectoryName($Output)) ('.kidfby-ref-' + [Guid]::NewGuid().ToString('N') + '.mp4')
+        try {
+            $rr = Invoke-Exe $T.ffmpeg @('-hide_banner','-loglevel','error','-y','-i',$Video,'-map','0:v:0','-c','copy','-t',$DurationText,$ref) -TimeoutMs $TimeoutMs
+            $a = if ($rr.Code -eq 0) { Get-VideoFrameCounts -T $T -File $ref } else { $null }
+            $b = Get-VideoFrameCounts -T $T -File $Output
+        } finally { Remove-Item -LiteralPath $ref -Force -ErrorAction SilentlyContinue }
+        if ($a -and $b -and $a.Keys -eq $b.Keys -and $a.Frames -eq $b.Frames) { return @{ Result = $r; Encoder = 'copy' } }
+        $detail = if ($a -and $b) { "keyframe $($a.Keys)->$($b.Keys), khung $($a.Frames)->$($b.Frames)" } else { 'khong dem duoc khung hinh' }
+        Write-Warn2 "Copy video sau khi xoa SEI khong giu nguyen keyframe/khung hinh ($detail); ma hoa lai H.264..."
+    } else {
+        Write-Note "Phat hien codec $Codec (chuyen ma H.264 de xoa thong tin encoder va tuong thich trinh phat)..."
+    }
+    # -fps_mode passthrough: giu dung tung khung cua nguon (khong nhan doi/bo khung).
+    $r = Invoke-Exe $T.ffmpeg ($head + (Get-VideoEncoderArgs -Encoder 'libx264') + @('-fps_mode','passthrough','-c:a','copy','-t',$DurationText) + (Get-CleanOutputArgs -Codec 'h264') + @('-movflags','+faststart',$Output)) -TimeoutMs $TimeoutMs
+    return @{ Result = $r; Encoder = 'libx264' }
 }
 
 # Dong tom tat ly do ffmpeg that bai (dung khi roi ve libx264).
@@ -2248,7 +2297,7 @@ function Get-MovingLogoMuxArgs {
         return @('-hide_banner','-loglevel','error','-y','-i',$Video,'-i',$Audio,
                  '-loop','1','-i',$Logo,'-stream_loop','-1','-i',$Gif,'-filter_complex',$filter,'-map','[v]','-map','1:a:0?') +
                  $encArgs +
-                 @('-c:a','copy') + $limitArgs + @('-movflags','+faststart',$Output)
+                 @('-c:a','copy') + $limitArgs + (Get-CleanOutputArgs -Codec 'h264') + @('-movflags','+faststart',$Output)
     } elseif ($hasGif) {
         $filter = "[0:v]pad=ceil(iw/2)*2:ceil(ih/2)*2[vbase];" +
                   "[2:v]format=rgba,scale=${gifScale}[gif];" +
@@ -2256,7 +2305,7 @@ function Get-MovingLogoMuxArgs {
         return @('-hide_banner','-loglevel','error','-y','-i',$Video,'-i',$Audio,
                  '-stream_loop','-1','-i',$Gif,'-filter_complex',$filter,'-map','[v]','-map','1:a:0?') +
                  $encArgs +
-                 @('-c:a','copy') + $limitArgs + @('-movflags','+faststart',$Output)
+                 @('-c:a','copy') + $limitArgs + (Get-CleanOutputArgs -Codec 'h264') + @('-movflags','+faststart',$Output)
     } elseif ($hasLogo) {
         $filter = "[0:v]pad=ceil(iw/2)*2:ceil(ih/2)*2[vbase];" +
                   "[2:v]format=rgba,scale=${logoScale},colorchannelmixer=aa=${alpha}[logo];" +
@@ -2264,13 +2313,13 @@ function Get-MovingLogoMuxArgs {
         return @('-hide_banner','-loglevel','error','-y','-i',$Video,'-i',$Audio,
                  '-loop','1','-i',$Logo,'-filter_complex',$filter,'-map','[v]','-map','1:a:0?') +
                  $encArgs +
-                 @('-c:a','copy') + $limitArgs + @('-movflags','+faststart',$Output)
+                 @('-c:a','copy') + $limitArgs + (Get-CleanOutputArgs -Codec 'h264') + @('-movflags','+faststart',$Output)
     } else {
         $filter = "[0:v]pad=ceil(iw/2)*2:ceil(ih/2)*2[v]"
         return @('-hide_banner','-loglevel','error','-y','-i',$Video,'-i',$Audio,
                  '-filter_complex',$filter,'-map','[v]','-map','1:a:0?') +
                  $encArgs +
-                 @('-c:a','copy') + $limitArgs + @('-movflags','+faststart',$Output)
+                 @('-c:a','copy') + $limitArgs + (Get-CleanOutputArgs -Codec 'h264') + @('-movflags','+faststart',$Output)
     }
 }
 
@@ -2329,11 +2378,10 @@ function Invoke-ReeditVideo {
                 -Gif $resolvedGif -GifSize $GifSize -GifFullFrame:$GifFullFrame -GifPosition $GifPosition `
                 -CustomWidth $CustomWidth -CustomHeight $CustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight `
                 -CustomX $CustomX -CustomY $CustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY -VideoEncoder $activeEncoder -Duration $duration
-        } else {
-            $editArgs = @('-hide_banner','-loglevel','error','-y','-i',$source,'-i',$audio,'-map','0:v:0','-map','1:a:0?','-c','copy','-t',$duration.ToString('0.###',[cultureinfo]::InvariantCulture),'-movflags','+faststart',$staged)
         }
         Write-Note 'Sua tu video goc va audio da luu; khong tai video, khong thu am lai.'
-        $result = Invoke-Exe $T.ffmpeg $editArgs -TimeoutMs (Get-ReelProcessTimeoutMs $duration)
+        if ($resolvedLogo -or $resolvedGif) { $result = Invoke-Exe $T.ffmpeg $editArgs -TimeoutMs (Get-ReelProcessTimeoutMs $duration) }
+        else { $result = (Invoke-CleanVideoMux -T $T -Video $source -Audio $audio -AudioMap '1:a:0?' -Output $staged -DurationText $duration.ToString('0.###',[cultureinfo]::InvariantCulture) -Codec (Get-VideoCodec -T $T -File $source) -TimeoutMs (Get-ReelProcessTimeoutMs $duration)).Result }
         if ($result.Code -ne 0 -and $activeEncoder -ne 'libx264' -and ($resolvedLogo -or $resolvedGif)) {
             Write-Warn2 "Hardware encoder ($activeEncoder) that bai ($(Get-FfmpegFailureSummary $result)), tu dong chuyen sang CPU libx264..."
             $script:optimalVideoEncoder = 'libx264'
@@ -3059,7 +3107,7 @@ function Invoke-OneLink {
         }
 
         $cutResult = Invoke-Exe $T.ffmpeg @('-hide_banner','-loglevel','error','-y','-i',$analysisFile,'-vn',
-                                            '-af',($sliceFilter + ',' + $flt),'-c:a','aac','-b:a','192k',$cut) -TimeoutMs 300000
+                                            '-af',($sliceFilter + ',' + $flt),'-c:a','aac','-b:a','192k','-map_metadata','-1','-fflags','+bitexact','-flags:a','+bitexact',$cut) -TimeoutMs 300000
 
         if ($cutResult.Code -ne 0 -or -not (Test-Path -LiteralPath $cut -PathType Leaf) -or (Get-Item -LiteralPath $cut).Length -le 0) {
             Show-Fail -Message 'Cat am thanh that bai.' -Fix @('Chay lai thu.', $cutResult.Err)
@@ -3099,7 +3147,7 @@ function Invoke-OneLink {
 
         # Ghep video goc + audio long tieng; gioi han bang -t (thoi luong video that), khong dung -shortest.
         $muxArgs = @('-hide_banner','-loglevel','error','-y','-i',$vf.FullName,'-i',$cut,
-                     '-map','0:v:0','-map','1:a:0') + $vCodecOpt + @('-c:a','copy','-t',$muxDur.ToString('0.###',$inv),'-movflags','+faststart',$out)
+                     '-map','0:v:0','-map','1:a:0') + $vCodecOpt + @('-c:a','copy','-t',$muxDur.ToString('0.###',$inv)) + (Get-CleanOutputArgs -Codec $(if ($encoderUsed -eq 'copy') { $cv } else { 'h264' })) + @('-movflags','+faststart',$out)
 
         $resolvedLogo = ''
         $resolvedGif  = ''
@@ -3124,7 +3172,11 @@ function Invoke-OneLink {
                 -CustomWidth $LogoCustomWidth -CustomHeight $LogoCustomHeight -GifCustomWidth $GifCustomWidth -GifCustomHeight $GifCustomHeight `
                 -CustomX $LogoCustomX -CustomY $LogoCustomY -GifCustomX $GifCustomX -GifCustomY $GifCustomY -VideoEncoder $chosenEncoder -Duration $muxDur
         }
-        $muxResult = Invoke-Exe $T.ffmpeg $muxArgs -TimeoutMs (Get-ReelProcessTimeoutMs $dur)
+        if ($resolvedLogo -or $resolvedGif) { $muxResult = Invoke-Exe $T.ffmpeg $muxArgs -TimeoutMs (Get-ReelProcessTimeoutMs $dur) }
+        else {
+            $cleanMux = Invoke-CleanVideoMux -T $T -Video $vf.FullName -Audio $cut -AudioMap '1:a:0' -Output $out -DurationText $muxDur.ToString('0.###',$inv) -Codec $cv -TimeoutMs (Get-ReelProcessTimeoutMs $dur)
+            $muxResult = $cleanMux.Result; $encoderUsed = $cleanMux.Encoder
+        }
         if ($muxResult.Code -ne 0 -and $chosenEncoder -ne 'libx264' -and ($resolvedLogo -or $resolvedGif)) {
             Write-Warn2 "Hardware encoder ($chosenEncoder) that bai ($(Get-FfmpegFailureSummary $muxResult)), tu dong chuyen sang CPU libx264..."
             $script:optimalVideoEncoder = 'libx264'

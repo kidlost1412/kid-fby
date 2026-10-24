@@ -13,4 +13,5 @@ core/_backup/
 *.private.xml
 update-signing-*.xml
 _handoff/
+integrations/tiktok/local.json
 core/.resources-stamp

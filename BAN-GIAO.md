@@ -1,4 +1,4 @@
-# Bàn giao kỹ thuật Kid FB.Y
+﻿# Bàn giao kỹ thuật Kid FB.Y
 
 Ngày rà: 21/10/2026, nhánh `audit-fixes-2.1` cùng commit với `main` @ `7f5851a`. `core/version.txt` = 2.1.0; bản 2.1.0 đã phát hành: tag `v2.1.0` trên GitHub, `version.json` và `version.json.sig` đã ký và nằm trên `main`. Trạng thái Git và phiên bản máy khác cần kiểm tra lại. Tài liệu mô tả hành vi có trong nguồn, không chứng nhận không có lỗi, hiệu năng hay kết quả của Facebook.
 
@@ -17,6 +17,7 @@ Ngày rà: 21/10/2026, nhánh `audit-fixes-2.1` cùng commit với `main` @ `7f5
 | `core/updater.ps1` | Đọc manifest đã ký, xác minh chữ ký RSA, tải staging, kiểm SHA256 và công bố READY |
 | `core/fix-ket-noi.ps1` | Tiện ích PowerShell chẩn đoán và thử sửa kết nối Android/LDPlayer. Ghi đè `adb.exe` của LDPlayer chỉ sau khi hỏi Y/N (mặc định N, không hỏi được thì không ghi đè) và sao lưu `.bak-<thời gian>`; vẫn đọc mã trước khi chạy |
 | `build-local.ps1` / `publish.ps1` / `new-signing-key.ps1` | Biên dịch, kiểm khởi tạo; chuẩn bị version, manifest, chữ ký và thao tác Git khi phát hành; tạo cặp khóa RSA 3072 bit ngoài repo |
+| `integrations/tiktok/` | Tích hợp TikTok tùy chọn: `start.ps1` gọi starter autotok; `local.json` gitignore (mục 8–9) |
 
 Đây không phải app web/Electron, không có backend hay SQL riêng. Không có `.csproj`, `.sln`, lockfile công cụ chung hoặc bộ regression test được phân phối trong cây Git tại lần rà này. Chạy tác vụ con bằng quyền người dùng Windows; `ExecutionPolicy Bypass` không tạo sandbox.
 
@@ -60,7 +61,7 @@ Ngày rà: 21/10/2026, nhánh `audit-fixes-2.1` cùng commit với `main` @ `7f5
 - File `-1/-2` cũ ở thư mục xuất (bản trước đợt 4): không bị tự xóa hay di chuyển. Mọi chỗ đọc (reedit, Kho, xóa) tìm `.cache` trước rồi fallback thư mục xuất (`Get-ReelIntermediatePath` ở engine, `Get-ReelCompanionPath`/`Get-ReelMediaFiles` ở GUI). "Đã có trong kho" khi phát hiện trùng chỉ dựa vào `-3` ở thư mục xuất.
 - `.cache\thumbs\<id>.*`: ảnh thu nhỏ và cache ffprobe của Kho (cũ: `.thumbs\` ở thư mục xuất); tự tạo lại được. GUI chỉ quét Kho sau khi nạp `settings.json`.
 - `data/rejected-videos.json`: lịch sử loại dùng chung khi đổi thư mục xuất, `Schema=1`, mỗi mục có `VideoId`, `Urls`, `Reason`, `RejectedAt`, `Evidence` (cắt tối đa 2000 ký tự; mục cũ không có trường này vẫn hợp lệ). Ghi file bằng FileStream + Flush rồi replace. File hỏng khi đọc: không ném lỗi làm hỏng mọi link, mà đổi tên thành `rejected-videos.json.corrupt-<yyyyMMdd-HHmmss>-<id>`, ghi cảnh báo và coi như rỗng (bản `.corrupt` giữ để khôi phục tay). `Save-RejectedReel` chỉ nhận `vietnamese-unavailable` hoặc `audio-not-vietnamese` (lý do cũ có thể còn trong file). `Remove-RejectedReel` gỡ theo ID, cùng mutex và ghi file tạm rồi replace; GUI gọi nó từ nút **Bỏ loại**. Khi chạy với `-ForceRetryRejected` và thành công, engine gỡ mục tương ứng. `Remove-RejectedReelMedia` vẫn còn trong `facebook-links.ps1` nhưng không còn caller trong luồng loại (giữ cho công cụ bảo trì gọi tay).
-- `output/reup-status.json`: trạng thái Posted/Date theo ID, do người dùng đánh dấu. Ghi bằng mutex và file tạm/replace; đây không phải xác nhận từ TikTok.
+- `output/reup-status.json`: trạng thái Posted/Date theo ID. Nguồn: đánh dấu tay (`ManualPosted`) hoặc đồng bộ lịch sử autotok khi bật tích hợp TikTok (mục 8). Chỉ `Update-ReupMetadata` ghi file. Không phải xác nhận bài đã công khai trên TikTok.
 - ID trùng trong cùng input được gộp. Khi đã có `-3` không rỗng ở thư mục xuất, GUI có lựa chọn bỏ qua hoặc tải và ghi âm lại. Đây là kiểm tên/ID/file, không so sánh nội dung video bằng fingerprint.
 
 ### Sự kiện máy đọc (engine → GUI)
@@ -184,3 +185,66 @@ Hợp đồng đợt 5: reason mới `output-locked` (status `failed`); `publish
 So với bản 2.0.1, bản 2.1.0 (nhánh `audit-fixes-2.1`, nay cùng commit với `main`) thêm: tham số CLI `-ForceRetryRejected`, `-AllowOnsetSync`; hai dòng sự kiện `@@KIDFBY_STAGE`/`@@KIDFBY_RESULT`; hàm `Remove-RejectedReel` và tham số `Evidence` của `Save-RejectedReel`; thay đổi hành vi loại (không xóa file đã có); đồng bộ theo hình thay cho onset khi cắt âm thanh; thư mục xuất chỉ còn `-3` và `.cache` ẩn; chuẩn hóa URL; bộ cài chỉ nguồn chính thức với SHA256; single-instance và `-AfterUpdate`; manifest ký RSA; giao diện tách `core/ui` kèm phông; `data\settings.json` và `logs\`. Result của `Invoke-OneLink` ở dạng đối tượng PowerShell vẫn không có `AudioLanguage`; chẩn đoán riêng vẫn dùng `-DetectLanguageFile`.
 
 Giữ media đầu vào/bản hoàn chỉnh/lịch sử/công cụ đang dùng. Các fallback tải/cài, lớp GIF/cache/worker, helper Whisper, lịch sử và dữ liệu phục hồi còn có caller hoặc mục đích nên được giữ. Thư mục `output\.thumbs` có thể còn trên máy đã chạy bản thử trước đợt 4 và xóa tay được; ảnh thu nhỏ mới nằm ở `.cache\thumbs`. Tài liệu này cập nhật theo commit `7f5851a` trên `main` và chưa commit theo yêu cầu của tác vụ; không viết lại lịch sử Git.
+
+## 8. Tích hợp TikTok cục bộ — 24/10/2026, local, chưa phát hành
+
+Mục đích: đăng video từ Kho lên TikTok qua autotok đã cài, không sao chép file tay. Facebook vẫn là luồng chính; tích hợp này không đổi engine tải Facebook, ngưỡng đồng bộ, giao thức STAGE/RESULT, phiên bản 2.1.0 hay manifest đã ký.
+
+### Bật hay tắt
+
+- `Get-TikTokIntegration` đọc biến `KID_FBY_AUTOTOK_STARTER` hoặc `integrations/tiktok/local.json` (`{"Starter": "..."}`, file này nằm trong `.gitignore`). Starter phải tồn tại; quy tắc giống `integrations/tiktok/start.ps1`. Đánh giá một lần lúc khởi động.
+- **Không cấu hình**: đúng hành vi trước tích hợp. Nút "Sao chép để đăng", badge thẻ bật/tắt dấu đã đăng thủ công, không có timer đồng bộ, không băm SHA256.
+- **Có cấu hình**: nút "Đăng video" dưới preview mở hộp đăng; "Sao chép để đăng" nằm trong menu thêm của thẻ; Ctrl+C vẫn sao chép. Được đăng khi hàng đợi tải đang chạy.
+
+### Trạng thái đồng bộ (`reup-status.json`)
+
+- File nằm ở thư mục xuất, theo từng ID video: `Posted`, `Date`, `ManualPosted`, `ManualDate`, `Source='autotok-history'`, `History` (bản rút gọn: key, request_id, username, status, publish_uncertain, prior_uncertain, planned_for, accepted_at, created_at, time_source, sha256), `FileSha256`. `Posted` là trường tổng hợp để bản cũ đọc được.
+- Mục cũ không có `Source` được chuyển thành `ManualPosted`. Đồng bộ không bao giờ ghi đè dấu đánh tay.
+- Chỉ `Update-ReupMetadata` ghi file này: mutex có tên, đọc một lần, thay file nguyên tử (thử lại khi `IOException`). Bên đọc mở với `FileShare ReadWrite|Delete`. File hỏng không bị ghi đè.
+- Đây là ACK của uploader, không chứng minh bài đã công khai trên hồ sơ TikTok.
+
+### Đồng bộ nền
+
+- `Start-TikTokStatusSync`/`Invoke-TikTokSyncTick` chạy trong runspace riêng (`InitialSessionState`), không trên luồng UI.
+- Kiểm health trước; backend tắt thì không băm hash. Tra cứu theo lô 500 video. SHA256 đọc theo khối, hủy được. Cache định danh `.cache\tiktok-identities.json`, chỉ ghi khi có thay đổi.
+- Không tới được backend: hiện nhãn "TikTok chưa cập nhật". Lỗi báo một lần cho mỗi request_id trong phiên, chỉ với biên nhận trong 24 giờ.
+
+## 9. Hàng chuyển nền và biên nhận — 24/10/2026, local, chưa phát hành
+
+Mục này thay phần hộp đăng và đồng bộ của bản 23/10 (đã bỏ).
+
+### Luồng khi bấm đăng
+
+- Ghi nguyên tử `.cache\tiktok-posts\<request_id>.job` (payload có caption, xóa khi server nhận lịch hoặc có trạng thái cuối) và `<request_id>.json` (biên nhận, không có cookie hay caption).
+- `Start-TikTokBackgroundJob`/`Start-TikTokJobProcess` mở PowerShell 5.1 ẩn chạy `-TikTokJobFile`. Hộp đóng ngay; tiến trình tiếp tục khi GUI đóng.
+- Tiến trình giữ `<id>.lock` (`FileShare.None`, `DeleteOnClose`) suốt đời. Trước khi gửi, tạo `.cache\tiktok-posts\<id>.clean.mp4` (`New-TikTokCleanCopy`), kiểm bằng `Test-TikTokCleanFile`: tag/chapter của ffprobe, dấu lavf/lavc, x264/x265, facebook; decode; độ dài lệch ≤ 50 ms; số keyframe và số khung khớp nguồn. Nếu không đạt thì thử AAC re-encode, rồi H.264 re-encode.
+- Gửi bản sạch với field `source_sha256` (hash của `-3` gốc). Xong thì xóa bản sạch. Làm sạch lỗi: không gửi gì, trạng thái `transfer_failed`, giữ `.job`.
+- Trạng thái lấy từ phản hồi server. `.job` chỉ bị xóa khi có `schedule_id` hoặc trạng thái cuối.
+
+### Trạng thái biên nhận (`Get-TikTokReceiptState`)
+
+- Worker còn sống: "Đang chuyển video", chặn tài khoản đó.
+- Worker chết và backend 404 quá 2 phút, hoặc `transfer_failed`: "Chưa chuyển được", không chặn. Có "Thử chuyển lại" (cùng `.job`, cùng request_id) và "Bỏ biên nhận" (đổi tên `.archived-<ts>`, không xóa).
+- Thăm dò luân phiên, tối đa 20 GET mỗi nhịp. Xóa video bị từ chối khi còn khóa worker. Dọn cache giữ `.cache\tiktok-posts`.
+
+### Engine (`core/kid-fby.ps1`) — áp dụng cho mọi `-3`, kể cả khi tắt tích hợp
+
+- `Get-CleanOutputArgs` bỏ metadata: `-map_metadata -1`, `-map_chapters -1`, bitexact, tag handler/encoder rỗng, lọc SEI (`remove_types=6`) với H.264.
+- Lồng tiếng AAC thêm `-fflags +bitexact -flags:a +bitexact`: audio giải mã khác nhẹ (~47 dB SNR), timing gói giữ nguyên (đo trên fixture).
+- `Invoke-CleanVideoMux` cho đường stream-copy: so keyframe và số khung giải mã với bản copy thường (`Get-VideoFrameCounts`); mất thì re-encode libx264 (open-GOP). Nguồn HEVC chuyển sang H.264. Đường logo/GIF giữ timing cũ.
+- Cần ffmpeg ≥ 5.1 (`-fps_mode`); bản đi kèm là 8.1.2. `-3` cũ vẫn có Lavc trong AAC cho tới khi re-encode lúc đăng.
+
+### Backend (ngoài repo)
+
+- Thư mục `C:\Users\hp\Documents\Codex\2026-10-23\ti\work\TiktokAutoUploader`, sửa cục bộ, chưa đẩy đi đâu. Gồm bridge trạng thái với attempt token và heartbeat; `preparing` hết hạn sau 10 phút (`AUTOTOK_DESKTOP_STALE_MINUTES`); worker bị fence theo attempt; `prior_uncertain` (đơn điệu) trong history và API lịch; DB `SCHEMA_VERSION` 2; lookup chia lô.
+- Theo ghi nhận đưa vào tài liệu: 338 test pass (chưa chạy lại trong phiên rà này).
+- Starter `outputs\start-autotok-dashboard.ps1`, đã sửa cho PS 5.1 và dịch vụ đang chạy dở; `/health` báo `history_version` 2. Launcher `outputs\tiktok-v2\Mo-Kid-FBY-TikTok.cmd` kiểm SHA256 của EXE: phải cập nhật sau mỗi lần build.
+
+### Giới hạn và chưa kiểm
+
+- Hai request_id khác nhau cho cùng video và tài khoản (từ hai máy) vẫn tạo hai tác vụ; server chưa khử trùng.
+- Thành công muộn của attempt đã bị thay thế không chặn được, chỉ gắn `prior_uncertain`. Stale worker còn rủi ro đua khi người dùng thử lại sau timeout. Không tuyên bố chống đăng trùng tuyệt đối.
+- Không truy vấn được bài đăng thủ công ngoài app.
+- Máy và scheduler phải chạy đúng giờ hẹn. Chưa cài dịch vụ Windows, chưa tự khởi động cùng máy.
+- **Chưa kiểm**: đăng video TikTok thật; xác minh bài trên hồ sơ; Reel Facebook thật; nhiều DPI cho hộp đăng. Kiểm bằng fixture và backend giả lập: harness WPF Windows PowerShell 5.1 STA; test làm sạch và đồng bộ trên fixture.
+- Phiên bản vẫn 2.1.0; `version.json` và `version.json.sig` không đổi; thay đổi nằm trên nhánh `audit-fixes-2.1`, chưa qua `publish.ps1`.

@@ -3,7 +3,73 @@
   Kid FB.Y - WPF interface hosted by Windows PowerShell.
   Runtime flow and source map: BAN-GIAO.md. Run Kid-FB.Y.exe for the interface.
 #>
-param([switch]$SelfTest)
+param([switch]$SelfTest, [string]$TikTokJobFile='')
+
+if($TikTokJobFile){
+    # A separate OS process owns file transfer, so closing the GUI cannot cancel a submitted job.
+    $ErrorActionPreference='Stop'
+    if([IO.Path]::GetFileName($TikTokJobFile) -notmatch '^[a-f0-9]{32}\.job$' -or [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($TikTokJobFile)) -ne 'tiktok-posts'){throw 'Invalid TikTok job file.'}
+    # The lock is held for the whole process life; the OS releases it if the process dies, so the GUI can tell
+    # a live transfer from a dead one. A second worker for the same request gives up instead of sending twice.
+    $lockPath=[IO.Path]::ChangeExtension($TikTokJobFile,'.lock');$lock=$null
+    for($attempt=0;$attempt -lt 20 -and -not $lock;$attempt++){
+        try{$lock=[IO.FileStream]::new($lockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None,1,[IO.FileOptions]::DeleteOnClose)}
+        catch [IO.IOException]{Start-Sleep -Milliseconds 100}
+    }
+    if(-not $lock){exit 3}
+    $exitCode=0
+    try{
+        if(-not [IO.File]::Exists($TikTokJobFile)){return}
+        $job=[IO.File]::ReadAllText($TikTokJobFile,[Text.Encoding]::UTF8) | ConvertFrom-Json
+        $expected=Join-Path (Join-Path ([IO.Path]::GetDirectoryName([string]$job.Record.SourcePath)) '.cache\tiktok-posts') ($job.Record.RequestId+'.job')
+        if([IO.Path]::GetFullPath($expected) -ne [IO.Path]::GetFullPath($TikTokJobFile) -or $job.Record.OutDir -ne [IO.Path]::GetDirectoryName([string]$job.Record.SourcePath)){throw 'TikTok job path mismatch.'}
+        $tokens=$null;$errors=$null
+        $ast=[Management.Automation.Language.Parser]::ParseFile($PSCommandPath,[ref]$tokens,[ref]$errors)
+        if($errors.Count){throw 'TikTok worker source parse failed.'}
+        foreach($node in $ast.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst]},$true)){
+            if($node.Name -in @('Get-TikTokEndpoint','Save-TikTokReceipt','Find-TikTokTool','ConvertTo-TikTokArgument','Invoke-TikTokTool','Get-TikTokCleanArgs','Get-TikTokMediaInfo','Get-TikTokVideoCounts','Test-TikTokCleanFile','New-TikTokCleanCopy')){. ([scriptblock]::Create($node.Extent.Text))}
+        }
+        $assignment=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$script:tikTokWorker'},$true))[0]
+        . ([scriptblock]::Create($assignment.Extent.Text))
+        $env:KID_FBY_TIKTOK_URL=[string]$job.Endpoint
+        $postsDir=[IO.Path]::GetDirectoryName($TikTokJobFile)
+        $appDir=Split-Path $PSCommandPath -Parent
+        $appRoot=if((Split-Path $appDir -Leaf) -in @('core','src','app')){Split-Path $appDir -Parent}else{$appDir}
+        # Leftovers of an earlier worker for this request (it died; we hold the lock now).
+        foreach($leftover in @('.clean.mp4','.clean-tmp.mp4')){$path=Join-Path $postsDir ($job.Record.RequestId+$leftover);if([IO.File]::Exists($path)){[IO.File]::Delete($path)}}
+        $sha={param($Path) $h=[Security.Cryptography.SHA256]::Create();$s=[IO.File]::OpenRead($Path);try{[BitConverter]::ToString($h.ComputeHash($s)).Replace('-','').ToLowerInvariant()}finally{$s.Dispose();$h.Dispose()}}
+        # Owner rule: only a metadata-clean copy is ever uploaded. If it cannot be made, nothing is sent and the .job stays for retry.
+        $clean=''
+        try{$clean=New-TikTokCleanCopy -SourcePath ([string]$job.Record.SourcePath) -PostsDir $postsDir -RequestId ([string]$job.Record.RequestId) -Root $appRoot}
+        catch{
+            $job.Record.Status='transfer_failed';$job.Record.Message='Không làm sạch được thông tin video (metadata). Chưa gửi lên TikTok. '+$_.Exception.Message
+            Save-TikTokReceipt $job.Record
+            exit 1
+        }
+        # History matching keeps using the ORIGINAL -3 identity; the backend hashes the uploaded (clean) bytes.
+        $job.Record | Add-Member -NotePropertyName SourceSha256 -NotePropertyValue (& $sha ([string]$job.Record.SourcePath)) -Force
+        $job.Record | Add-Member -NotePropertyName UploadSha256 -NotePropertyValue (& $sha $clean) -Force
+        $job.Payload | Add-Member -NotePropertyName source_sha256 -NotePropertyValue $job.Record.SourceSha256 -Force
+        try{
+            $result=& $script:tikTokWorker 'create' (Get-TikTokEndpoint) $clean ($job.Payload | ConvertTo-Json -Depth 6 -Compress) ([string]$job.Record.RequestId) ''
+            $response=$result | ConvertFrom-Json
+            # The backend answers with the receipt state (also for a replayed request_id); record it as-is.
+            $status=[string]$response.status
+            if(-not $status){$status=$(if($response.schedule_id){'pending'}else{'unknown'})}
+            $job.Record.Status=$status
+            $job.Record.Message=$(if($status -eq 'preparation_failed'){'Bộ đăng nền báo chuẩn bị video thất bại.'}else{'Bộ đăng nền đã nhận tác vụ.'})
+            Save-TikTokReceipt $job.Record
+            if($response.schedule_id -or $status -in @('succeeded','failed','cancelled','preparation_failed','missing')){[IO.File]::Delete($TikTokJobFile)}
+        }catch{
+            $job.Record.Status='transfer_failed';$job.Record.Message='Chưa xác nhận được việc chuyển tệp. Kiểm tra lịch sử trước khi thử lại. '+$_.Exception.Message
+            Save-TikTokReceipt $job.Record
+            $exitCode=1
+        }finally{
+            try{if([IO.File]::Exists($clean)){[IO.File]::Delete($clean)}}catch{<# removed later by Remove-TikTokStaleCleanFiles #>}
+        }
+    }finally{$lock.Dispose()}
+    exit $exitCode
+}
 
 # SelfTest phai that bai ngay khi co loi khoi tao, khong bao BOOT_OK gia.
 if ($SelfTest) { $ErrorActionPreference = 'Stop' }
@@ -854,9 +920,21 @@ function Request-SaveSettings {
 
 # ------------------------------------------------------------- ham luu trang thai TikTok ----
 function Get-ReupMetadata {
-    $p = Join-Path $ui.TxtOut.Text 'reup-status.json'
+    param([string]$OutDir = $ui.TxtOut.Text)
+    $p = Join-Path $OutDir 'reup-status.json'
     try {
-        $json = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)
+        # FileShare ReadWrite|Delete: never block the writer's atomic File.Replace.
+        $readStream = $null
+        for ($readTry = 1; $null -eq $readStream; $readTry++) {
+            try { $readStream = [System.IO.FileStream]::new($p, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)) }
+            catch [System.IO.FileNotFoundException] { throw }
+            catch [System.IO.DirectoryNotFoundException] { throw }
+            catch [System.IO.IOException] { if ($readTry -ge 5) { throw }; Start-Sleep -Milliseconds 50 }
+        }
+        try {
+            $reader = [System.IO.StreamReader]::new($readStream, [System.Text.Encoding]::UTF8, $true)
+            $json = $reader.ReadToEnd()
+        } finally { $readStream.Dispose() }
     } catch [System.IO.FileNotFoundException] {
         return [pscustomobject]@{}
     } catch [System.IO.DirectoryNotFoundException] {
@@ -880,44 +958,137 @@ function Get-ReupMetadata {
     }
 }
 
-function Set-ReupMetadata {
-    param([string]$VideoId, [bool]$Posted)
-    if ([string]::IsNullOrWhiteSpace($VideoId)) { throw 'Thiếu ID video để lưu lịch sử TikTok.' }
-    $dir = [System.IO.Path]::GetFullPath($ui.TxtOut.Text)
-    $p = Join-Path $dir 'reup-status.json'
+function Get-CanonicalPath {
+    # One identity for a folder (R6): full path without trailing separators, except roots such as C:\.
+    # Compare results with OrdinalIgnoreCase (Test-SamePath).
+    param([string]$Path)
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $pathRoot = [System.IO.Path]::GetPathRoot($full)
+    if ($full.Length -gt $pathRoot.Length) {
+        $full = $full.TrimEnd('\', '/')
+        if ($full.Length -lt $pathRoot.Length) { $full = $pathRoot }
+    }
+    return $full
+}
+
+function Test-SamePath {
+    param([string]$A, [string]$B)
+    if ([string]::IsNullOrWhiteSpace($A) -or [string]::IsNullOrWhiteSpace($B)) { return $false }
+    try { return [string]::Equals((Get-CanonicalPath $A), (Get-CanonicalPath $B), [StringComparison]::OrdinalIgnoreCase) }
+    catch { return $false }
+}
+
+function Get-FileStamp {
+    param([string]$Path)
+    $info = [System.IO.FileInfo]::new($Path)
+    if (-not $info.Exists) { return 'none' }
+    return ($info.Length.ToString() + '|' + $info.LastWriteTimeUtc.Ticks)
+}
+
+function Get-ReupMutexName {
+    # Same name as earlier versions for the same folder, so old and new app copies exclude each other.
+    param([string]$StatusPath)
     $sha = [System.Security.Cryptography.SHA256]::Create()
-    try { $key = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($p.ToUpperInvariant()))).Replace('-', '') }
+    try { $key = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($StatusPath.ToUpperInvariant()))).Replace('-', '') }
     finally { $sha.Dispose() }
-    $mutex = $null
-    $acquired = $false
-    $temp = $null
+    return ('Local\KidFby-ReupMetadata-' + $key)
+}
+
+function Update-ReupMetadata {
+    # The only writer of reup-status.json: lock, read once, change in memory, atomic replace only when changed.
+    # $Change receives the metadata object and returns $true when it modified it. Unknown fields are kept.
+    # A corrupt file makes Get-ReupMetadata throw, so it is never overwritten.
+    param([string]$OutDir, [scriptblock]$Change, [int]$TimeoutMs = 10000)
+    $statusDir = Get-CanonicalPath $OutDir
+    $statusFile = Join-Path $statusDir 'reup-status.json'
+    $statusMutex = $null
+    $statusLocked = $false
+    $statusTemp = $null
     try {
-        $mutex = [System.Threading.Mutex]::new($false, ('Local\KidFby-ReupMetadata-' + $key))
-        try { $acquired = $mutex.WaitOne(10000) }
-        catch [System.Threading.AbandonedMutexException] { $acquired = $true }
-        if (-not $acquired) { throw 'Lịch sử đang được ứng dụng khác cập nhật. Vui lòng thử lại.' }
-        [System.IO.Directory]::CreateDirectory($dir) | Out-Null
-        $meta = Get-ReupMetadata
-        $item = [pscustomobject]@{ Posted = $Posted; Date = (Get-Date).ToString('dd/MM HH:mm') }
-        $meta | Add-Member -Name $VideoId -Value $item -MemberType NoteProperty -Force -ErrorAction Stop
-        $json = ConvertTo-Json -InputObject $meta -Depth 4 -ErrorAction Stop
-        $temp = Join-Path $dir ('.reup-status-' + [Guid]::NewGuid().ToString('N') + '.tmp')
-        $stream = [System.IO.File]::Open($temp, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-        try {
-            $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($json)
-            $stream.Write($bytes, 0, $bytes.Length)
-            $stream.Flush($true)
-        } finally { $stream.Dispose() }
-        if ([System.IO.File]::Exists($p)) { [System.IO.File]::Replace($temp, $p, [System.Management.Automation.Language.NullString]::Value) }
-        else { [System.IO.File]::Move($temp, $p) }
-        $temp = $null
+        $statusMutex = [System.Threading.Mutex]::new($false, (Get-ReupMutexName $statusFile))
+        try { $statusLocked = $statusMutex.WaitOne($TimeoutMs) }
+        catch [System.Threading.AbandonedMutexException] { $statusLocked = $true }
+        if (-not $statusLocked) { throw 'Lịch sử đang được ứng dụng khác cập nhật. Vui lòng thử lại.' }
+        $statusMeta = Get-ReupMetadata -OutDir $statusDir
+        $statusChanged = [bool](@(& $Change $statusMeta) | Select-Object -Last 1)
+        if ($statusChanged) {
+            [System.IO.Directory]::CreateDirectory($statusDir) | Out-Null
+            $statusJson = ConvertTo-Json -InputObject $statusMeta -Depth 12 -ErrorAction Stop
+            $statusTemp = Join-Path $statusDir ('.reup-status-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+            $statusStream = [System.IO.File]::Open($statusTemp, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+            try {
+                $statusBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($statusJson)
+                $statusStream.Write($statusBytes, 0, $statusBytes.Length)
+                $statusStream.Flush($true)
+            } finally { $statusStream.Dispose() }
+            for ($statusTry = 1; ; $statusTry++) {
+                try {
+                    if ([System.IO.File]::Exists($statusFile)) { [System.IO.File]::Replace($statusTemp, $statusFile, [System.Management.Automation.Language.NullString]::Value) }
+                    else { [System.IO.File]::Move($statusTemp, $statusFile) }
+                    break
+                } catch [System.IO.IOException] {
+                    if ($statusTry -ge 5) { throw }
+                    Start-Sleep -Milliseconds (50 + 25 * $statusTry)
+                }
+            }
+            $statusTemp = $null
+        }
+        return [pscustomobject]@{ Changed = $statusChanged; Stamp = (Get-FileStamp $statusFile); Metadata = $statusMeta }
     } catch {
         throw "Không lưu được lịch sử TikTok. Dữ liệu cũ được giữ nguyên. $($_.Exception.Message)"
     } finally {
-        if ($temp -and [System.IO.File]::Exists($temp)) { try { [System.IO.File]::Delete($temp) } catch { <# bo qua: file tam, loi xoa khong anh huong ket qua #> } }
-        if ($acquired) { $mutex.ReleaseMutex() }
-        if ($mutex) { $mutex.Dispose() }
+        if ($statusTemp -and [System.IO.File]::Exists($statusTemp)) { try { [System.IO.File]::Delete($statusTemp) } catch { <# bo qua: file tam, loi xoa khong anh huong ket qua #> } }
+        if ($statusLocked) { $statusMutex.ReleaseMutex() }
+        if ($statusMutex) { $statusMutex.Dispose() }
     }
+}
+
+function Set-ReupField {
+    param($Item, [string]$Name, $Value)
+    if ($Item.PSObject.Properties[$Name]) { $Item.$Name = $Value }
+    else { $Item | Add-Member -MemberType NoteProperty -Name $Name -Value $Value -Force }
+}
+
+function Get-ReupManualState {
+    # Manual "posted" mark (D3). Items written before the TikTok bridge only have Posted/Date: that is the manual mark.
+    param($Item)
+    if (-not $Item) { return @{ Posted = $false; Date = '' } }
+    if ($Item.PSObject.Properties['ManualPosted']) { return @{ Posted = [bool]$Item.ManualPosted; Date = [string]$Item.ManualDate } }
+    if ($Item.Source -ne 'autotok-history') { return @{ Posted = [bool]$Item.Posted; Date = [string]$Item.Date } }
+    return @{ Posted = $false; Date = '' }
+}
+
+function Update-ReupAggregate {
+    # Posted/Date stay readable by older app versions: posted = manual mark OR a succeeded TikTok post.
+    param($Item)
+    $manual = Get-ReupManualState $Item
+    $success = @(@($Item.History) | Where-Object { $_ -and [string]$_.status -eq 'succeeded' } | Sort-Object { Get-TikTokSortKey ([string]$_.accepted_at) } -Descending)
+    Set-ReupField $Item 'Posted' ([bool]($manual.Posted -or $success.Count))
+    Set-ReupField $Item 'Date' $(if ($success.Count) { Format-TikTokTime ([string]$success[0].accepted_at) -Short } elseif ($manual.Posted) { [string]$manual.Date } else { '' })
+}
+
+function Set-ReupMetadata {
+    # Manual posted mark (D3). Only the manual flag flips; synced TikTok history is kept as-is.
+    param([string]$VideoId, [bool]$Posted, [string]$OutDir = $ui.TxtOut.Text)
+    if ([string]::IsNullOrWhiteSpace($VideoId)) { throw 'Thiếu ID video để lưu lịch sử TikTok.' }
+    $markDate = (Get-Date).ToString('dd/MM HH:mm')
+    [void](Update-ReupMetadata -OutDir $OutDir -Change {
+        param($meta)
+        $property = $meta.PSObject.Properties[$VideoId]
+        $item = if ($property) { $property.Value } else { $null }
+        if (-not $item) {
+            $meta | Add-Member -MemberType NoteProperty -Name $VideoId -Force -Value ([pscustomobject]@{ Posted = $Posted; Date = $markDate })
+        } elseif ($item.Source -ne 'autotok-history') {
+            # Pre-integration shape: Posted/Date are the manual mark.
+            Set-ReupField $item 'Posted' $Posted
+            Set-ReupField $item 'Date' $markDate
+        } else {
+            Set-ReupField $item 'ManualPosted' $Posted
+            Set-ReupField $item 'ManualDate' $(if ($Posted) { $markDate } else { '' })
+            Update-ReupAggregate $item
+        }
+        return $true
+    })
 }
 
 # ------------------------------------------------------------- hang doi: dong bang + 7 buoc ----
@@ -954,6 +1125,1196 @@ function New-QueueRow {
         Origin = $Origin; RedoFile = $RedoFile; Detail = $Detail; HasDetail = [bool]$Detail
     }
 }
+
+# TikTok bridge: autotok owns accounts, uploads and durable scheduled jobs.
+function Get-TikTokIntegration {
+    # Same resolution as integrations\tiktok\start.ps1 (D1). Not configured: the app keeps its behaviour from before
+    # the bridge (copy button, manual posted badge, no sync timer, no hashing).
+    $launcher = Join-Path $root 'integrations\tiktok\start.ps1'
+    $starter = [string]$env:KID_FBY_AUTOTOK_STARTER
+    $config = Join-Path $root 'integrations\tiktok\local.json'
+    if (-not $starter -and [IO.File]::Exists($config)) {
+        try { $starter = [string]([IO.File]::ReadAllText($config) | ConvertFrom-Json -ErrorAction Stop).Starter }
+        catch { Write-FileLog "WARN TikTok integration config '$config': $($_.Exception.Message)"; $starter = '' }
+    }
+    $enabled = [bool]($starter -and [IO.File]::Exists($starter) -and [IO.File]::Exists($launcher))
+    return @{ Enabled = $enabled; Launcher = $launcher; Starter = $starter }
+}
+
+function Test-TikTokEnabled { return [bool]($script:tikTok -and $script:tikTok.Enabled) }
+
+function Get-TikTokEndpoint {
+    $value = if ($env:KID_FBY_TIKTOK_URL) { $env:KID_FBY_TIKTOK_URL.TrimEnd('/') } else { 'http://127.0.0.1:8765' }
+    $uri = [Uri]$value
+    if ($uri.Scheme -ne 'http' -or $uri.Host -ne '127.0.0.1' -or $uri.AbsolutePath -ne '/' -or $uri.Query -or $uri.UserInfo) { throw 'Bộ đăng TikTok phải chạy tại http://127.0.0.1 trên máy này.' }
+    return $value
+}
+
+$script:tikTokWorker = {
+    param($Action, $BaseUrl, $FilePath, $PayloadJson, $RequestId, $Starter, [Threading.CancellationToken]$CancelToken = [Threading.CancellationToken]::None)
+    $ErrorActionPreference='Stop'
+    Add-Type -AssemblyName System.Net.Http
+    $handler=[Net.Http.HttpClientHandler]::new();$handler.AllowAutoRedirect=$false;$handler.UseProxy=$false
+    $client=[Net.Http.HttpClient]::new($handler)
+    $client.Timeout=$(if($Action -eq 'create'){[TimeSpan]::FromMinutes(10)}else{[TimeSpan]::FromSeconds(60)})
+    [void]$client.DefaultRequestHeaders.Add('X-Requested-With','autotok')
+    # One connection per request: hashing can keep the client idle longer than the server keep-alive timeout, and a
+    # reused connection the server already closed fails the next request.
+    $client.DefaultRequestHeaders.ConnectionClose=$true
+    $finalStates=@('succeeded','failed','cancelled','preparation_failed','missing')
+    function Read-Response($Response){
+        try{
+            $text=$Response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            if(-not $Response.IsSuccessStatusCode){throw ('Bộ đăng trả về HTTP '+[int]$Response.StatusCode+'. Xem Lịch sử / Lịch đăng để kiểm tra.')}
+            return $text
+        }finally{$Response.Dispose()}
+    }
+    function Get-Json([string]$Url,[int]$TimeoutSeconds=0){
+        $linked=[Threading.CancellationTokenSource]::CreateLinkedTokenSource($CancelToken)
+        try{
+            if($TimeoutSeconds -gt 0){$linked.CancelAfter([TimeSpan]::FromSeconds($TimeoutSeconds))}
+            return ((Read-Response ($client.GetAsync($Url,$linked.Token).GetAwaiter().GetResult())) | ConvertFrom-Json)
+        }finally{$linked.Dispose()}
+    }
+    function Test-Health{
+        try{return (Get-Json ($BaseUrl+'/health') 5)}catch{if($CancelToken.IsCancellationRequested){throw};return $null}
+    }
+    function Get-FileSha256([string]$Path){
+        # Chunked so that closing the dialog/app can stop hashing a large file between chunks (G8).
+        $hash=[Security.Cryptography.SHA256]::Create();$stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+        try{
+            $buffer=New-Object byte[] (4MB)
+            while(($read=$stream.Read($buffer,0,$buffer.Length)) -gt 0){
+                $CancelToken.ThrowIfCancellationRequested()
+                [void]$hash.TransformBlock($buffer,0,$read,$null,0)
+            }
+            [void]$hash.TransformFinalBlock($buffer,0,0)
+            return [BitConverter]::ToString($hash.Hash).Replace('-','').ToLowerInvariant()
+        }finally{$stream.Dispose();$hash.Dispose()}
+    }
+    function Read-IdentityCache([string]$File){
+        $cache=@{}
+        try{
+            if([IO.File]::Exists($File)){
+                $old=[IO.File]::ReadAllText($File) | ConvertFrom-Json
+                foreach($p in $old.PSObject.Properties){$cache[$p.Name]=@{Stamp=[string]$p.Value.Stamp;Hash=[string]$p.Value.Hash}}
+            }
+        }catch{ <# unreadable cache: files are hashed again, nothing is lost #> }
+        return $cache
+    }
+    function Save-IdentityCache([string]$File,[hashtable]$Cache){
+        $temp=$File+'.'+[Guid]::NewGuid().ToString('N')+'.tmp'
+        try{
+            [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($File))
+            [IO.File]::WriteAllText($temp,(ConvertTo-Json -InputObject $Cache -Depth 4 -Compress),[Text.UTF8Encoding]::new($false))
+            if([IO.File]::Exists($File)){[IO.File]::Replace($temp,$File,[Management.Automation.Language.NullString]::Value)}else{[IO.File]::Move($temp,$File)}
+            return ''
+        }catch{return $_.Exception.Message}finally{if([IO.File]::Exists($temp)){[IO.File]::Delete($temp)}}
+    }
+    function Resolve-Identities($Files,[hashtable]$Cache,[bool]$Prune){
+        $changed=$false;$items=New-Object Collections.Generic.List[object];$seen=@{}
+        foreach($file in @($Files)){
+            $CancelToken.ThrowIfCancellationRequested()
+            $path=[string]$file.path;$sha='';$seen[$path]=$true
+            try{
+                $info=[IO.FileInfo]::new($path)
+                if($info.Exists){
+                    $stamp=$info.Length.ToString()+'|'+$info.LastWriteTimeUtc.Ticks
+                    $hit=$Cache[$path]
+                    if($hit -and $hit.Stamp -eq $stamp){$sha=[string]$hit.Hash}
+                    else{
+                        $sha=Get-FileSha256 $path
+                        $after=[IO.FileInfo]::new($path)
+                        if($stamp -ne ($after.Length.ToString()+'|'+$after.LastWriteTimeUtc.Ticks)){$sha=''}else{$Cache[$path]=@{Stamp=$stamp;Hash=$sha};$changed=$true}
+                    }
+                }
+            }catch{if($CancelToken.IsCancellationRequested){throw};$sha=''}
+            $items.Add(@{reel_id=[string]$file.id;sha256=$sha})
+        }
+        if($Prune){foreach($key in @($Cache.Keys)){if(-not $seen.ContainsKey($key)){$Cache.Remove($key);$changed=$true}}}
+        return @{Items=$items.ToArray();Changed=$changed}
+    }
+    function Invoke-Lookup($Identities,$Receipts){
+        # At most 500 videos per request (R8). A failed chunk leaves its videos out, so their stored state is kept.
+        $byVideo=@{}
+        foreach($r in @($Receipts)){$vid=[string]$r.VideoId;if(-not $byVideo.ContainsKey($vid)){$byVideo[$vid]=New-Object Collections.Generic.List[string]};$byVideo[$vid].Add([string]$r.RequestId)}
+        $rows=@{};$failed=0;$message=''
+        $list=@($Identities)
+        for($i=0;$i -lt $list.Count;$i+=500){
+            $CancelToken.ThrowIfCancellationRequested()
+            $chunk=New-Object Collections.Generic.List[object]
+            for($j=$i;$j -lt [Math]::Min($i+500,$list.Count);$j++){
+                $v=$list[$j];$ids=if($byVideo.ContainsKey([string]$v.reel_id)){$byVideo[[string]$v.reel_id].ToArray()}else{@()}
+                $chunk.Add(@{reel_id=[string]$v.reel_id;sha256=[string]$v.sha256;request_ids=@($ids)})
+            }
+            $content=[Net.Http.StringContent]::new((ConvertTo-Json -InputObject @{videos=$chunk.ToArray()} -Depth 6 -Compress),[Text.Encoding]::UTF8,'application/json')
+            try{
+                $parsed=(Read-Response ($client.PostAsync($BaseUrl+'/api/history/lookup',$content,$CancelToken).GetAwaiter().GetResult())) | ConvertFrom-Json
+                foreach($row in $parsed){if($row){$rows[[string]$row.reel_id]=@($row.entries | Where-Object {$null -ne $_})}}
+            }catch{if($CancelToken.IsCancellationRequested){throw};$failed++;$message=$_.Exception.Message}
+            finally{$content.Dispose()}
+        }
+        return @{Rows=$rows;Failed=$failed;Message=$message}
+    }
+    function Invoke-Probes([object[]]$Receipts,[string]$Cursor){
+        # Receipts the lookup did not report: ask for the exact request_id. 404 = the backend never got it (R2).
+        # At most 20 GETs per tick, round-robin by RequestId from $Cursor so receipt #21+ is reached on later ticks.
+        $found=@{};$missing=@{};$next=$Cursor
+        $sorted=@($Receipts | Sort-Object {[string]$_.RequestId} -CaseSensitive)
+        $after=@($sorted | Where-Object {[string]::CompareOrdinal([string]$_.RequestId,$Cursor) -gt 0})
+        $before=@($sorted | Where-Object {[string]::CompareOrdinal([string]$_.RequestId,$Cursor) -le 0})
+        foreach($r in @(@($after)+@($before) | Select-Object -First 20)){
+            $next=[string]$r.RequestId
+            $CancelToken.ThrowIfCancellationRequested()
+            $id=[string]$r.RequestId
+            try{
+                $response=$client.GetAsync($BaseUrl+'/api/desktop/jobs/'+$id,$CancelToken).GetAwaiter().GetResult()
+                if([int]$response.StatusCode -eq 404){$response.Dispose();$missing[$id]=$true}
+                else{
+                    $job=(Read-Response $response) | ConvertFrom-Json
+                    $found[$id]=[pscustomobject]@{key=('request:'+$id);request_id=$id;username=$(if($job.username){[string]$job.username}else{[string]$r.Username});status=[string]$job.status;publish_uncertain=[bool]$job.publish_uncertain;prior_uncertain=[bool]$job.prior_uncertain;planned_for=[string]$job.planned_for;accepted_at=[string]$job.accepted_at;created_at=[string]$r.CreatedAt;time_source=[string]$job.time_source;sha256=''}
+                }
+            }catch{if($CancelToken.IsCancellationRequested){throw}<# unknown outcome: the receipt stays blocking #>}
+        }
+        return @{Found=$found;Missing=$missing;Cursor=$next}
+    }
+    function Invoke-HistorySync($Data,[bool]$Single){
+        $outDir=Get-CanonicalPath ([string]$Data.out_dir)
+        $result=@{Changed=$false;Stale='';InputSig=[string]$Data.last_input_sig;FileStamp=[string]$Data.last_file_stamp;ProbeCursor=[string]$Data.probe_cursor;IdentityCache=$null;Failures=@();Videos=@{};Hashes=@{};Skipped=$false}
+        $files=@()
+        if($Data.file){$files=@($Data.file)}
+        elseif([IO.Directory]::Exists($outDir)){
+            foreach($file in [IO.DirectoryInfo]::new($outDir).GetFiles('*-3-hoan-chinh.mp4')){if($file.Name -match '^(\d+)-3-hoan-chinh\.mp4$'){$files+=@{id=$Matches[1];path=$file.FullName}}}
+        }
+        if(-not $files.Count){return $result}
+        if(-not $Single -and -not (Test-Health)){$result.Stale='Chưa kết nối được bộ đăng nền; trạng thái TikTok trong Kho có thể chưa mới.';return $result}
+        $cacheFile=Join-Path $outDir '.cache\tiktok-identities.json'
+        $cache=if($Data.identity_cache -is [hashtable]){$Data.identity_cache}else{Read-IdentityCache $cacheFile}
+        $identities=Resolve-Identities $files $cache (-not $Single)
+        $result.IdentityCache=$cache
+        if($identities.Changed){$saveError=Save-IdentityCache $cacheFile $cache;if($saveError){$result.Stale='Không ghi được bộ nhớ mã tệp: '+$saveError}}
+        foreach($v in $identities.Items){$result.Hashes[[string]$v.reel_id]=[string]$v.sha256}
+        $receipts=@($Data.receipts | Where-Object {$_})
+        $lookup=Invoke-Lookup $identities.Items $receipts
+        if($lookup.Failed){
+            if($Single){throw ('Chưa đọc được lịch sử đăng của video này: '+$lookup.Message)}
+            $result.Stale='Chưa cập nhật được lịch sử TikTok cho một số video: '+$lookup.Message
+        }
+        $now=[DateTime]::UtcNow
+        $known=@{}
+        foreach($rowEntries in $lookup.Rows.Values){foreach($e in @($rowEntries)){if($e.request_id){$known[[string]$e.request_id]=$true}}}
+        $candidates=@($receipts | Where-Object {
+            $lookup.Rows.ContainsKey([string]$_.VideoId) -and -not $known.ContainsKey([string]$_.RequestId) -and -not $_.WorkerAlive -and
+            [string]$_.Status -notin @('posted','archived')+$finalStates -and ([string]$_.Status -eq 'transfer_failed' -or (Get-TikTokReceiptAge $_ $now) -gt 120)
+        })
+        $probe=Invoke-Probes $candidates ([string]$Data.probe_cursor)
+        $result.ProbeCursor=[string]$probe.Cursor
+        $perVideo=@{}
+        $signature=New-Object Text.StringBuilder
+        foreach($v in $identities.Items){
+            $vid=[string]$v.reel_id
+            if(-not $lookup.Rows.ContainsKey($vid)){[void]$signature.Append($vid).Append("|stale`n");continue}
+            $entries=New-Object Collections.Generic.List[object]
+            foreach($e in @($lookup.Rows[$vid])){$entries.Add($e)}
+            foreach($r in $receipts){if([string]$r.VideoId -eq $vid -and $probe.Found.ContainsKey([string]$r.RequestId)){$entries.Add($probe.Found[[string]$r.RequestId])}}
+            $perVideo[$vid]=$entries.ToArray()
+            [void]$signature.Append($vid).Append('|').Append([string]$v.sha256).Append("`n").Append((Get-TikTokHistorySignature @($entries.ToArray() | ForEach-Object {ConvertTo-TikTokHistoryEntry $_})))
+        }
+        foreach($r in $receipts){
+            $id=[string]$r.RequestId
+            [void]$signature.Append($id).Append('|').Append([string]$r.VideoId).Append('|').Append((Get-TikTokReceiptState $r ($probe.Missing.ContainsKey($id)) $now)).Append("`n")
+        }
+        $digest=[Security.Cryptography.SHA256]::Create()
+        try{$inputSig=[BitConverter]::ToString($digest.ComputeHash([Text.Encoding]::UTF8.GetBytes($signature.ToString()))).Replace('-','')}finally{$digest.Dispose()}
+        $statusFile=Join-Path $outDir 'reup-status.json'
+        # Steady state: same backend answer, same receipts, file untouched since the last pass -> no read, no write (G1).
+        if(-not $Single -and $inputSig -eq [string]$Data.last_input_sig -and (Get-FileStamp $statusFile) -eq [string]$Data.last_file_stamp){$result.Skipped=$true;return $result}
+        $merged=@{}
+        $update=Update-ReupMetadata -OutDir $outDir -Change {
+            param($meta)
+            $any=$false
+            foreach($vid in @($perVideo.Keys)){
+                $old=$meta.PSObject.Properties[$vid]
+                $history=@(Merge-TikTokVideoHistory $vid $perVideo[$vid] $receipts $(if($old){$old.Value}else{$null}) $probe.Missing $now)
+                $merged[$vid]=$history
+                if(Set-TikTokItemHistory $meta $vid $history ([string]$result.Hashes[$vid])){$any=$true}
+            }
+            return $any
+        }
+        $result.Changed=[bool]$update.Changed;$result.FileStamp=[string]$update.Stamp;$result.InputSig=$inputSig;$result.Videos=$merged
+        $failures=New-Object Collections.Generic.List[object]
+        foreach($r in $receipts){
+            $history=$merged[[string]$r.VideoId]
+            if(-not $history -or (Get-TikTokReceiptAge $r $now) -gt 86400){continue}
+            foreach($h in @($history)){if([string]$h.request_id -eq [string]$r.RequestId -and [string]$h.status -in @('transfer_failed','preparation_failed')){$failures.Add(@{RequestId=[string]$r.RequestId;VideoId=[string]$r.VideoId;Username=[string]$r.Username;Status=[string]$h.status});break}}
+        }
+        $result.Failures=$failures.ToArray()
+        return $result
+    }
+    try{
+        $payload=if($PayloadJson -is [string]){$PayloadJson | ConvertFrom-Json}else{$PayloadJson}
+        if($Action -in @('accounts','prepare')){
+            $health=Test-Health
+            if(-not $health){
+                if(-not $Starter -or -not (Test-Path -LiteralPath $Starter -PathType Leaf)){throw 'Chưa kết nối được bộ đăng nền. Mở autotok rồi bấm Làm mới.'}
+                $process=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$Starter+'"')) -WindowStyle Hidden -PassThru
+                if(-not $process.WaitForExit(45000)){throw 'Bộ đăng nền khởi động quá lâu.'}
+                # The starter can return before the web server listens: wait for /health up to 30 s (G10).
+                $deadline=[DateTime]::UtcNow.AddSeconds(30)
+                while(-not $health -and [DateTime]::UtcNow -lt $deadline){
+                    if($CancelToken.WaitHandle.WaitOne(1000)){$CancelToken.ThrowIfCancellationRequested()}
+                    $health=Test-Health
+                }
+                if(-not $health){throw 'Đã mở bộ đăng nền nhưng sau 30 giây vẫn chưa kết nối được. Bấm Làm mới để thử lại.'}
+            }
+            if($health.history_version -ne 2){throw 'Bộ đăng nền cần cập nhật lên bản lịch sử mới rồi khởi động lại.'}
+            $accounts=@(Get-Json ($BaseUrl+'/api/accounts'))
+            if($Action -eq 'accounts'){return (ConvertTo-Json -InputObject $accounts -Depth 5 -Compress)}
+            $sync=Invoke-HistorySync $payload $true
+            $videoId=[string]$payload.file.id
+            return @{accounts=$accounts;history=@($sync.Videos[$videoId]);file_sha=[string]$sync.Hashes[$videoId];changed=[bool]$sync.Changed}
+        }
+        if($Action -eq 'sync'){return (Invoke-HistorySync $payload $false)}
+        if($Action -eq 'create'){
+            $form=[Net.Http.MultipartFormDataContent]::new()
+            try{
+                foreach($key in @('username','title','scheduled_for','options_json','reel_id')){$form.Add([Net.Http.StringContent]::new([string]$payload.$key,[Text.Encoding]::UTF8),$key)}
+                if($payload.source_sha256){$form.Add([Net.Http.StringContent]::new([string]$payload.source_sha256),'source_sha256')}
+                $form.Add([Net.Http.StringContent]::new($RequestId),'request_id')
+                $stream=[IO.File]::Open($FilePath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+                $part=[Net.Http.StreamContent]::new($stream);$part.Headers.ContentType=[Net.Http.Headers.MediaTypeHeaderValue]::new('video/mp4')
+                $form.Add($part,'video','video.mp4')
+                $response=$client.PostAsync($BaseUrl+'/api/desktop/jobs',$form,$CancelToken).GetAwaiter().GetResult()
+                try{
+                    $text=$response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+                    if($response.IsSuccessStatusCode){return $text}
+                    # A handled preparation failure (HTTP 500) still carries the receipt state: report it, not a generic error.
+                    $body=$null;try{$body=$text | ConvertFrom-Json}catch{$body=$null}
+                    if($body -and [string]$body.status){return $text}
+                    $detail=if($body -and $body.detail){' ('+[string]$body.detail+')'}else{''}
+                    throw ('Bộ đăng trả về HTTP '+[int]$response.StatusCode+$detail+'. Xem Lịch sử / Lịch đăng để kiểm tra.')
+                }finally{$response.Dispose()}
+            }finally{$form.Dispose()}
+        }
+        if($Action -eq 'status'){
+            $list=@()
+            foreach($key in @($payload.ids)){
+                $response=$client.GetAsync($BaseUrl+'/api/desktop/jobs/'+$key,$CancelToken).GetAwaiter().GetResult()
+                if([int]$response.StatusCode -eq 404){$response.Dispose();$list+=[pscustomobject]@{request_id=$key;status='unknown'}}else{$list+=((Read-Response $response)|ConvertFrom-Json)}
+            }
+            return (ConvertTo-Json -InputObject $list -Depth 7 -Compress)
+        }
+        throw 'Tác vụ TikTok không hợp lệ.'
+    }finally{$client.Dispose();$handler.Dispose()}
+}
+
+# Functions the background runspace needs besides the worker itself (metadata merge/write runs off the UI thread).
+$script:tikTokWorkerFunctions = @('Get-CanonicalPath', 'Get-FileStamp', 'Get-ReupMutexName', 'Get-ReupMetadata', 'Update-ReupMetadata',
+    'Set-ReupField', 'Get-ReupManualState', 'Update-ReupAggregate', 'Format-TikTokTime', 'Get-TikTokSortKey', 'ConvertTo-TikTokHistoryEntry',
+    'Get-TikTokHistorySignature', 'Get-TikTokReceiptAge', 'Get-TikTokReceiptState', 'Merge-TikTokVideoHistory', 'Set-TikTokItemHistory')
+
+function Get-TikTokWorkerSessionState {
+    # Functions are defined through the session state (not a prepended statement): a multi-statement batch runs on a
+    # thread-pool work item that crashes the process if the app exits while a task is still running.
+    if (-not $script:tikTokWorkerState) {
+        $state = [Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+        foreach ($name in $script:tikTokWorkerFunctions) {
+            $state.Commands.Add([Management.Automation.Runspaces.SessionStateFunctionEntry]::new($name, (Get-Item -LiteralPath "function:$name").ScriptBlock.ToString()))
+        }
+        $script:tikTokWorkerState = $state
+    }
+    return $script:tikTokWorkerState
+}
+
+function Start-TikTokTask {
+    param([string]$Action, $Payload = @{}, [string]$FilePath = '', [string]$RequestId = '')
+    $ps = [PowerShell]::Create((Get-TikTokWorkerSessionState))
+    $cancel=[Threading.CancellationTokenSource]::new()
+    try {
+        # The payload object is handed over as-is (no JSON round trip on the UI thread); the caller does not touch it afterwards.
+        [void]$ps.AddScript($script:tikTokWorker.ToString()).AddArgument($Action).AddArgument((Get-TikTokEndpoint)).AddArgument($FilePath).AddArgument($Payload).AddArgument($RequestId).AddArgument([string]$script:tikTok.Launcher).AddArgument($cancel.Token)
+        return @{ PS=$ps; Async=$ps.BeginInvoke(); Action=$Action; Cancel=$cancel; Clock=[Diagnostics.Stopwatch]::StartNew() }
+    } catch { $ps.Dispose(); $cancel.Dispose(); throw }
+}
+
+function Complete-TikTokTask {
+    param($Task)
+    try {
+        $result = @($Task.PS.EndInvoke($Task.Async))
+        if ($Task.PS.HadErrors -and $Task.PS.Streams.Error.Count) { throw ([string]$Task.PS.Streams.Error[0]) }
+        if ($result.Count -eq 1 -and $result[0] -isnot [string]) { return $result[0] }
+        return (($result -join '') | ConvertFrom-Json -ErrorAction Stop)
+    } finally { $Task.PS.Dispose(); if($Task.Cancel){$Task.Cancel.Dispose()} }
+}
+
+function Stop-TikTokTask {
+    # Never blocks the UI thread (G8): cancel cooperatively, ask the pipeline to stop, and dispose only after both
+    # the invocation and the stop request have completed, from a timer.
+    param($Task)
+    if (-not $Task) { return }
+    try { $Task.Cancel.Cancel() } catch { Write-FileLog "WARN TikTok cancel: $($_.Exception.Message)" }
+    try { $Task.StopAsync = $Task.PS.BeginStop($null, $null) } catch { Write-FileLog "WARN TikTok stop: $($_.Exception.Message)" }
+    if (-not $script:tikTokReaper) {
+        $script:tikTokReaper = @{ Tasks = New-Object System.Collections.ArrayList; Timer = New-Object Windows.Threading.DispatcherTimer }
+        $script:tikTokReaper.Timer.Interval = [TimeSpan]::FromMilliseconds(500)
+        $script:tikTokReaper.Timer.Add_Tick({ Invoke-TikTokReaper })
+    }
+    [void]$script:tikTokReaper.Tasks.Add($Task)
+    $script:tikTokReaper.Timer.Start()
+}
+
+function Invoke-TikTokReaper {
+    foreach ($task in @($script:tikTokReaper.Tasks)) {
+        if (-not $task.Async.IsCompleted -or ($task.StopAsync -and -not $task.StopAsync.IsCompleted)) { continue }
+        try { [void]$task.PS.EndInvoke($task.Async) } catch { <# cancelled on purpose: the outcome is discarded #> }
+        try { if ($task.StopAsync) { $task.PS.EndStop($task.StopAsync) } } catch { <# stop of an already finished pipeline #> }
+        try { $task.PS.Dispose(); $task.Cancel.Dispose() } catch { Write-FileLog "WARN TikTok dispose: $($_.Exception.Message)" }
+        $script:tikTokReaper.Tasks.Remove($task)
+    }
+    if (-not $script:tikTokReaper.Tasks.Count) { $script:tikTokReaper.Timer.Stop() }
+}
+
+function Save-TikTokReceipt {
+    param($Record)
+    $dir = Join-Path $Record.OutDir '.cache\tiktok-posts'
+    [void][IO.Directory]::CreateDirectory($dir)
+    $target = Join-Path $dir ($Record.RequestId + '.json')
+    $temp = $target + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+        $stream = [IO.File]::Open($temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($Record | ConvertTo-Json -Depth 5))
+            $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true)
+        } finally { $stream.Dispose() }
+        if ([IO.File]::Exists($target)) { [IO.File]::Replace($temp,$target,[Management.Automation.Language.NullString]::Value) }
+        else { [IO.File]::Move($temp,$target) }
+    } finally { if ([IO.File]::Exists($temp)) { [IO.File]::Delete($temp) } }
+}
+
+function Get-TikTokReceipts {
+    # Parsed receipts are cached by file stamp: a steady sync pass does not re-read them, and an invalid receipt is
+    # logged once per version instead of every pass (G7).
+    param([string]$OutDir)
+    $out = Get-CanonicalPath $OutDir
+    $dir = Join-Path $out '.cache\tiktok-posts'
+    if (-not [IO.Directory]::Exists($dir)) { return }
+    if (-not $script:tikTokReceiptCache) { $script:tikTokReceiptCache = @{} }
+    foreach ($file in [IO.DirectoryInfo]::new($dir).GetFiles('*.json')) {
+        if (-not $file.Name.EndsWith('.json', [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $stamp = $file.Length.ToString() + '|' + $file.LastWriteTimeUtc.Ticks
+        $hit = $script:tikTokReceiptCache[$file.FullName]
+        if ($hit -and $hit.Stamp -eq $stamp) { if ($hit.Record) { $hit.Record }; continue }
+        $record = $null
+        try {
+            $parsed = [IO.File]::ReadAllText($file.FullName) | ConvertFrom-Json -ErrorAction Stop
+            if ($parsed.RequestId -notmatch '^[a-f0-9]{32}$' -or $file.BaseName -ne $parsed.RequestId -or
+                -not (Test-SamePath ([string]$parsed.OutDir) $out) -or
+                -not (Test-SamePath ([IO.Path]::GetDirectoryName([string]$parsed.SourcePath)) $out) -or
+                [string]$parsed.VideoId -notmatch '^\d+$' -or [string]$parsed.VideoId -ne (Get-ReelId $parsed.SourcePath)) { throw 'Biên nhận không hợp lệ.' }
+            $record = $parsed
+        } catch { Write-FileLog ('WARN TikTok receipt ignored: ' + $file.Name + ' · ' + $_.Exception.Message) }
+        $script:tikTokReceiptCache[$file.FullName] = @{ Stamp = $stamp; Record = $record }
+        if ($record) { $record }
+    }
+}
+
+function Test-TikTokWorkerAlive {
+    # R2: the background process holds <id>.lock with FileShare.None for its whole life.
+    param([string]$OutDir, [string]$RequestId)
+    $lock = Join-Path (Join-Path $OutDir '.cache\tiktok-posts') ($RequestId + '.lock')
+    if (-not [IO.File]::Exists($lock)) { return $false }
+    try { $probe = [IO.File]::Open($lock, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete); $probe.Dispose(); return $false }
+    catch [IO.FileNotFoundException] { return $false }
+    catch [IO.IOException] { return $true }
+    catch { return $false }
+}
+
+function Get-TikTokReceiptViews {
+    # Fresh copies for the background runspace (cached receipt objects are never shared across threads).
+    param([string]$OutDir)
+    foreach ($r in @(Get-TikTokReceipts $OutDir)) {
+        $final = [string]$r.Status -in @('posted', 'succeeded', 'failed', 'cancelled', 'preparation_failed', 'missing')
+        [pscustomobject]@{
+            RequestId = [string]$r.RequestId; VideoId = [string]$r.VideoId; Username = [string]$r.Username; ScheduledFor = [string]$r.ScheduledFor
+            Status = [string]$r.Status; CreatedAt = [string]$r.CreatedAt; LaunchedAt = [string]$r.LaunchedAt
+            SourceSha256 = [string]$r.SourceSha256; UploadSha256 = [string]$r.UploadSha256
+            WorkerAlive = $(if ($final) { $false } else { Test-TikTokWorkerAlive $OutDir ([string]$r.RequestId) })
+        }
+    }
+}
+
+function Test-TikTokTransferActive {
+    # A live background transfer is still reading this file (R2): deleting it now would break the upload.
+    param([string]$FilePath)
+    try {
+        $source = Get-CanonicalPath $FilePath
+        $out = [IO.Path]::GetDirectoryName($source)
+        $dir = Join-Path $out '.cache\tiktok-posts'
+        if (-not [IO.Directory]::Exists($dir)) { return $false }
+        foreach ($lock in [IO.DirectoryInfo]::new($dir).GetFiles('*.lock')) {
+            if ($lock.Name -notmatch '^([a-f0-9]{32})\.lock$') { continue }
+            $id = $Matches[1]
+            if (-not (Test-TikTokWorkerAlive $out $id)) { continue }
+            try {
+                $record = [IO.File]::ReadAllText((Join-Path $dir ($id + '.json'))) | ConvertFrom-Json -ErrorAction Stop
+                if (Test-SamePath ([string]$record.SourcePath) $source) { return $true }
+            } catch { return $true }
+        }
+    } catch { Write-FileLog "WARN TikTok transfer check '$FilePath': $($_.Exception.Message)" }
+    return $false
+}
+
+function Get-TikTokStatusText {
+    param($Result)
+    if ($Result.publish_uncertain) { return 'Chưa rõ kết quả: video có thể đã lên TikTok. Kiểm tra tài khoản trước khi đăng lại.' }
+    switch ([string]$Result.status) {
+        'pending' { 'Đã nhận tác vụ. Đang chờ đến giờ đăng.' }
+        'running' { 'Đang gửi video lên TikTok…' }
+        'succeeded' { 'TikTok đã nhận yêu cầu đăng thành công. Video có thể cần thời gian xử lý.' }
+        'failed' { 'Đăng thất bại. Xem chi tiết trong Lịch đăng ở bảng điều khiển.' }
+        'cancelled' { 'Tác vụ đã được hủy.' }
+        'preparing' { 'Đang chuẩn bị hoặc chuẩn bị bị gián đoạn. Kiểm tra bảng điều khiển trước khi gửi lại.' }
+        'missing' { 'Tác vụ đã bị xóa khỏi bảng điều khiển. Kiểm tra tài khoản trước khi đăng lại.' }
+        default { 'Chưa xác nhận được tác vụ. Bấm Kiểm tra kết quả; không gửi lại khi chưa kiểm tra.' }
+    }
+}
+
+function Apply-TikTokResult {
+    param($Record, $Result)
+    if ($Result.status -eq 'succeeded' -and $Record.Status -ne 'posted') {
+        Set-ReupMetadata -VideoId $Record.VideoId -Posted $true -OutDir $Record.OutDir
+        $Record.Status = 'posted'
+        Save-TikTokReceipt $Record
+        if ([IO.Path]::GetFullPath($ui.TxtOut.Text) -eq $Record.OutDir) { Update-Gallery }
+    }
+}
+
+function Format-TikTokTime {
+    param([string]$Value,[switch]$Short)
+    if(-not $Value){return 'chưa rõ giờ'}
+    try{ $when=[DateTimeOffset]::Parse($Value,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::AssumeUniversal).ToLocalTime(); return $when.ToString($(if($Short){'dd/MM HH:mm'}else{'dd/MM/yyyy HH:mm:ss'})) }catch{return 'chưa rõ giờ'}
+}
+
+function Get-TikTokSortKey {
+    param([string]$Value)
+    if (-not $Value) { return [long]0 }
+    try { return [DateTimeOffset]::Parse($Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal).UtcTicks }
+    catch { return [long]0 }
+}
+
+function ConvertTo-TikTokHistoryEntry {
+    # Compact history entry stored in reup-status.json (R5): exactly the fields the UI needs.
+    param($Entry)
+    return [pscustomobject]@{
+        key = [string]$Entry.key; request_id = [string]$Entry.request_id; username = [string]$Entry.username; status = [string]$Entry.status
+        publish_uncertain = [bool]$Entry.publish_uncertain; prior_uncertain = [bool]$Entry.prior_uncertain
+        planned_for = [string]$Entry.planned_for; accepted_at = [string]$Entry.accepted_at; created_at = [string]$Entry.created_at
+        time_source = [string]$Entry.time_source; sha256 = [string]$Entry.sha256
+    }
+}
+
+function Get-TikTokHistorySignature {
+    param([object[]]$History)
+    $text = New-Object System.Text.StringBuilder
+    foreach ($h in @($History)) {
+        if ($null -eq $h) { continue }
+        [void]$text.Append([string]$h.key).Append('|').Append([string]$h.request_id).Append('|').Append([string]$h.username).Append('|').Append([string]$h.status).Append('|').Append([bool]$h.publish_uncertain).Append('|').Append([bool]$h.prior_uncertain).Append('|').Append([string]$h.planned_for).Append('|').Append([string]$h.accepted_at).Append('|').Append([string]$h.created_at).Append('|').Append([string]$h.time_source).Append('|').Append([string]$h.sha256).Append("`n")
+    }
+    return $text.ToString()
+}
+
+function Get-TikTokReceiptAge {
+    param($Receipt, [DateTime]$NowUtc)
+    $since = if ($Receipt.LaunchedAt) { [string]$Receipt.LaunchedAt } else { [string]$Receipt.CreatedAt }
+    try { return ($NowUtc - [DateTimeOffset]::Parse($since, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal).UtcDateTime).TotalSeconds }
+    catch { return [double]::MaxValue }
+}
+
+function Get-TikTokReceiptState {
+    # Local state of a receipt the backend history does not list (R2). 'preparing' blocks the account;
+    # 'transfer_failed' ("Chưa chuyển được") does not and offers retry/archive in the dialog.
+    param($Receipt, [bool]$NotFound, [DateTime]$NowUtc)
+    if ($Receipt.WorkerAlive) { return 'preparing' }
+    $recorded = [string]$Receipt.Status
+    if ($recorded -in @('succeeded', 'failed', 'cancelled', 'preparation_failed', 'missing')) { return $recorded }
+    if ($NotFound -and ($recorded -eq 'transfer_failed' -or (Get-TikTokReceiptAge $Receipt $NowUtc) -gt 120)) { return 'transfer_failed' }
+    return 'preparing'
+}
+
+function Merge-TikTokVideoHistory {
+    # Backend entries + confirmed successes kept from the stored item + local receipts not yet known to the backend.
+    param([string]$VideoId, [object[]]$Entries, [object[]]$Receipts, $OldItem, [hashtable]$NotFound = @{}, [DateTime]$NowUtc = [DateTime]::UtcNow)
+    $all = New-Object System.Collections.Generic.List[object]
+    $keys = @{}; $requests = @{}
+    # The backend hashes the uploaded metadata-clean copy; map that hash back to the original -3 file (D5 comparison).
+    $uploads = @{}
+    foreach ($r in @($Receipts)) { if ($r -and $r.UploadSha256 -and $r.SourceSha256) { $uploads[[string]$r.RequestId] = $r } }
+    foreach ($e in @($Entries)) {
+        if ($null -eq $e) { continue }
+        $h = ConvertTo-TikTokHistoryEntry $e
+        $upload = if ($h.request_id) { $uploads[$h.request_id] } else { $null }
+        if ($upload -and [string]::Equals($h.sha256, [string]$upload.UploadSha256, [StringComparison]::OrdinalIgnoreCase)) { $h.sha256 = [string]$upload.SourceSha256 }
+        if (-not $h.key -and $h.request_id) { $h.key = 'request:' + $h.request_id }
+        if (-not $h.key -or $keys.ContainsKey($h.key)) { continue }
+        $keys[$h.key] = $true
+        if ($h.request_id) { $requests[$h.request_id] = $true }
+        $all.Add($h)
+    }
+    if ($OldItem -and $OldItem.Source -eq 'autotok-history') {
+        # A success the backend no longer reports (deleted history row) must not make the video look unposted.
+        foreach ($old in @($OldItem.History)) {
+            if (-not $old -or [string]$old.status -ne 'succeeded' -or -not [string]$old.key -or $keys.ContainsKey([string]$old.key)) { continue }
+            if ($old.request_id -and $requests.ContainsKey([string]$old.request_id)) { continue }
+            $h = ConvertTo-TikTokHistoryEntry $old
+            $keys[$h.key] = $true
+            $all.Add($h)
+        }
+    }
+    foreach ($r in @($Receipts)) {
+        if (-not $r -or [string]$r.VideoId -ne $VideoId) { continue }
+        $id = [string]$r.RequestId
+        if ($requests.ContainsKey($id) -or [string]$r.Status -eq 'posted') { continue }
+        $requests[$id] = $true
+        $all.Add([pscustomobject]@{
+            key = 'local:' + $id; request_id = $id; username = [string]$r.Username; status = (Get-TikTokReceiptState $r ([bool]$NotFound[$id]) $NowUtc)
+            publish_uncertain = $false; prior_uncertain = $false; planned_for = [string]$r.ScheduledFor; accepted_at = ''
+            created_at = [string]$r.CreatedAt; time_source = 'local'; sha256 = ''
+        })
+    }
+    return @($all | Sort-Object { Get-TikTokSortKey ([string]$_.created_at) } -Descending)
+}
+
+function Set-TikTokItemHistory {
+    # Store the merged history of one video; returns $true only when the stored item changed. Never touches the manual mark.
+    param($Metadata, [string]$VideoId, [object[]]$History, [string]$FileSha256 = '')
+    if (-not @($History).Count) { return $false }
+    $property = $Metadata.PSObject.Properties[$VideoId]
+    $item = if ($property) { $property.Value } else { $null }
+    if ($item -and $item.Source -eq 'autotok-history' -and $item.PSObject.Properties['ManualPosted'] -and
+        (-not $FileSha256 -or [string]$item.FileSha256 -eq $FileSha256) -and
+        (Get-TikTokHistorySignature @($item.History)) -eq (Get-TikTokHistorySignature $History)) { return $false }
+    if (-not $item) {
+        $item = [pscustomobject]@{ Posted = $false; Date = '' }
+        $Metadata | Add-Member -MemberType NoteProperty -Name $VideoId -Force -Value $item
+    }
+    $manual = Get-ReupManualState $item
+    Set-ReupField $item 'ManualPosted' ([bool]$manual.Posted)
+    Set-ReupField $item 'ManualDate' ([string]$manual.Date)
+    Set-ReupField $item 'Source' 'autotok-history'
+    Set-ReupField $item 'History' @($History)
+    if ($FileSha256) { Set-ReupField $item 'FileSha256' $FileSha256 }
+    Update-ReupAggregate $item
+    return $true
+}
+
+function Test-TikTokPriorVersion {
+    # D5/R9: an entry recorded for a different file content than the current -3 file.
+    param($Entry, [string]$FileSha256)
+    return [bool]([string]$Entry.sha256 -and $FileSha256 -and -not [string]::Equals([string]$Entry.sha256, $FileSha256, [StringComparison]::OrdinalIgnoreCase))
+}
+
+function Get-TikTokEntryLabel {
+    param($Entry, [string]$FileSha256 = '')
+    $label = switch ([string]$Entry.status) {
+        'succeeded' { 'Đã đăng · ' + (Format-TikTokTime ([string]$Entry.accepted_at)) }
+        'pending' { if ($Entry.planned_for) { 'Đã hẹn · ' + (Format-TikTokTime ([string]$Entry.planned_for)) } else { 'Đã nhận, chờ đăng' } }
+        'queued' { 'Đã nhận, chờ đăng' }
+        'running' { 'Đang đăng' }
+        'preparing' { 'Đang chuyển video' }
+        'preparation_failed' { 'Chuẩn bị video thất bại' }
+        'transfer_failed' { 'Chưa chuyển được sang bộ đăng nền' }
+        'cancelled' { 'Đã hủy' }
+        'missing' { 'Tác vụ đã bị xóa khỏi bảng điều khiển' }
+        default { 'Đăng thất bại' }
+    }
+    if ($Entry.publish_uncertain) { $label = 'Chưa rõ kết quả · kiểm tra TikTok trước khi gửi lại' }
+    elseif ($Entry.prior_uncertain) { $label += ' · Từng có lần chưa rõ kết quả' }
+    if (Test-TikTokPriorVersion $Entry $FileSha256) { $label += ' (bản trước)' }
+    if ($Entry.time_source -eq 'legacy_result_time') { $label += ' (mốc xử lý từ lịch sử cũ)' }
+    return $label
+}
+
+function Get-TikTokEntryShort {
+    param($Entry)
+    if ($Entry.publish_uncertain) { return 'Chưa rõ kết quả' }
+    $short = switch ([string]$Entry.status) {
+        'pending' { if ($Entry.planned_for) { "Đã hẹn`n" + (Format-TikTokTime ([string]$Entry.planned_for) -Short) } else { 'Chờ đăng…' } }
+        'queued' { 'Chờ đăng…' }
+        'running' { 'Đang đăng…' }
+        'preparing' { 'Đang chuyển…' }
+        'cancelled' { 'Đã hủy lịch' }
+        'transfer_failed' { 'Chưa chuyển được' }
+        'preparation_failed' { 'Chuẩn bị lỗi' }
+        'missing' { 'Tác vụ đã xóa' }
+        default { 'Đăng thất bại' }
+    }
+    return $short
+}
+
+function Get-TikTokHistoryPayload {
+    param([string]$OutDir,[string]$FilePath='')
+    $dir = Get-CanonicalPath $OutDir
+    $payload = @{ out_dir = $dir; receipts = @(Get-TikTokReceiptViews $dir) }
+    if ($FilePath) { $payload.file = @{ id = (Get-ReelId $FilePath); path = [IO.Path]::GetFullPath($FilePath) } }
+    return $payload
+}
+
+function Add-TikTokLocalReceiptHistory {
+    # Right after submit: show the new receipt in Kho immediately (it is replaced by the backend entry on the next sync).
+    param([string]$OutDir, [string]$VideoId, [object[]]$Entries, $Record)
+    $view = [pscustomobject]@{ RequestId = [string]$Record.RequestId; VideoId = [string]$Record.VideoId; Username = [string]$Record.Username; ScheduledFor = [string]$Record.ScheduledFor; Status = [string]$Record.Status; CreatedAt = [string]$Record.CreatedAt; LaunchedAt = [string]$Record.LaunchedAt; WorkerAlive = $true }
+    # Short wait: this runs on the UI thread right after submit; the next sync pass writes it anyway.
+    $localUpdate = Update-ReupMetadata -OutDir $OutDir -TimeoutMs 1500 -Change {
+        param($meta)
+        $old = $meta.PSObject.Properties[$VideoId]
+        $history = @(Merge-TikTokVideoHistory $VideoId $Entries @($view) $(if ($old) { $old.Value } else { $null }))
+        return (Set-TikTokItemHistory $meta $VideoId $history '')
+    }
+    return [bool]$localUpdate.Changed
+}
+
+function Set-TikTokSyncStale {
+    # R8: a failed sync keeps the stored state, shows a visible note in Kho and logs at most every 5 minutes.
+    param([string]$Message)
+    if ($Message) { Write-FileLogLimited -Key 'tiktok-sync' -Text ('WARN TikTok sync: ' + $Message) -MinSeconds 300 }
+    if ([string]$script:tikTokSync.Stale -eq [string]$Message) { return }
+    if ($script:tikTokSync.Stale -and -not $Message) { Write-FileLog 'TikTok sync: kết nối lại bình thường.' }
+    $script:tikTokSync.Stale = [string]$Message
+    Update-GalleryCountText
+}
+
+function Update-GalleryCountText {
+    if (-not $ui.TxtGalleryCount -or $null -eq $script:galleryCountBase) { return }
+    if (-not $script:tikTokSync) { $ui.TxtGalleryCount.Text = [string]$script:galleryCountBase; return }
+    $stale = [string]$script:tikTokSync.Stale
+    $ui.TxtGalleryCount.Text = [string]$script:galleryCountBase + $(if ($stale) { ' · TikTok chưa cập nhật' } else { '' })
+    $ui.TxtGalleryCount.ToolTip = $(if ($stale) { $stale } else { $null })
+}
+
+function Show-TikTokFailureToasts {
+    # G9: one toast per failed request in this session.
+    param([object[]]$Failures)
+    $new = @($Failures | Where-Object { $_ -and -not $script:tikTokSync.Notified.ContainsKey([string]$_.RequestId) })
+    foreach ($f in $new) { $script:tikTokSync.Notified[[string]$f.RequestId] = $true }
+    if ($new.Count -eq 1) {
+        $who = if ($new[0].Username) { ' (@' + $new[0].Username + ')' } else { '' }
+        Show-Toast ("Reel #$($new[0].VideoId)$who chưa chuyển được sang bộ đăng nền. Mở Lịch sử đăng video để kiểm tra.") -Kind warning
+    } elseif ($new.Count -gt 1) {
+        Show-Toast "$($new.Count) video chưa chuyển được sang bộ đăng nền. Mở Lịch sử đăng video của từng video để kiểm tra." -Kind warning
+    }
+}
+
+function Invoke-TikTokSyncTick {
+    $sync = $script:tikTokSync
+    if ($sync.Task) {
+        if (-not $sync.Task.Async.IsCompleted) { return }
+        $task = $sync.Task; $sync.Task = $null
+        $elapsed = $task.Clock.Elapsed.TotalSeconds
+        $sync.NextAt = [DateTime]::UtcNow.AddSeconds([Math]::Max(4.0, 3.0 * $elapsed))
+        try { $result = Complete-TikTokTask $task }
+        catch { Set-TikTokSyncStale ('Lỗi đồng bộ: ' + $_.Exception.Message); return }
+        if ($task.OutDir -ne $sync.OutDir) { return }
+        if ($result.IdentityCache -is [hashtable]) { $sync.IdentityCache = $result.IdentityCache }
+        $sync.InputSig = [string]$result.InputSig; $sync.FileStamp = [string]$result.FileStamp; $sync.ProbeCursor = [string]$result.ProbeCursor
+        Set-TikTokSyncStale ([string]$result.Stale)
+        Show-TikTokFailureToasts @($result.Failures)
+        if ($result.Changed) { Update-Gallery }
+        return
+    }
+    if ([DateTime]::UtcNow -lt $sync.NextAt) { return }
+    $text = [string]$ui.TxtOut.Text
+    if ([string]::IsNullOrWhiteSpace($text)) { return }
+    $outDir = Get-CanonicalPath $text
+    if (-not [IO.Directory]::Exists($outDir)) { return }
+    if (-not [string]::Equals($outDir, $sync.OutDir, [StringComparison]::OrdinalIgnoreCase)) {
+        $sync.OutDir = $outDir; $sync.IdentityCache = $null; $sync.InputSig = ''; $sync.FileStamp = ''; $sync.ProbeCursor = ''
+    }
+    Remove-TikTokStaleCleanFiles $outDir
+    $payload = Get-TikTokHistoryPayload $outDir
+    $payload.identity_cache = $sync.IdentityCache; $payload.last_input_sig = $sync.InputSig; $payload.last_file_stamp = $sync.FileStamp; $payload.probe_cursor = [string]$sync.ProbeCursor
+    $sync.Task = Start-TikTokTask 'sync' $payload
+    $sync.Task.OutDir = $outDir
+}
+
+function Start-TikTokStatusSync {
+    if (-not (Test-TikTokEnabled)) { return }
+    $script:tikTokSync = @{ Task = $null; OutDir = ''; IdentityCache = $null; InputSig = ''; FileStamp = ''; ProbeCursor = ''; NextAt = [DateTime]::MinValue; Notified = @{}; Stale = '' }
+    $script:tikTokSyncTimer = New-Object Windows.Threading.DispatcherTimer
+    $script:tikTokSyncTimer.Interval = [TimeSpan]::FromSeconds(4)
+    $script:tikTokSyncTimer.Add_Tick({
+        try { Invoke-TikTokSyncTick }
+        catch { Set-TikTokSyncStale ('Lỗi đồng bộ: ' + $_.Exception.Message) }
+    })
+    $script:tikTokSyncTimer.Start()
+}
+
+function Find-TikTokTool {
+    # Same places the app looks for FFmpeg (tools\ffmpeg, tools\ffmpeg\bin, tools, then PATH).
+    param([string]$Name, [string]$Root)
+    foreach ($sub in @("tools\ffmpeg\$Name.exe", "tools\ffmpeg\bin\$Name.exe", "tools\$Name.exe")) {
+        $candidate = Join-Path $Root $sub
+        if ([IO.File]::Exists($candidate)) { return $candidate }
+    }
+    $command = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($command) { return [string]$command.Source }
+    return ''
+}
+
+function ConvertTo-TikTokArgument {
+    # Windows command-line quoting for one argument (paths may contain spaces, [] and Vietnamese).
+    param([string]$Value)
+    if ($Value -ne '' -and $Value -notmatch '[\s"]') { return $Value }
+    $text = New-Object System.Text.StringBuilder
+    [void]$text.Append('"'); $slashes = 0
+    foreach ($ch in $Value.ToCharArray()) {
+        if ($ch -eq '\') { $slashes++; continue }
+        if ($ch -eq '"') { [void]$text.Append('\' * ($slashes * 2 + 1)).Append('"') } else { [void]$text.Append('\' * $slashes).Append($ch) }
+        $slashes = 0
+    }
+    [void]$text.Append('\' * ($slashes * 2)).Append('"')
+    return $text.ToString()
+}
+
+function Invoke-TikTokTool {
+    param([string]$Exe, [string[]]$Arguments, [int]$TimeoutMs = 600000)
+    $info = [Diagnostics.ProcessStartInfo]::new($Exe)
+    $info.Arguments = (@($Arguments | ForEach-Object { ConvertTo-TikTokArgument $_ }) -join ' ')
+    $info.UseShellExecute = $false; $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true
+    $info.StandardOutputEncoding = [Text.Encoding]::UTF8; $info.StandardErrorEncoding = [Text.Encoding]::UTF8
+    $process = [Diagnostics.Process]::Start($info)
+    try {
+        $out = $process.StandardOutput.ReadToEndAsync(); $err = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutMs)) { try { $process.Kill() } catch { <# already exited #> }; throw ([IO.Path]::GetFileName($Exe) + ' quá thời gian.') }
+        $process.WaitForExit()
+        return @{ Code = $process.ExitCode; Out = $out.Result; Err = $err.Result }
+    } finally { $process.Dispose() }
+}
+
+function Get-TikTokCleanArgs {
+    # Keep in sync with Get-CleanOutputArgs in core\kid-fby.ps1 (the engine is not loaded in this process).
+    param([string]$Codec)
+    $list = @('-map_metadata','-1','-map_chapters','-1','-fflags','+bitexact','-flags:v','+bitexact','-flags:a','+bitexact',
+              '-metadata:s:v','handler_name=','-metadata:s:a','handler_name=','-metadata:s:v','encoder=')
+    if ($Codec -match '^(h264|avc)') { $list += @('-bsf:v','filter_units=remove_types=6') }
+    elseif ($Codec -match '^(hevc|h265)') { $list += @('-bsf:v','filter_units=remove_types=39|40') }
+    return $list
+}
+
+function Get-TikTokMediaInfo {
+    param([string]$Ffprobe, [string]$Path)
+    $probe = Invoke-TikTokTool $Ffprobe @('-v','error','-show_format','-show_streams','-show_chapters','-of','json',$Path) 120000
+    if ($probe.Code -ne 0) { throw ('ffprobe lỗi: ' + $probe.Err.Trim()) }
+    return ($probe.Out | ConvertFrom-Json)
+}
+
+function Get-TikTokVideoCounts {
+    # Keyframe packets and decoded frames of the first video stream. Stripping SEI from an open-GOP stream can drop
+    # keyframe flags (recovery-point SEI) or leading frames (stream starting with a non-IDR I frame).
+    param([string]$Ffprobe, [string]$Path)
+    $packets = Invoke-TikTokTool $Ffprobe @('-v','error','-select_streams','v:0','-show_entries','packet=flags','-of','csv=p=0',$Path) 600000
+    $frames = Invoke-TikTokTool $Ffprobe @('-v','error','-select_streams','v:0','-count_frames','-show_entries','stream=nb_read_frames','-of','csv=p=0',$Path) 1800000
+    if ($packets.Code -ne 0 -or $frames.Code -ne 0) { throw ('ffprobe lỗi: ' + ($packets.Err + ' ' + $frames.Err).Trim()) }
+    $count = 0
+    # The line can carry side data too (e.g. rotation gives '180,'): take the first number.
+    $number = [regex]::Match([string]$frames.Out, '\d+')
+    if (-not $number.Success -or -not [int]::TryParse($number.Value, [ref]$count)) { throw ('ffprobe không đếm được khung hình: ' + ([string]$frames.Out).Trim()) }
+    return @{ Keys = @(([string]$packets.Out -split "`r?`n") | Where-Object { $_ -cmatch '^K' }).Count; Frames = $count }
+}
+
+function Test-TikTokCleanFile {
+    # Gate before upload: no identifying tags, no chapters, no encoder/source strings in the bytes, decodes cleanly,
+    # same duration as the source and (with -SourceCounts) the same decoded frames and, for a stream copy, keyframes.
+    # Returns @{ Ok; Reason; EncoderBytesOnly; VideoFixable } (VideoFixable: re-encoding the video can fix every problem).
+    param([string]$Ffmpeg, [string]$Ffprobe, [string]$Path, [double]$SourceDuration, $SourceCounts = $null, [switch]$VideoReencoded)
+    $info = Get-TikTokMediaInfo $Ffprobe $Path
+    $problems = New-Object System.Collections.Generic.List[string]
+    $fixable = $true
+    foreach ($p in @($info.format.tags.PSObject.Properties)) {
+        if ($p -and $p.Name -notin @('major_brand','minor_version','compatible_brands')) { $problems.Add('format tag ' + $p.Name); $fixable = $false }
+    }
+    $streams = @($info.streams | Where-Object { $_ })
+    foreach ($s in $streams) {
+        if ($s.codec_type -notin @('video','audio')) { $problems.Add('extra stream ' + $s.codec_type); $fixable = $false }
+        foreach ($p in @($s.tags.PSObject.Properties)) {
+            if (-not $p) { continue }
+            if ($p.Name -eq 'language') { continue }
+            if ($p.Name -eq 'handler_name' -and [string]$p.Value -in @('VideoHandler','SoundHandler')) { continue }
+            if ($p.Name -eq 'vendor_id' -and [string]$p.Value -eq '[0][0][0][0]') { continue }
+            $problems.Add('stream tag ' + $p.Name + '=' + [string]$p.Value); $fixable = $false
+        }
+    }
+    if (@($info.chapters | Where-Object { $_ }).Count) { $problems.Add('chapters'); $fixable = $false }
+    # Signature-shaped patterns: bare 4-letter strings occur by chance in compressed data of large files.
+    $pattern = [regex]::new('(?i)(lav[fc]\d{1,3}\.\d{1,3}\.\d{1,3})|(x26[45] - core|x265 \(build|x264 core|x265 core)|(facebook)')
+    $hits = New-Object System.Collections.Generic.List[string]
+    $latin = [Text.Encoding]::GetEncoding(28591)
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $buffer = New-Object byte[] (4MB); $tail = ''
+        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $text = $tail + $latin.GetString($buffer, 0, $read)
+            foreach ($m in $pattern.Matches($text)) { if (-not $hits.Contains($m.Value.ToLowerInvariant())) { $hits.Add($m.Value.ToLowerInvariant()) } }
+            $tail = if ($text.Length -gt 64) { $text.Substring($text.Length - 64) } else { $text }
+        }
+    } finally { $stream.Dispose() }
+    $encoderOnly = ($hits.Count -gt 0 -and -not @($hits | Where-Object { $_ -notmatch '^lav[fc]' }).Count)
+    foreach ($h in $hits) { $problems.Add('bytes ' + $h) }
+    if (-not $problems.Count) {
+        $decode = Invoke-TikTokTool $Ffmpeg @('-hide_banner','-nostdin','-v','error','-i',$Path,'-f','null','-') 1800000
+        if ($decode.Code -ne 0 -or $decode.Err.Trim()) { $problems.Add('decode: ' + $decode.Err.Trim()); $fixable = $false }
+        $duration = 0.0; [void][double]::TryParse([string]$info.format.duration, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$duration)
+        if ([Math]::Abs($duration - $SourceDuration) -gt 0.05) { $problems.Add(('duration {0:0.000} vs {1:0.000}' -f $duration, $SourceDuration)) }
+        if ($SourceCounts) {
+            $counts = Get-TikTokVideoCounts $Ffprobe $Path
+            if ($counts.Frames -ne $SourceCounts.Frames) { $problems.Add(('decoded frames {0} vs source {1}' -f $counts.Frames, $SourceCounts.Frames)) }
+            if (-not $VideoReencoded -and $counts.Keys -ne $SourceCounts.Keys) { $problems.Add(('keyframes {0} vs source {1}' -f $counts.Keys, $SourceCounts.Keys)) }
+            if ($VideoReencoded -and $counts.Keys -lt 1) { $problems.Add('no keyframe'); $fixable = $false }
+        }
+    }
+    return @{ Ok = (-not $problems.Count); Reason = ($problems -join '; '); EncoderBytesOnly = $encoderOnly; VideoFixable = ($fixable -and $problems.Count -gt 0) }
+}
+
+function New-TikTokCleanCopy {
+    # Every TikTok upload is a metadata-clean copy of the -3 file (also for files made before the engine cleaned them).
+    # Tries a stream copy first; an encoder string only in the audio -> re-encode audio; broken keyframes/frames after
+    # SEI stripping or encoder strings in the video (e.g. x265 info in hvcC) -> re-encode the video to H.264 with the
+    # engine's libx264 settings (Get-VideoEncoderArgs in core\kid-fby.ps1). Throws when no attempt passes the gate.
+    param([string]$SourcePath, [string]$PostsDir, [string]$RequestId, [string]$Root)
+    $ffmpeg = Find-TikTokTool 'ffmpeg' $Root; $ffprobe = Find-TikTokTool 'ffprobe' $Root
+    if (-not $ffmpeg -or -not $ffprobe) { throw 'Không tìm thấy FFmpeg/FFprobe.' }
+    $size = [IO.FileInfo]::new($SourcePath).Length
+    try {
+        $free = [IO.DriveInfo]::new([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($PostsDir))).AvailableFreeSpace
+        if ($free -lt $size + 64MB) { throw ('Không đủ dung lượng trống để làm sạch video (cần khoảng ' + [Math]::Ceiling(($size + 64MB) / 1MB) + ' MB).') }
+    } catch [ArgumentException] { <# UNC or unknown drive: copy anyway, ffmpeg reports a full disk #> }
+    $source = Get-TikTokMediaInfo $ffprobe $SourcePath
+    $codec = [string](@($source.streams | Where-Object codec_type -eq 'video')[0].codec_name)
+    $sourceDuration = 0.0; [void][double]::TryParse([string]$source.format.duration, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$sourceDuration)
+    $sourceCounts = Get-TikTokVideoCounts $ffprobe $SourcePath
+    $clean = Join-Path $PostsDir ($RequestId + '.clean.mp4')
+    $temp = Join-Path $PostsDir ($RequestId + '.clean-tmp.mp4')
+    $last = ''
+    $mode = 'copy'
+    while ($mode) {
+        foreach ($p in @($temp, $clean)) { if ([IO.File]::Exists($p)) { [IO.File]::Delete($p) } }
+        $codecArgs = switch ($mode) {
+            'copy' { @('-c','copy') + (Get-TikTokCleanArgs $codec) }
+            'audio' { @('-c:v','copy','-c:a','aac','-b:a','192k') + (Get-TikTokCleanArgs $codec) }
+            # Same as Get-VideoEncoderArgs 'libx264' in core\kid-fby.ps1; passthrough keeps every source frame (no dup/drop).
+            default { @('-c:v','libx264','-crf','19','-preset','medium','-profile:v','high','-pix_fmt','yuv420p','-fps_mode','passthrough','-c:a','aac','-b:a','192k') + (Get-TikTokCleanArgs 'h264') }
+        }
+        $arguments = @('-hide_banner','-nostdin','-v','error','-y','-i',$SourcePath,'-map','0:v:0','-map','0:a:0?') + $codecArgs + @('-movflags','+faststart',$temp)
+        $run = Invoke-TikTokTool $ffmpeg $arguments 3600000
+        if ($run.Code -ne 0 -or -not [IO.File]::Exists($temp)) { $last = 'ffmpeg: ' + $run.Err.Trim(); break }
+        [IO.File]::Move($temp, $clean)
+        $gate = Test-TikTokCleanFile $ffmpeg $ffprobe $clean $sourceDuration -SourceCounts $sourceCounts -VideoReencoded:($mode -eq 'video')
+        if ($gate.Ok) { return $clean }
+        $last = $gate.Reason
+        $next = ''
+        if ($mode -eq 'copy' -and $gate.EncoderBytesOnly) { $next = 'audio' }
+        elseif ($mode -ne 'video' -and $gate.VideoFixable) { $next = 'video' }
+        $mode = $next
+    }
+    foreach ($p in @($temp, $clean)) { if ([IO.File]::Exists($p)) { [IO.File]::Delete($p) } }
+    throw ('Làm sạch metadata không đạt: ' + $last)
+}
+
+function Remove-TikTokStaleCleanFiles {
+    # Clean copies/temp files left by a worker that died (its lock is gone). Live workers are never touched.
+    param([string]$OutDir)
+    $dir = Join-Path $OutDir '.cache\tiktok-posts'
+    if (-not [IO.Directory]::Exists($dir)) { return }
+    foreach ($file in [IO.DirectoryInfo]::new($dir).GetFiles('*.clean*.mp4')) {
+        if ($file.Name -notmatch '^([a-f0-9]{32})\.clean(-tmp)?\.mp4$') { continue }
+        if (Test-TikTokWorkerAlive $OutDir $Matches[1]) { continue }
+        try { $file.Delete() } catch { Write-FileLog "WARN TikTok stale clean file '$($file.Name)': $($_.Exception.Message)" }
+    }
+}
+
+function Start-TikTokJobProcess {
+    param([string]$JobFile)
+    [void](Start-Process powershell.exe -ArgumentList @('-NoProfile','-STA','-ExecutionPolicy','Bypass','-File',('"'+$scriptPath+'"'),'-TikTokJobFile',('"'+$JobFile+'"')) -WindowStyle Hidden -PassThru)
+}
+
+function Set-TikTokReceiptFailed {
+    param($Record, [string]$Message)
+    $Record.Status = 'transfer_failed'; $Record.Message = $Message
+    try { Save-TikTokReceipt $Record } catch { Write-FileLog "WARN TikTok receipt $($Record.RequestId): $($_.Exception.Message)" }
+}
+
+function Start-TikTokBackgroundJob {
+    # Throws only when no background process was started, so the caller may let the user submit again.
+    param($Record,$Payload)
+    $jobFile=Join-Path (Join-Path $Record.OutDir '.cache\tiktok-posts') ($Record.RequestId+'.job')
+    Save-TikTokReceipt $Record
+    try{
+        $bytes=[Text.UTF8Encoding]::new($false).GetBytes((@{Record=$Record;Payload=$Payload;Endpoint=(Get-TikTokEndpoint)} | ConvertTo-Json -Depth 8))
+        $stream=[IO.File]::Open($jobFile,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+        try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
+    }catch{
+        try{if([IO.File]::Exists($jobFile)){[IO.File]::Delete($jobFile)}}catch{Write-FileLog "WARN TikTok job file cleanup: $($_.Exception.Message)"}
+        Set-TikTokReceiptFailed $Record 'Không tạo được tệp tác vụ nền.'
+        throw
+    }
+    try{ Start-TikTokJobProcess $jobFile }
+    catch{
+        try{[IO.File]::Delete($jobFile)}catch{Write-FileLog "WARN TikTok job file cleanup: $($_.Exception.Message)"}
+        Set-TikTokReceiptFailed $Record 'Không khởi chạy được tác vụ nền.'
+        throw
+    }
+}
+
+function Restart-TikTokTransfer {
+    # "Thử chuyển lại" (G3/R2): re-runs the SAME .job, so the backend sees the same request_id and replays, never duplicates.
+    param([string]$OutDir, [string]$RequestId)
+    if ($RequestId -notmatch '^[a-f0-9]{32}$') { throw 'Mã yêu cầu không hợp lệ.' }
+    $dir = Join-Path (Get-CanonicalPath $OutDir) '.cache\tiktok-posts'
+    $jobFile = Join-Path $dir ($RequestId + '.job')
+    if (-not [IO.File]::Exists($jobFile)) { throw 'Không còn tệp tác vụ để thử lại. Nếu cần, hãy đăng lại thành bài mới.' }
+    if (Test-TikTokWorkerAlive $OutDir $RequestId) { throw 'Video này đang được chuyển. Đợi một chút rồi bấm Làm mới.' }
+    $record = [IO.File]::ReadAllText((Join-Path $dir ($RequestId + '.json'))) | ConvertFrom-Json -ErrorAction Stop
+    Remove-TikTokStaleCleanFiles $OutDir
+    Set-ReupField $record 'Status' 'submitted'
+    Set-ReupField $record 'Message' ''
+    Set-ReupField $record 'LaunchedAt' ([DateTime]::UtcNow.ToString('o'))
+    Save-TikTokReceipt $record
+    Start-TikTokJobProcess $jobFile
+}
+
+function Move-TikTokReceiptToArchive {
+    # "Bỏ biên nhận" (G3): rename, never delete, so the receipt stays inspectable/recoverable.
+    param([string]$OutDir, [string]$RequestId)
+    if ($RequestId -notmatch '^[a-f0-9]{32}$') { throw 'Mã yêu cầu không hợp lệ.' }
+    if (Test-TikTokWorkerAlive $OutDir $RequestId) { throw 'Video này đang được chuyển. Đợi một chút rồi bấm Làm mới.' }
+    $dir = Join-Path (Get-CanonicalPath $OutDir) '.cache\tiktok-posts'
+    $suffix = '.archived-' + (Get-Date).ToString('yyyyMMdd-HHmmss')
+    Remove-TikTokStaleCleanFiles $OutDir
+    # The .job goes first: once it is gone the request cannot be re-sent by mistake.
+    foreach ($name in @(($RequestId + '.job'), ($RequestId + '.json'))) {
+        $path = Join-Path $dir $name
+        if ([IO.File]::Exists($path)) { [IO.File]::Move($path, $path + $suffix) }
+    }
+}
+
+function Show-TikTokPublishDialog {
+    param([string]$FilePath)
+    if([string]::IsNullOrWhiteSpace($FilePath) -or -not (Test-Path -LiteralPath $FilePath -PathType Leaf) -or [IO.Path]::GetFileName($FilePath) -notmatch '^\d+-3-hoan-chinh\.mp4$'){Show-Toast 'Chọn video hoàn chỉnh trong Kho trước khi đăng.' -Kind warning;return}
+    # D4: posting only reads a finished -3 file, so a running download queue does not block it.
+    if($script:stopping){Show-Toast 'Đợi tác vụ hiện tại dừng hẳn trước khi đăng video.' -Kind warning;return}
+    $source=[IO.Path]::GetFullPath($FilePath);$outDir=[IO.Path]::GetDirectoryName($source);$videoId=Get-ReelId $source
+    $markup=@'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Đăng video lên TikTok" Width="780" Height="850" MinWidth="600" MinHeight="460" WindowStartupLocation="CenterOwner" ShowInTaskbar="False" Background="{DynamicResource Surface0}" Foreground="{DynamicResource TextPrimary}" FontFamily="{DynamicResource FontUi}" FontSize="15" Language="vi-VN">
+ <Grid Margin="24"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+ <StackPanel><TextBlock Text="Đăng video lên TikTok" Style="{DynamicResource TextHeading}" FontSize="25"/><TextBlock x:Name="FileLabel" Margin="0,5,0,16" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource TextMuted}"/></StackPanel>
+ <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"><StackPanel Margin="0,0,10,0">
+  <DockPanel><Button x:Name="Refresh" Content="Làm mới" DockPanel.Dock="Right" HorizontalAlignment="Right"/><TextBlock Text="Chọn tài khoản đăng" FontWeight="ExtraBold" VerticalAlignment="Center"/></DockPanel>
+  <WrapPanel x:Name="Accounts" Margin="0,8,0,12"/>
+  <Border Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource InkFaint}" BorderThickness="1" CornerRadius="16" Padding="14" Margin="0,0,0,16"><StackPanel><TextBlock Text="Lịch sử của video này" FontWeight="ExtraBold"/><StackPanel x:Name="History" Margin="0,6,0,0"/><TextBlock x:Name="Status" Text="Đang kiểm tra tài khoản và lịch sử…" TextWrapping="Wrap" Margin="0,6,0,0" Foreground="{DynamicResource TextMuted}"/></StackPanel></Border>
+  <TextBlock Text="Mô tả video / caption" FontWeight="SemiBold"/><TextBox x:Name="Caption" AcceptsReturn="True" TextWrapping="Wrap" MaxLength="2200" Height="92" VerticalScrollBarVisibility="Auto" Margin="0,6,0,12"/>
+  <CheckBox x:Name="Schedule" Content="Hẹn giờ đăng video" MinHeight="44" Margin="0,0,0,8"/>
+  <Border x:Name="WhenPanel" Visibility="Collapsed" Background="{DynamicResource Surface1}" CornerRadius="18" BorderBrush="{DynamicResource InkFaint}" BorderThickness="1" Padding="14" Margin="0,0,0,14">
+   <WrapPanel>
+    <StackPanel Width="356" Margin="0,0,14,0">
+     <DockPanel Margin="0,0,0,8"><Button x:Name="NextMonth" Content="›" Width="44" Height="44" Padding="0" FontSize="26" DockPanel.Dock="Right" AutomationProperties.Name="Tháng sau"/><Button x:Name="PrevMonth" Content="‹" Width="44" Height="44" Padding="0" FontSize="26" DockPanel.Dock="Left" AutomationProperties.Name="Tháng trước"/><TextBlock x:Name="MonthLabel" FontWeight="ExtraBold" VerticalAlignment="Center" HorizontalAlignment="Center"/></DockPanel>
+     <UniformGrid Columns="7" Margin="0,0,0,4"><TextBlock Text="Th 2" TextAlignment="Center"/><TextBlock Text="Th 3" TextAlignment="Center"/><TextBlock Text="Th 4" TextAlignment="Center"/><TextBlock Text="Th 5" TextAlignment="Center"/><TextBlock Text="Th 6" TextAlignment="Center"/><TextBlock Text="Th 7" TextAlignment="Center"/><TextBlock Text="CN" TextAlignment="Center"/></UniformGrid>
+     <UniformGrid x:Name="Days" Columns="7" Rows="6"/>
+    </StackPanel>
+    <StackPanel Width="230" Margin="0,8,0,0"><TextBlock Text="Giờ đăng · 24 tiếng" FontWeight="ExtraBold"/><StackPanel Orientation="Horizontal" Margin="0,8,0,10"><TextBox x:Name="Hour" Text="19" Width="68" Height="44" MinHeight="44" Padding="4,0" MaxLength="2" TextAlignment="Center" VerticalContentAlignment="Center" AutomationProperties.Name="Giờ đăng"/><TextBlock Text=" : " FontSize="20" VerticalAlignment="Center"/><TextBox x:Name="Minute" Text="00" Width="68" Height="44" MinHeight="44" Padding="4,0" MaxLength="2" TextAlignment="Center" VerticalContentAlignment="Center" AutomationProperties.Name="Phút đăng"/></StackPanel><TextBlock x:Name="ChosenDate" TextWrapping="Wrap" Margin="0,0,0,12"/><WrapPanel x:Name="TimePresets"/><WrapPanel Margin="0,12,0,8"><Button x:Name="Today" Content="Hôm nay" Margin="0,0,6,6"/><Button x:Name="Tomorrow" Content="Ngày mai" Margin="0,0,0,6"/></WrapPanel><TextBlock Text="Giờ trên máy. Máy tính và bộ đăng nền cần hoạt động vào giờ đã hẹn." FontSize="12" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap"/></StackPanel>
+   </WrapPanel>
+  </Border>
+  <Expander Header="Tùy chọn nâng cao" Margin="0,0,0,10"><WrapPanel><CheckBox x:Name="Comments" Content="Bình luận" IsChecked="True" MinHeight="44" Margin="0,0,18,0"/><CheckBox x:Name="Duet" Content="Song ca" MinHeight="44" Margin="0,0,18,0"/><CheckBox x:Name="Stitch" Content="Ghép nối" MinHeight="44" Margin="0,0,18,0"/><CheckBox x:Name="Private" Content="Chỉ mình tôi" MinHeight="44" Margin="0,0,18,0"/><CheckBox x:Name="AI" Content="Nhãn AI" MinHeight="44"/></WrapPanel></Expander>
+  <CheckBox x:Name="ConfirmRepost" Content="Tôi đã kiểm tra và muốn đăng lại thành bài mới" Visibility="Collapsed" MinHeight="44" Margin="0,4,0,8"/>
+ </StackPanel></ScrollViewer>
+ <WrapPanel Grid.Row="2" HorizontalAlignment="Right" Margin="0,16,0,0"><Button x:Name="Dashboard" Content="Tài khoản / Lịch đăng" Margin="0,0,8,8"/><Button x:Name="Close" Content="Đóng" Margin="0,0,8,8" IsCancel="True"/><Button x:Name="Submit" Content="Đăng và chạy nền" Style="{DynamicResource BtnPrimary}" IsEnabled="False" Margin="0,0,0,8"/></WrapPanel>
+ </Grid>
+</Window>
+'@
+    $dlg=[Windows.Markup.XamlReader]::Parse($markup);[void]$dlg.Resources.MergedDictionaries.Add((Get-DialogTheme));$dlg.Owner=$win
+    $dlg.MaxHeight=[Math]::Max(460,[Windows.SystemParameters]::WorkArea.Height-40)
+    $c=@{};foreach($name in @('FileLabel','Refresh','Accounts','History','Status','Caption','Schedule','WhenPanel','NextMonth','PrevMonth','MonthLabel','Days','Hour','Minute','ChosenDate','TimePresets','Today','Tomorrow','Comments','Duet','Stitch','Private','AI','ConfirmRepost','Dashboard','Close','Submit')){$c[$name]=$dlg.FindName($name)}
+    $c.FileLabel.Text=[IO.Path]::GetFileName($source)
+    $state=@{Task=$null;SelectedAccount='';Entries=@();Ready=$false;SelectedDay=[DateTime]::Today;Month=[DateTime]::Today.AddDays(1-[DateTime]::Today.Day);Submitted=$false;FileSha=''}
+    $updateSelection={
+        $blocking=@('pending','queued','running','preparing')
+        $own=@($state.Entries | Where-Object {$_.username -eq $state.SelectedAccount -or (-not $_.username -and $_.status -in $blocking)})
+        $active=@($own | Where-Object {$_.status -in $blocking})
+        $repeat=@($own | Where-Object {$_.status -eq 'succeeded' -or $_.publish_uncertain -or $_.prior_uncertain})
+        $c.ConfirmRepost.Visibility=$(if($repeat.Count){'Visible'}else{'Collapsed'})
+        $c.Submit.IsEnabled=(-not $state.Submitted -and $state.Ready -and $state.SelectedAccount -and -not $active.Count -and (-not $repeat.Count -or $c.ConfirmRepost.IsChecked))
+        if($state.Submitted){return}
+        if($active.Count){$c.Status.Text='Tài khoản này đã có tác vụ cho video này. Xem Lịch đăng để theo dõi; không cần gửi thêm.'}
+        elseif($repeat.Count -and -not $c.ConfirmRepost.IsChecked){$c.Status.Text='Video đã được gửi trên tài khoản này hoặc kết quả chưa rõ. Chọn tài khoản khác, hoặc xác nhận đăng lại sau khi kiểm tra.'}
+        elseif($state.Ready){$c.Status.Text='Nhập caption rồi bấm Đăng và chạy nền. Anh có thể tiếp tục dùng app ngay.'}
+    }.GetNewClosure()
+    $calendar=@{Render=$null}
+    $dayClicked={
+        param($sender,$eventArgs)
+        $context=$sender.CommandParameter
+        $context.State.SelectedDay=[DateTime]$sender.Tag
+        $context.State.Month=$context.State.SelectedDay.AddDays(1-$context.State.SelectedDay.Day)
+        & $context.Calendar.Render
+    }
+    $accountChecked={
+        param($sender,$eventArgs)
+        $context=$sender.Tag
+        $context.State.SelectedAccount=[string]$context.Username
+        $context.Controls.ConfirmRepost.IsChecked=$false
+        & $context.Update
+    }
+    $receiptAction={
+        param($sender,$eventArgs)
+        $context=$sender.Tag
+        try{
+            if($context.Action -eq 'retry'){
+                Restart-TikTokTransfer -OutDir $context.OutDir -RequestId $context.RequestId
+                Show-Toast 'Đã giao lại video cho bộ đăng nền với cùng mã yêu cầu, nên không tạo bài trùng.' -Kind info
+            }else{
+                Move-TikTokReceiptToArchive -OutDir $context.OutDir -RequestId $context.RequestId
+                Show-Toast 'Đã bỏ biên nhận. Tệp được giữ lại trong .cache\tiktok-posts (đuôi .archived-…).' -Kind info
+            }
+            & $context.Refresh
+        }catch{$context.Controls.Status.Text=$_.Exception.Message}
+    }
+    $renderCalendar={
+        $c.Days.Children.Clear();$vi=[Globalization.CultureInfo]::GetCultureInfo('vi-VN')
+        $c.MonthLabel.Text=$state.Month.ToString("'Tháng' MM · yyyy",$vi)
+        $offset=(([int]$state.Month.DayOfWeek+6)%7);$first=$state.Month.AddDays(-$offset)
+        for($i=0;$i -lt 42;$i++){
+            $day=$first.AddDays($i);$button=New-Object Windows.Controls.Button
+            $button.Content=[string]$day.Day;$button.Tag=$day;$button.MinWidth=44;$button.MinHeight=44;$button.Height=46;$button.Margin=[Windows.Thickness]::new(2)
+            $button.Padding=[Windows.Thickness]::new(0);$button.FontSize=14
+            $button.Style=$dlg.FindResource($(if($day.Date -eq $state.SelectedDay.Date){'BtnPrimary'}else{'BtnSecondary'}))
+            $button.IsEnabled=($day.Date -ge [DateTime]::Today)
+            if($day.Month -ne $state.Month.Month){$button.Opacity=0.55}
+            [Windows.Automation.AutomationProperties]::SetName($button,$day.ToString('dddd, dd/MM/yyyy',$vi))
+            $button.CommandParameter=@{State=$state;Calendar=$calendar}
+            $button.Add_Click($dayClicked)
+            [void]$c.Days.Children.Add($button)
+        }
+        $c.ChosenDate.Text='Đã chọn: '+$state.SelectedDay.ToString('dddd, dd/MM/yyyy',$vi)
+    }.GetNewClosure()
+    # The callback captures a shared object so rebuilding the calendar does not lose its renderer.
+    $calendar.Render=$renderCalendar
+    $c.NextMonth.Add_Click({$state.Month=$state.Month.AddMonths(1);& $calendar.Render}.GetNewClosure())
+    $c.PrevMonth.Add_Click({$state.Month=$state.Month.AddMonths(-1);& $calendar.Render}.GetNewClosure())
+    $c.Today.Add_Click({$state.SelectedDay=[DateTime]::Today;$state.Month=$state.SelectedDay.AddDays(1-$state.SelectedDay.Day);& $calendar.Render}.GetNewClosure())
+    $c.Tomorrow.Add_Click({$state.SelectedDay=[DateTime]::Today.AddDays(1);$state.Month=$state.SelectedDay.AddDays(1-$state.SelectedDay.Day);& $calendar.Render}.GetNewClosure())
+    foreach($time in @('08:00','12:00','19:00','21:00')){$b=New-Object Windows.Controls.Button;$b.Content=$time;$b.Tag=$time;$b.Margin=[Windows.Thickness]::new(0,0,6,6);$b.Add_Click({param($sender,$eventArgs) $parts=([string]$sender.Tag).Split(':');$c.Hour.Text=$parts[0];$c.Minute.Text=$parts[1]}.GetNewClosure());[void]$c.TimePresets.Children.Add($b)}
+    $c.Schedule.Add_Checked({$c.WhenPanel.Visibility='Visible';$c.Private.IsChecked=$false;$c.Private.IsEnabled=$false;$c.Submit.Content='Hẹn giờ và chạy nền';$dlg.UpdateLayout();$c.WhenPanel.BringIntoView()}.GetNewClosure())
+    $c.Schedule.Add_Unchecked({$c.WhenPanel.Visibility='Collapsed';$c.Private.IsEnabled=$true;$c.Submit.Content='Đăng và chạy nền'}.GetNewClosure())
+    $c.ConfirmRepost.Add_Checked($updateSelection);$c.ConfirmRepost.Add_Unchecked($updateSelection)
+    $c.Dashboard.Add_Click({Start-Process ((Get-TikTokEndpoint)+'/accounts')}.GetNewClosure())
+    $c.Close.Add_Click({$dlg.Close()}.GetNewClosure())
+    $refresh={if($state.Task -or $state.Submitted){return};try{$state.Ready=$false;$c.Submit.IsEnabled=$false;$c.Refresh.IsEnabled=$false;$c.Status.Text='Đang kiểm tra lịch sử và tài khoản…';$state.Task=Start-TikTokTask 'prepare' (Get-TikTokHistoryPayload $outDir $source)}catch{$c.Status.Text=$_.Exception.Message;$c.Refresh.IsEnabled=$true}}.GetNewClosure()
+    $c.Refresh.Add_Click($refresh)
+    $c.Submit.Add_Click({
+        if($state.Submitted){return}
+        try{
+            & $updateSelection
+            if(-not $c.Submit.IsEnabled){return}
+            $caption=$c.Caption.Text.Trim();if(-not $caption){throw 'Vui lòng nhập caption.'}
+            $scheduled=''
+            if($c.Schedule.IsChecked){
+                if($c.Hour.Text -notmatch '^\d{1,2}$' -or [int]$c.Hour.Text -gt 23 -or $c.Minute.Text -notmatch '^\d{1,2}$' -or [int]$c.Minute.Text -gt 59){throw 'Giờ cần trong khoảng 00–23, phút trong khoảng 00–59.'}
+                $when=$state.SelectedDay.Date.AddHours([int]$c.Hour.Text).AddMinutes([int]$c.Minute.Text)
+                if($when -le [DateTime]::Now){throw 'Vui lòng chọn thời gian trong tương lai.'}
+                $scheduled=$when.ToUniversalTime().ToString('o')
+            }
+            $options=@{allow_comment=[int][bool]$c.Comments.IsChecked;allow_duet=[int][bool]$c.Duet.IsChecked;allow_stitch=[int][bool]$c.Stitch.IsChecked;visibility_type=[int][bool]$c.Private.IsChecked;ai_label=[int][bool]$c.AI.IsChecked}
+            $payload=@{username=$state.SelectedAccount;title=$caption;scheduled_for=$scheduled;options_json=($options|ConvertTo-Json -Compress);reel_id=$videoId}
+            $now=[DateTime]::UtcNow.ToString('o')
+            $record=[pscustomobject]@{RequestId=[Guid]::NewGuid().ToString('N');SourcePath=$source;OutDir=$outDir;VideoId=$videoId;Username=$state.SelectedAccount;ScheduledFor=$scheduled;Status='submitted';CreatedAt=$now;LaunchedAt=$now;Message=''}
+            # G2: marked before launching; reset only when Start-TikTokBackgroundJob reports that nothing was started.
+            $state.Submitted=$true;$c.Submit.IsEnabled=$false
+            try{Start-TikTokBackgroundJob $record $payload}catch{$state.Submitted=$false;throw}
+        }catch{
+            $message=$_.Exception.Message
+            & $updateSelection
+            $c.Status.Text=$message
+            return
+        }
+        # The job now runs in its own process. Nothing below may re-enable Submit; failures here are logged, not fatal.
+        $warning=''
+        try{[void](Add-TikTokLocalReceiptHistory $outDir $videoId @($state.Entries) $record)}catch{$warning=$_.Exception.Message;Write-FileLog ('WARN TikTok local history after submit: '+$warning)}
+        try{Update-Gallery}catch{if(-not $warning){$warning=$_.Exception.Message};Write-FileLog ('WARN TikTok gallery refresh after submit: '+$_.Exception.Message)}
+        try{$dlg.Close()}catch{Write-FileLog ('WARN TikTok dialog close after submit: '+$_.Exception.Message)}
+        if($warning){Show-Toast 'Đã giao video cho bộ đăng nền, nhưng Kho chưa ghi được trạng thái mới. Kho sẽ tự cập nhật khi bộ đăng nền báo kết quả.' -Kind warning}
+        else{Show-Toast 'Đã giao video cho bộ đăng nền. Kết quả đăng sẽ tự cập nhật trong Kho.' -Kind info}
+    }.GetNewClosure())
+    $timer=New-Object Windows.Threading.DispatcherTimer;$timer.Interval=[TimeSpan]::FromMilliseconds(250)
+    $timer.Add_Tick({
+        if(-not $state.Task -or -not $state.Task.Async.IsCompleted){return}
+        $task=$state.Task;$state.Task=$null
+        try{
+            $result=Complete-TikTokTask $task
+            $state.Entries=@($result.history | Where-Object {$null -ne $_})
+            $state.FileSha=[string]$result.file_sha
+            if($result.changed){Update-Gallery}
+            $c.History.Children.Clear()
+            if(-not $state.Entries.Count){$text=New-Object Windows.Controls.TextBlock;$text.Text='Chưa có lịch sử đăng trong hệ thống.';[void]$c.History.Children.Add($text)}
+            $postsDir=Join-Path $outDir '.cache\tiktok-posts'
+            foreach($entry in @($state.Entries | Select-Object -First 8)){
+                $text=New-Object Windows.Controls.TextBlock;$text.TextWrapping='Wrap';$text.Margin=[Windows.Thickness]::new(0,4,0,2)
+                $text.Text=$(if($entry.username){'@'+$entry.username}else{'Chưa rõ tài khoản'})+' · '+(Get-TikTokEntryLabel $entry $state.FileSha)
+                if($entry.status -ne 'transfer_failed' -or $entry.time_source -ne 'local'){[void]$c.History.Children.Add($text);continue}
+                # "Chưa chuyển được": the backend has no record of this request and its worker is gone (R2).
+                $row=New-Object Windows.Controls.WrapPanel;[void]$row.Children.Add($text)
+                $actions=@()
+                if([IO.File]::Exists((Join-Path $postsDir ($entry.request_id+'.job')))){$actions+=,@('Thử chuyển lại','retry')}
+                $actions+=,@('Bỏ biên nhận','archive')
+                foreach($spec in $actions){
+                    $button=New-Object Windows.Controls.Button;$button.Content=$spec[0];$button.Margin=[Windows.Thickness]::new(0,4,8,4)
+                    $button.Tag=@{Action=$spec[1];RequestId=[string]$entry.request_id;OutDir=$outDir;Refresh=$refresh;Controls=$c}
+                    $button.Add_Click($receiptAction)
+                    [void]$row.Children.Add($button)
+                }
+                [void]$c.History.Children.Add($row)
+            }
+            $c.Accounts.Children.Clear();$group='TikTokAccount'+[Guid]::NewGuid().ToString('N')
+            $accounts=@($result.accounts | Where-Object has_valid_session)
+            foreach($account in $accounts){
+                $button=New-Object Windows.Controls.RadioButton;$button.Style=$dlg.FindResource('SegButton');$button.GroupName=$group;$button.Content='@'+$account.username;$button.Tag=@{State=$state;Controls=$c;Username=[string]$account.username;Update=$updateSelection};$button.MinHeight=48;$button.Padding=[Windows.Thickness]::new(16,0,16,0);$button.Margin=[Windows.Thickness]::new(0,0,8,8)
+                $button.Add_Checked($accountChecked)
+                [void]$c.Accounts.Children.Add($button)
+            }
+            $state.Ready=$true
+            if($c.Accounts.Children.Count){$c.Accounts.Children[0].IsChecked=$true}else{$c.Status.Text='Chưa có tài khoản sẵn sàng. Mở Tài khoản / Lịch đăng để đăng nhập.'}
+            & $updateSelection
+        }catch{$c.Status.Text=$_.Exception.Message;$state.Ready=$false}
+        $c.Refresh.IsEnabled=$true
+    }.GetNewClosure())
+    $dlg.Add_Closed({$timer.Stop();if($state.Task){Stop-TikTokTask $state.Task;$state.Task=$null}}.GetNewClosure())
+    & $calendar.Render
+    & $refresh
+    $timer.Start()
+    [void]$dlg.ShowDialog()
+}
+
+function Set-TikTokPostingUi {
+    # D2: configured -> the preview button posts; copying stays in the More menu and on Ctrl+C.
+    if (-not (Test-TikTokEnabled)) { return }
+    $ui.TxtCopyLabel.Text = 'Đăng video'
+    $ui.TxtCopyIcon.Text = [string][char]0xE898
+    $ui.BtnCopyReup.ToolTip = 'Chọn tài khoản, nhập caption và đăng hoặc hẹn giờ lên TikTok'
+    [Windows.Automation.AutomationProperties]::SetName($ui.BtnCopyReup, 'Đăng video lên TikTok')
+    if ($ui.MenuMore) {
+        $copy = New-Object Windows.Controls.MenuItem
+        $copy.Header = 'Sao chép để đăng'; $copy.Tag = [string][char]0xE8C8; $copy.InputGestureText = 'Ctrl+C'
+        $copy.ToolTip = 'Sao chép file vào clipboard để dán (Ctrl+V) khi đăng (Ctrl+C)'
+        [Windows.Automation.AutomationProperties]::SetName($copy, 'Sao chép để đăng')
+        $copy.Add_Click({ if ($script:lastOut) { Copy-ToClipboard $script:lastOut } })
+        $ui.MenuMore.Items.Insert(0, $copy)
+    }
+}
+
+$script:tikTok = Get-TikTokIntegration
+Set-TikTokPostingUi
+
+$win.Add_Closed({
+    if ($script:tikTokSyncTimer) { $script:tikTokSyncTimer.Stop() }
+    if ($script:tikTokSync -and $script:tikTokSync.Task) { Stop-TikTokTask $script:tikTokSync.Task; $script:tikTokSync.Task = $null }
+})
 
 function Get-QueueStepState {
     # Trang thai buoc $N (1-7) cua mot dong: done | running | failed | pending (dung chung cho chuoi hat va the chi tiet).
@@ -2225,6 +3586,7 @@ function Invoke-GalleryDelete {
         return $false
     }
     if (-not (Test-Path -LiteralPath $FilePath)) { Show-Toast 'Không tìm thấy video trong kho.' -Kind warning; return $false }
+    if (Test-TikTokTransferActive $FilePath) { Show-Toast 'Video đang được chuyển sang bộ đăng nền. Đợi chuyển xong rồi hãy xóa.' -Kind warning; return $false }
     if (-not (Confirm-GalleryDelete $FilePath)) { return $false }
 
     $savedSource = $Controls.Player.Source
@@ -2694,12 +4056,31 @@ function New-GalleryItem {
     $postedText = $(if ($isPosted) { 'Đã đăng TikTok' + $(if ($postedDate) { " · $postedDate" } else { '' }) } else { 'Chưa đăng TikTok' })
     # Nhan tren anh thu nho: ngan (dd/MM) de khong bi cat; ban day du (kem gio) o tooltip.
     $postedShort = $(if ($isPosted) { 'Đã đăng' + $(if ($postedDate) { ' · ' + $(if ($postedDate -match '^\s*(\d{1,2}/\d{1,2})') { $Matches[1] } else { ($postedDate.Trim() -split '\s+')[0] }) } else { '' }) } else { 'Chưa đăng' })
+    $entry = if ($Metadata -and $Metadata.PSObject.Properties[$id]) { $Metadata.$id } else { $null }
+    $manual = Get-ReupManualState $entry
+    if ($entry -and $entry.Source -eq 'autotok-history') {
+        # Synced TikTok history (D3/D5): the badge is posted when marked manually OR a post succeeded.
+        $history = @($entry.History | Where-Object { $null -ne $_ })
+        $fileSha = [string]$entry.FileSha256
+        $lines = @(foreach ($h in $history) { $(if ($h.username) { '@' + $h.username } else { 'Chưa rõ tài khoản' }) + ' · ' + (Get-TikTokEntryLabel $h $fileSha) })
+        if ($manual.Posted) { $lines = @('Đã đánh dấu đăng thủ công' + $(if ($manual.Date) { ' · ' + $manual.Date } else { '' })) + $lines }
+        if ($lines.Count) { $postedText = $lines -join "`n" }
+        if ($isPosted) {
+            $success = @($history | Where-Object { $_.status -eq 'succeeded' })
+            $current = @($success | Where-Object { -not (Test-TikTokPriorVersion $_ $fileSha) })
+            $postedShort = $(if (-not $manual.Posted -and $success.Count -and -not $current.Count) { 'Đã đăng (bản trước)' } else { 'Đã đăng' }) + $(if ($postedDate) { "`n$postedDate" } else { '' })
+        } elseif ($history.Count) { $postedShort = Get-TikTokEntryShort $history[0] }
+    } elseif ($isPosted -and (Test-TikTokEnabled)) {
+        $postedShort = 'Đã đăng' + $(if ($postedDate) { "`n$postedDate" } else { '' })
+        $postedText += ' (đánh dấu thủ công)'
+    }
     return [pscustomobject]@{
         Path = [string]$File.FullName; Id = $id; Title = "Reel #$id"; Date = $date; Stamp = [string]$File.Stamp
-        MetaText = $metaText; DetailText = $detail; Posted = [bool]$isPosted; PostedText = $postedText; PostedShort = $postedShort
+        MetaText = $metaText; DetailText = $detail; Posted = [bool]$isPosted; ManualPosted = [bool]$manual.Posted; PostedText = $postedText; PostedShort = $postedShort
+        PostedMultiline = $postedShort.Contains("`n")
         Thumb = $thumb; ThumbPath = $thumbPath; File = $File
         # Chu ky hien thi: giong nhau -> giu nguyen doi tuong cu (khong tao lai the, giu cuon/chon).
-        Signature = ([string]$File.Stamp + '|' + $metaText + '|' + $detail + '|' + $postedText + '|' + $thumbPath)
+        Signature = ([string]$File.Stamp + '|' + $metaText + '|' + $detail + '|' + $postedText + '|' + $postedShort + '|' + [bool]$manual.Posted + '|' + $thumbPath)
     }
 }
 
@@ -2754,10 +4135,13 @@ function Update-Gallery {
     try { $script:galleryMeta = Get-ReupMetadata }
     catch {
         $script:galleryState = 'error'
-        $ui.TxtGalleryCount.Text = 'Không đọc được lịch sử đã đăng'
+        $script:galleryCountBase = 'Không đọc được lịch sử đã đăng'
+        $ui.TxtGalleryCount.Text = $script:galleryCountBase
         Set-GalleryState error 'Không đọc được lịch sử đã đăng. Dữ liệu được giữ nguyên; kiểm tra file reup-status.json rồi bấm Thử lại.'
         Add-Log $_.Exception.Message 'Danger'
-        Show-Toast 'Không đọc được lịch sử đã đăng. Xem Cài đặt › Nhật ký.' -Kind error
+        # A transient sharing collision (IO read error, kept after retries) is only logged; corrupt data still toasts.
+        if ($_.Exception.Message -like 'Không đọc được lịch sử TikTok*') { Write-FileLog "WARN Get-ReupMetadata (va cham doc/ghi): $($_.Exception.Message)" }
+        else { Show-Toast 'Không đọc được lịch sử đã đăng. Xem Cài đặt › Nhật ký.' -Kind error }
         return
     }
     $script:galleryState = 'loading'
@@ -2932,7 +4316,8 @@ function Apply-GalleryFilter {
     }
     Sync-GalleryRows -Wanted @($wanted)
     $viewCount = $script:galleryRows.Count
-    $ui.TxtGalleryCount.Text = if ($all -eq 0) { '0 video' } elseif ($viewCount -eq $all) { "$all video" } else { "Hiển thị $viewCount / $all video" }
+    $script:galleryCountBase = if ($all -eq 0) { '0 video' } elseif ($viewCount -eq $all) { "$all video" } else { "Hiển thị $viewCount / $all video" }
+    Update-GalleryCountText
     if ($script:galleryState -eq 'loading' -and $all -eq 0) { Set-GalleryState loading }
     elseif ($all -eq 0) { Set-GalleryState empty }
     elseif ($viewCount -eq 0) { Set-GalleryState nomatch }
@@ -2940,8 +4325,10 @@ function Apply-GalleryFilter {
 }
 
 function Set-GalleryPosted {
+    # Manual posted mark (D3): flips only the manual flag; a synced TikTok success keeps the badge on.
     param($Item)
-    $newState = -not [bool]$Item.Posted
+    $manualNow = if ($Item.PSObject.Properties['ManualPosted']) { [bool]$Item.ManualPosted } else { [bool]$Item.Posted }
+    $newState = -not $manualNow
     try { Set-ReupMetadata -VideoId $Item.Id -Posted $newState }
     catch {
         Add-Log $_.Exception.Message 'Danger'
@@ -2950,10 +4337,13 @@ function Set-GalleryPosted {
     }
     try { $script:galleryMeta = Get-ReupMetadata } catch { Write-FileLog "WARN Get-ReupMetadata sau khi đánh dấu: $($_.Exception.Message)" }
     $i = $script:galleryIndexByPath[[string]$Item.Path]
+    $updated = $null
     if ($null -ne $i -and $i -lt @($script:galleryAll).Count -and $script:galleryAll[$i].Path -eq $Item.Path) {
-        $script:galleryAll[$i] = New-GalleryItem -File $Item.File -Metadata $script:galleryMeta -Probe $script:probeCache[$Item.Path]
+        $updated = New-GalleryItem -File $Item.File -Metadata $script:galleryMeta -Probe $script:probeCache[$Item.Path]
+        $script:galleryAll[$i] = $updated
     }
     Apply-GalleryFilter
+    if (-not $newState -and $updated -and $updated.Posted) { Show-Toast "Đã bỏ đánh dấu thủ công. Reel #$($Item.Id) vẫn có lượt đăng TikTok thành công từ bộ đăng nền." -Kind success; return }
     Show-Toast $(if ($newState) { "Đã đánh dấu Reel #$($Item.Id) là đã đăng TikTok." } else { "Đã bỏ đánh dấu đăng TikTok cho Reel #$($Item.Id)." }) -Kind success
 }
 
@@ -2974,42 +4364,59 @@ function Invoke-GalleryRowAction {
             Start-RecordingAgain
         }
         'delete' { [void](Invoke-GalleryDelete -FilePath $item.Path -Controls $ui) }
-        'tiktok' { Set-GalleryPosted $item }
+        'tiktok' { if (Test-TikTokEnabled) { Show-TikTokPublishDialog -FilePath $item.Path } else { Set-GalleryPosted $item } }
         'more'   { Show-GalleryCardMenu -Button $btn -Item $item }
     }
 }
 
 function Show-GalleryCardMenu {
-    # Menu "..." tren the Kho: gom cac hanh dong (the chi con anh + ten + trang thai TikTok).
-    param($Button, $Item)
-    $cm = New-Object Windows.Controls.ContextMenu
-    $add = {
-        param([string]$Header, [int]$Glyph, [scriptblock]$Action)
-        $mi = New-Object Windows.Controls.MenuItem
-        $mi.Header = $Header
-        $mi.Tag = [string][char]$Glyph
-        [Windows.Automation.AutomationProperties]::SetName($mi, $Header)
-        $mi.Add_Click($Action.GetNewClosure())
-        [void]$cm.Items.Add($mi)
+    # Menu "..." tren the Kho. TikTok items only when the integration is configured (D1).
+    param($Button,$Item)
+    if(-not $Item -or [string]::IsNullOrWhiteSpace([string]$Item.Path)){Show-Toast 'Không xác định được video. Chọn lại thẻ trong Kho.' -Kind warning;return}
+    $menu=New-Object Windows.Controls.ContextMenu
+    $specs=@()
+    if(Test-TikTokEnabled){
+        $specs+=,@('Đăng video lên TikTok',0xE898,'post')
+        $specs+=,@('Lịch sử đăng video',0xE81C,'history')
+        $specs+=,@($(if($Item.ManualPosted){'Bỏ đánh dấu đã đăng'}else{'Đánh dấu đã đăng'}),0xE73E,'mark')
     }
-    $path = [string]$Item.Path
-    & $add 'Sao chép để đăng' 0xE8C8 { Copy-ToClipboard $path }.GetNewClosure()
-    & $add 'Mở thư mục' 0xE838 { Open-GalleryFile $path }.GetNewClosure()
-    & $add 'Xem lớn' 0xE740 {
-        if (Invoke-GalleryView -FilePath $path -Controls $ui -NoAutoPlay) { Set-PreviewBig $true }
-    }.GetNewClosure()
-    & $add 'Ghi âm lại' 0xE720 {
-        if ((Test-GalleryActionsBusy) -or $script:stopping) { Show-Toast 'Hãy dừng hoặc đợi hàng đợi hoàn tất trước khi ghi âm lại.' -Kind warning; return }
-        $script:lastOut = $path
-        Start-RecordingAgain
-    }.GetNewClosure()
-    [void]$cm.Items.Add((New-Object Windows.Controls.Separator))
-    & $add 'Xóa video' 0xE74D { [void](Invoke-GalleryDelete -FilePath $path -Controls $ui) }.GetNewClosure()
-    $Button.ContextMenu = $cm
-    $cm.PlacementTarget = $Button
-    $cm.Placement = [Windows.Controls.Primitives.PlacementMode]::Bottom
-    $cm.IsOpen = $true
+    $specs+=,@('Sao chép để đăng',0xE8C8,'copy')
+    $specs+=,@('Mở thư mục',0xE838,'folder')
+    $specs+=,@('Xem lớn',0xE740,'view')
+    $specs+=,@('Ghi âm lại',0xE720,'redo')
+    $specs+=,@('Xóa video',0xE74D,'delete')
+    foreach($spec in $specs){
+        if($spec[2] -eq 'delete'){[void]$menu.Items.Add((New-Object Windows.Controls.Separator))}
+        $entry=New-Object Windows.Controls.MenuItem
+        $entry.Header=[string]$spec[0];$entry.Tag=[string][char][int]$spec[1]
+        $entry.CommandParameter=@{Path=[string]$Item.Path;Action=[string]$spec[2];Item=$Item}
+        [Windows.Automation.AutomationProperties]::SetName($entry,[string]$spec[0])
+        # Read all per-video context from the sender. No nested dynamic-module closures.
+        $entry.Add_Click({
+            param($sender,$eventArgs)
+            $context=$sender.CommandParameter
+            $filePath=[string]$context.Path
+            switch([string]$context.Action){
+                'post' {Show-TikTokPublishDialog -FilePath $filePath}
+                'history' {Show-TikTokPublishDialog -FilePath $filePath}
+                'mark' {Set-GalleryPosted $context.Item}
+                'copy' {Copy-ToClipboard $filePath}
+                'folder' {Open-GalleryFile $filePath}
+                'view' {if(Invoke-GalleryView -FilePath $filePath -Controls $ui -NoAutoPlay){Set-PreviewBig $true}}
+                'redo' {
+                    if((Test-GalleryActionsBusy) -or $script:stopping){Show-Toast 'Hãy dừng hoặc đợi hàng đợi hoàn tất trước khi ghi âm lại.' -Kind warning;return}
+                    $script:lastOut=$filePath
+                    Start-RecordingAgain
+                }
+                'delete' {[void](Invoke-GalleryDelete -FilePath $filePath -Controls $ui)}
+            }
+            $eventArgs.Handled=$true
+        })
+        [void]$menu.Items.Add($entry)
+    }
+    $Button.ContextMenu=$menu;$menu.PlacementTarget=$Button;$menu.Placement=[Windows.Controls.Primitives.PlacementMode]::Bottom;$menu.IsOpen=$true
 }
+
 
 function Invoke-QueueRowAction {
     param($EventArgs)
@@ -4241,6 +5648,7 @@ function Get-CacheSummary {
         $r.CacheExists = $true
         $sources = 0
         foreach ($f in [System.IO.DirectoryInfo]::new($r.CacheDir).GetFiles('*', [System.IO.SearchOption]::AllDirectories)) {
+            if ($f.FullName.StartsWith((Join-Path $r.CacheDir 'tiktok-posts') + '\', [StringComparison]::OrdinalIgnoreCase)) { continue }
             $r.CacheFiles++; $r.CacheBytes += $f.Length
             if ($f.Name -match '-1-video-goc\.mp4$' -and $f.DirectoryName -eq $r.CacheDir) { $sources++ }
         }
@@ -4261,7 +5669,7 @@ function Update-CacheInfo {
         $legacyText = if ($s.LegacyFiles.Count) { "File trung gian cũ ở thư mục xuất: $($s.LegacyFiles.Count) file · $(Format-Bytes $s.LegacyBytes)" } else { 'Không có file trung gian cũ ở thư mục xuất.' }
         $ui.TxtCacheInfo.Text = $cacheText + "`n" + $legacyText
         if ($ui.BtnCleanLegacy) { $ui.BtnCleanLegacy.IsEnabled = [bool]($s.LegacyFiles.Count -or $s.LegacyThumbs) }
-        if ($ui.BtnClearCache) { $ui.BtnClearCache.IsEnabled = [bool]$s.CacheExists }
+        if ($ui.BtnClearCache) { $ui.BtnClearCache.IsEnabled = ($s.CacheFiles -gt 0) }
     } catch {
         $ui.TxtCacheInfo.Text = 'Không đọc được dung lượng .cache: ' + $_.Exception.Message
         Write-FileLog "WARN Update-CacheInfo: $($_.Exception.Message)"
@@ -4358,17 +5766,21 @@ function Invoke-ClearReeditCache {
         Show-Toast 'Đường dẫn .cache không hợp lệ; không xóa.' -Kind error
         return
     }
-    $ok = Show-ConfirmDialog -Title 'Dọn cache sửa lại?' -Danger -ConfirmText 'Xóa .cache' -Message (
-        "Xóa vĩnh viễn thư mục:`r`n$cacheDir`r`n`r`n$($s.CacheFiles) file · $(Format-Bytes $s.CacheBytes)" +
+    $ok = Show-ConfirmDialog -Title 'Dọn cache sửa lại?' -Danger -ConfirmText 'Dọn cache' -Message (
+        "Xóa vĩnh viễn cache sửa lại trong:`r`n$cacheDir`r`n`r`n$($s.CacheFiles) file · $(Format-Bytes $s.CacheBytes)" +
         " (video gốc -1, âm thanh -2 và ảnh thu nhỏ).`r`n`r`nSau khi xóa, $($s.ReeditCount) video cũ sẽ KHÔNG sửa lại logo/GIF được nữa; " +
-        "muốn sửa phải tải và ghi âm lại. Video hoàn chỉnh (-3) vẫn giữ nguyên.")
+        "muốn sửa phải tải và ghi âm lại. Video hoàn chỉnh (-3) và biên nhận đăng TikTok được giữ nguyên.")
     if (-not $ok) { return }
     Release-PlayerFromCache $cacheDir
     try {
-        Remove-Item -LiteralPath $cacheDir -Recurse -Force -ErrorAction Stop
-        if ([System.IO.Directory]::Exists($cacheDir)) { throw 'Một số file vẫn còn hoặc đang bị khóa.' }
+        # Posting receipts are durable history, not disposable media cache.
+        foreach ($entry in @(Get-ChildItem -LiteralPath $cacheDir -Force | Where-Object Name -NE 'tiktok-posts')) {
+            Remove-Item -LiteralPath $entry.FullName -Recurse -Force -ErrorAction Stop
+        }
+        if (-not @(Get-ChildItem -LiteralPath $cacheDir -Force).Count) { Remove-Item -LiteralPath $cacheDir -Force -ErrorAction Stop }
+
         $script:probeCache = @{}; $script:thumbCache = @{}
-        Add-Log "Đã xóa .cache ($($s.CacheFiles) file · $(Format-Bytes $s.CacheBytes)): $cacheDir" 'Success'
+        Add-Log "Đã dọn cache sửa lại ($($s.CacheFiles) file · $(Format-Bytes $s.CacheBytes)): $cacheDir" 'Success'
         Show-Toast "Đã dọn .cache · giải phóng $(Format-Bytes $s.CacheBytes)." -Kind success
     } catch {
         Add-Log "Không xóa hết .cache '$cacheDir': $($_.Exception.Message)" 'Danger'
@@ -5840,7 +7252,7 @@ $win.Add_PreviewKeyDown({
     # Ctrl + C: Copy file video de re-up
     elseif ($e.Key -eq [System.Windows.Input.Key]::C -and ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control)) {
         if ($ui.BtnCopyReup -and $ui.BtnCopyReup.IsEnabled -and $ui.PanelRev -and $ui.PanelRev.Visibility -eq 'Visible') {
-            $ui.BtnCopyReup.RaiseEvent((New-Object Windows.RoutedEventArgs ([System.Windows.Controls.Button]::ClickEvent)))
+            if ($script:lastOut) { Copy-ToClipboard $script:lastOut }
             $e.Handled = $true
         }
     }
@@ -6032,7 +7444,8 @@ $ui.BtnTrackA.Add_Click({ Switch-AudioTrack 'A' })
 $ui.BtnTrackB.Add_Click({ Switch-AudioTrack 'B' })
 
 $ui.BtnCopyReup.Add_Click({
-    if ($script:lastOut) { Copy-ToClipboard $script:lastOut }
+    if (-not $script:lastOut) { return }
+    if (Test-TikTokEnabled) { Show-TikTokPublishDialog -FilePath $script:lastOut } else { Copy-ToClipboard $script:lastOut }
 })
 
 $ui.BtnOpenExt.Add_Click({
@@ -6123,6 +7536,7 @@ $ui.BtnDeleteCurrent.Add_Click({
     if (Test-GalleryActionsBusy) { Show-Toast 'Hãy dừng hoặc đợi hàng đợi hoàn tất trước khi xóa video.' -Kind warning; return }
     if (-not $script:lastOut) { return }
     $delPath = $script:lastOut
+    if (Test-TikTokTransferActive $delPath) { Show-Toast 'Video đang được chuyển sang bộ đăng nền. Đợi chuyển xong rồi hãy xóa.' -Kind warning; return }
     if (Confirm-GalleryDelete -FilePath $delPath) {
         $savedSource = $ui.Player.Source
         $savedPosition = [TimeSpan]::Zero
@@ -6596,6 +8010,7 @@ $engine" -Title 'Thiếu file' | Out-Null
     # G-E2E: khong tu chon/nap video nao luc mo app (truoc day video moi nhat bi nap ngam va chay toi cuoi).
     # Nguoi dung chon the trong Kho -> nap o 0:00, khong phat.
     Clear-Player
+    Start-TikTokStatusSync
 
     $icoFile = Join-Path $root 'Kid-FB.Y.ico'
     if (-not (Test-Path -LiteralPath $icoFile)) { $icoFile = Join-Path $scriptDir 'Kid-FB.Y.ico' }
