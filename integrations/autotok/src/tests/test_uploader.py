@@ -8,6 +8,7 @@ import responses
 from responses import matchers
 
 from autotok import Account, Client, upload_video
+from autotok import browser_publish
 from autotok import uploader as uploader_mod
 from autotok.errors import (
     NotLoggedInError,
@@ -54,6 +55,34 @@ def publish_call(rsps):
     calls = [c for c in rsps.calls if c.request.url.startswith(f"{TT}/tiktok/web/project/post/v1/")]
     assert len(calls) == 1
     return calls[0]
+
+
+class FakeBrowser:
+    """Stands in for the headless TikTok Studio page: forwards the body with plain
+    requests (so ``responses`` sees it) unless a canned result/exception is set."""
+
+    def __init__(self):
+        self.calls = []
+        self.result = None
+        self.exc = None
+
+    def __call__(self, body, tz_name, *, cookies, user_agent, proxy, timeout):
+        self.calls.append({"body": body, "tz": tz_name, "cookies": cookies, "ua": user_agent,
+                           "proxy": proxy, "timeout": timeout})
+        if self.exc is not None:
+            raise self.exc
+        if self.result is not None:
+            return self.result
+        r = requests.post(browser_publish.post_url(tz_name), data=body,
+                          headers={"content-type": "application/json"})
+        return {"status": r.status_code, "text": r.text, "error": None}
+
+
+@pytest.fixture(autouse=True)
+def browser(monkeypatch):
+    fake = FakeBrowser()
+    monkeypatch.setattr(uploader_mod, "publish_in_browser", fake)
+    return fake
 
 
 @pytest.fixture
@@ -361,3 +390,104 @@ def test_scheduled_datetime_is_kept_exactly(client, video_file):
     when = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(hours=2)
     result = client.upload(video_file, "later", schedule=when)
     assert result.scheduled_for == when
+
+
+# -- scheduled posts go through the browser page --------------------------------
+
+STUDIO_OK = ('{"status_code":0,"status_msg":"","project_id":"7700174768095415000",'
+             '"single_post_resp_list":[{"batch_index":0,"item_id":"7700174768095415572","status_code":0}]}')
+
+
+@responses.activate
+def test_scheduled_post_uses_browser_with_unchanged_payload_and_tz(client, video_file, browser, monkeypatch):
+    monkeypatch.setenv("TIKTOK_TZ_NAME", "Asia/Bangkok")
+    mock_tiktok(responses)
+    browser.result = {"status": 200, "text": STUDIO_OK, "error": None}
+    result = client.upload(video_file, "later", schedule=3600)
+    assert len(browser.calls) == 1
+    call = browser.calls[0]
+    body = json.loads(call["body"])
+    assert body["feature_common_info_list"][0]["schedule_time"] == int(result.scheduled_for.timestamp())
+    assert body["single_post_req_list"][0]["video_id"] == "v123"
+    assert call["tz"] == "Asia/Bangkok"
+    assert call["ua"] == "UA/1.0"
+    assert call["proxy"].url == "http://bob:secret@proxy.example:8000"
+    assert {c["name"] for c in call["cookies"]} >= {"sessionid", "tt-target-idc"}
+    assert result.post_id == "7700174768095415572"
+    # The requests path never sent the publish call.
+    assert not [c for c in responses.calls if "/project/post/" in c.request.url]
+
+
+@responses.activate
+def test_immediate_post_does_not_use_browser(client, video_file, browser):
+    mock_tiktok(responses)
+    client.upload(video_file, "now")
+    assert browser.calls == []
+    publish_call(responses)
+
+
+@responses.activate
+def test_scheduled_post_rejected_in_browser_is_publish_error(client, video_file, browser):
+    mock_tiktok(responses)
+    browser.result = {"status": 200, "text": '{"status_code":5,"status_msg":"Invalid parameters"}', "error": None}
+    with pytest.raises(PublishError) as err:
+        client.upload(video_file, "x", schedule=3600)
+    assert err.value.status_code == 5 and err.value.status_msg == "Invalid parameters"
+    assert err.value.step == "publish"
+
+
+@pytest.mark.parametrize("result", [
+    {"status": 0, "text": "", "error": "timeout"},
+    {"status": 0, "text": "", "error": "network error"},
+    {"status": 502, "text": "bad gateway", "error": None},
+    {"status": 200, "text": "<html>", "error": None},
+    None,
+])
+@responses.activate
+def test_scheduled_post_browser_failure_after_send_is_uncertain(client, video_file, browser, result):
+    mock_tiktok(responses)
+    if result is None:
+        browser.exc = RuntimeError("Target page, context or browser has been closed")
+    else:
+        browser.result = result
+    with pytest.raises(PublishUncertainError) as err:
+        client.upload(video_file, "x", schedule=3600)
+    assert err.value.retryable is False
+    assert len(browser.calls) == 1
+    assert not [c for c in responses.calls if "/project/post/" in c.request.url]
+
+
+@responses.activate
+def test_browser_start_failure_is_publish_error_without_python_fallback(client, video_file, browser):
+    mock_tiktok(responses)
+    browser.exc = browser_publish.BrowserStartError("chrome missing")
+    with pytest.raises(PublishError) as err:
+        client.upload(video_file, "x", schedule=3600)
+    assert not isinstance(err.value, PublishUncertainError)
+    assert "không mở được trình duyệt để hẹn giờ" in str(err.value)
+    assert not [c for c in responses.calls if "/project/post/" in c.request.url]
+
+
+def test_post_url_has_tz_name_and_no_secrets():
+    url = browser_publish.post_url("Asia/Ho_Chi_Minh")
+    assert url == ("https://www.tiktok.com/tiktok/web/project/post/v1/?app_name=tiktok_web&channel=tiktok_web"
+                   "&device_platform=web&tz_name=Asia%2FHo_Chi_Minh&aid=1988")
+
+
+def test_redact_url_hides_signing_tokens():
+    url = ("https://www.tiktok.com/tiktok/web/project/post/v1/?tz_name=Asia%2FBangkok&aid=1988"
+           "&msToken=SECRET1&X-Bogus=SECRET2&_signature=SECRET3")
+    out = browser_publish.redact_url(url)
+    assert "SECRET" not in out
+    assert "msToken=<redacted>" in out and "X-Bogus=<redacted>" in out and "_signature=<redacted>" in out
+    assert "tz_name=Asia%2FBangkok" in out
+
+
+def test_playwright_cookies_normalises_saved_cookies():
+    saved = [{"name": "sessionid", "value": "s", "domain": ".tiktok.com", "path": "/", "sameSite": "no_restriction",
+              "expires": None, "httpOnly": True, "storeId": "0"},
+             {"name": "tt-target-idc", "value": "useast5"},
+             {"name": "", "value": "x"}]
+    out = browser_publish._playwright_cookies(saved)
+    assert out == [{"name": "sessionid", "value": "s", "domain": ".tiktok.com", "path": "/", "httpOnly": True},
+                   {"name": "tt-target-idc", "value": "useast5", "domain": ".tiktok.com", "path": "/"}]

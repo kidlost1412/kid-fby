@@ -33,6 +33,7 @@ from .errors import (
     UploadError,
     ValidationError,
 )
+from .browser_publish import BrowserStartError, publish_in_browser
 from .proxy import Proxy, parse_proxy, proxied_session
 from .signer import Signer
 
@@ -422,7 +423,11 @@ class Client:
                 scheduled_for = datetime.fromtimestamp(ts, tz=timezone.utc)
 
             try:
-                response = self._publish(session, payload)
+                if publish_at is not None:
+                    # requests-sent schedules always get "Invalid parameters"; a real page succeeds.
+                    response = self._publish_in_browser(payload)
+                else:
+                    response = self._publish(session, payload)
             except PublishError as exc:
                 if delay is not None and delay > SHORT_SCHEDULE_WINDOW:
                     raise PublishError(
@@ -617,34 +622,64 @@ class Client:
                 f"publish request failed ({exc}); the video may or may not have been posted. "
                 "Check the account on TikTok before retrying."
             ) from exc
-        if r.status_code != 200:
-            if r.status_code >= 500 or r.status_code in (408, 429):
-                raise PublishUncertainError(
-                    f"publish: HTTP {r.status_code}; check the account before retrying.",
-                    response=_parsed(r), body=r.text[:MAX_ERROR_BODY], http_status=r.status_code,
-                )
-            raise PublishError(f"publish: HTTP {r.status_code}", status_code=None, status_msg=r.text[:300],
-                               response=_parsed(r) or {"body": r.text[:MAX_ERROR_BODY]},
-                               http_status=r.status_code)
+        return _check_publish(r.status_code, r.text)
+
+    def _publish_in_browser(self, payload: dict) -> dict:
         try:
-            data = r.json()
-        except ValueError:
+            result = publish_in_browser(json.dumps(payload), local_tz_name(), cookies=self.account.cookies,
+                                        user_agent=self.user_agent, proxy=self.proxy, timeout=self.timeout)
+        except BrowserStartError as exc:
+            log.warning("Scheduling browser could not start: %s", exc)
+            raise PublishError("không mở được trình duyệt để hẹn giờ", status_msg=str(exc)[:300]) from exc
+        except Exception as exc:
             raise PublishUncertainError(
-                "publish: TikTok returned a non-JSON response; check the account before retrying.",
-                body=r.text[:MAX_ERROR_BODY], http_status=r.status_code,
-            ) from None
-        code = data.get("status_code") if isinstance(data, dict) else None
-        if type(code) is not int:
-            # Missing, null, "0", 0.0 or true: not TikTok's documented answer, so the outcome is unknown.
+                f"publish request from the browser failed ({exc}); the video may or may not have been "
+                "posted. Check the account on TikTok before retrying."
+            ) from exc
+        status = result.get("status") if isinstance(result, dict) else None
+        if not isinstance(status, int) or status <= 0:
+            error = result.get("error") if isinstance(result, dict) else None
             raise PublishUncertainError(
-                f"publish: TikTok returned no usable status_code ({code!r}); check the account before retrying.",
-                response=data if isinstance(data, dict) else {"body": data}, http_status=r.status_code,
+                f"publish request from the browser failed ({error or 'no response'}); the video may or may "
+                "not have been posted. Check the account on TikTok before retrying."
             )
-        if code != 0:
-            msg = data.get("status_msg") or ""
-            raise PublishError(f"TikTok rejected the post: {msg or 'unknown error'} (status_code={code})",
-                               status_code=code, status_msg=msg, response=data, http_status=r.status_code)
-        return data
+        return _check_publish(status, result.get("text") or "")
+
+
+def _check_publish(status: int, text: str) -> dict:
+    """Map the publish HTTP status and body to the response dict or a publish error."""
+    try:
+        data = json.loads(text)
+        parsed_ok = True
+    except ValueError:
+        data, parsed_ok = None, False
+    parsed = data if isinstance(data, dict) else None
+    if status != 200:
+        if status >= 500 or status in (408, 429):
+            raise PublishUncertainError(
+                f"publish: HTTP {status}; check the account before retrying.",
+                response=parsed, body=text[:MAX_ERROR_BODY], http_status=status,
+            )
+        raise PublishError(f"publish: HTTP {status}", status_code=None, status_msg=text[:300],
+                           response=parsed or {"body": text[:MAX_ERROR_BODY]},
+                           http_status=status)
+    if not parsed_ok:
+        raise PublishUncertainError(
+            "publish: TikTok returned a non-JSON response; check the account before retrying.",
+            body=text[:MAX_ERROR_BODY], http_status=status,
+        )
+    code = data.get("status_code") if isinstance(data, dict) else None
+    if type(code) is not int:
+        # Missing, null, "0", 0.0 or true: not TikTok's documented answer, so the outcome is unknown.
+        raise PublishUncertainError(
+            f"publish: TikTok returned no usable status_code ({code!r}); check the account before retrying.",
+            response=data if isinstance(data, dict) else {"body": data}, http_status=status,
+        )
+    if code != 0:
+        msg = data.get("status_msg") or ""
+        raise PublishError(f"TikTok rejected the post: {msg or 'unknown error'} (status_code={code})",
+                           status_code=code, status_msg=msg, response=data, http_status=status)
+    return data
 
 
 def upload_video(

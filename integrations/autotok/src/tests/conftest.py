@@ -24,6 +24,12 @@ def autotok_home(tmp_path, monkeypatch):
                 "STEEL_API_KEY", "STEEL_BASE_URL", "STEEL_CONNECT_URL"):
         monkeypatch.setenv(var, "")
     monkeypatch.chdir(work)
+    # Never start a real online browser that could post to TikTok: scheduled publishes
+    # are forwarded with plain requests, so `responses` mocks see them.
+    import autotok.uploader as uploader_mod
+    from tests.test_uploader import FakeBrowser
+
+    monkeypatch.setattr(uploader_mod, "publish_in_browser", FakeBrowser())
     return home
 
 
