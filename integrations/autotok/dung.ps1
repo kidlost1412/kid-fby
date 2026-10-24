@@ -23,8 +23,11 @@ if ($taskAlive.Count -eq 0) { Write-Output 'Cac dich vu da ghi nhan khong con ch
 
 if (-not $Force -and ($taskAlive | Where-Object { $_.service -eq 'api' })) {
     try {
-        $taskRunningJobs = @(Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/schedules?status=running' -TimeoutSec 5)
-        $taskPendingJobs = @(Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/schedules?status=pending' -TimeoutSec 5)
+        # PS 5.1: assign first, then @() - wrapping the call directly turns an empty JSON array into Count 1.
+        $taskRunningRaw = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/schedules?status=running' -TimeoutSec 5
+        $taskRunningJobs = @($taskRunningRaw | Where-Object { $_ })
+        $taskPendingRaw = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/schedules?status=pending' -TimeoutSec 5
+        $taskPendingJobs = @($taskPendingRaw | Where-Object { $_ })
     } catch {
         throw "Khong kiem tra duoc lich dang chay ($($_.Exception.Message)). Dung -Force neu chac chan muon dung."
     }
