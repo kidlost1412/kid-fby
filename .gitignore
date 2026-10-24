@@ -15,3 +15,9 @@ update-signing-*.xml
 _handoff/
 integrations/tiktok/local.json
 core/.resources-stamp
+integrations/autotok/.venv/
+integrations/autotok/runtime/
+integrations/autotok/config.json
+integrations/autotok/data/
+**/__pycache__/
+integrations/autotok/src/web/frontend/node_modules/

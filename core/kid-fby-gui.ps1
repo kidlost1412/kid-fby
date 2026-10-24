@@ -1064,7 +1064,7 @@ function Update-ReupAggregate {
     $manual = Get-ReupManualState $Item
     $success = @(@($Item.History) | Where-Object { $_ -and [string]$_.status -eq 'succeeded' } | Sort-Object { Get-TikTokSortKey ([string]$_.accepted_at) } -Descending)
     Set-ReupField $Item 'Posted' ([bool]($manual.Posted -or $success.Count))
-    Set-ReupField $Item 'Date' $(if ($success.Count) { Format-TikTokTime ([string]$success[0].accepted_at) -Short } elseif ($manual.Posted) { [string]$manual.Date } else { '' })
+    Set-ReupField $Item 'Date' $(if ($success.Count) { Format-TikTokTime $(if ([string]$success[0].tiktok_schedule_time) { [string]$success[0].tiktok_schedule_time } else { [string]$success[0].accepted_at }) -Short } elseif ($manual.Posted) { [string]$manual.Date } else { '' })
 }
 
 function Set-ReupMetadata {
@@ -1272,7 +1272,7 @@ $script:tikTokWorker = {
                 if([int]$response.StatusCode -eq 404){$response.Dispose();$missing[$id]=$true}
                 else{
                     $job=(Read-Response $response) | ConvertFrom-Json
-                    $found[$id]=[pscustomobject]@{key=('request:'+$id);request_id=$id;username=$(if($job.username){[string]$job.username}else{[string]$r.Username});status=[string]$job.status;publish_uncertain=[bool]$job.publish_uncertain;prior_uncertain=[bool]$job.prior_uncertain;planned_for=[string]$job.planned_for;accepted_at=[string]$job.accepted_at;created_at=[string]$r.CreatedAt;time_source=[string]$job.time_source;sha256=''}
+                    $found[$id]=[pscustomobject]@{key=('request:'+$id);request_id=$id;username=$(if($job.username){[string]$job.username}else{[string]$r.Username});status=[string]$job.status;publish_uncertain=[bool]$job.publish_uncertain;prior_uncertain=[bool]$job.prior_uncertain;planned_for=[string]$job.planned_for;accepted_at=[string]$job.accepted_at;created_at=[string]$r.CreatedAt;time_source=[string]$job.time_source;sha256='';post_url=[string]$job.post_url;post_id=[string]$job.post_id;link_state=[string]$job.link_state;tiktok_schedule_time=[string]$job.tiktok_schedule_time}
                 }
             }catch{if($CancelToken.IsCancellationRequested){throw}<# unknown outcome: the receipt stays blocking #>}
         }
@@ -1372,7 +1372,7 @@ $script:tikTokWorker = {
             if($Action -eq 'accounts'){return (ConvertTo-Json -InputObject $accounts -Depth 5 -Compress)}
             $sync=Invoke-HistorySync $payload $true
             $videoId=[string]$payload.file.id
-            return @{accounts=$accounts;history=@($sync.Videos[$videoId]);file_sha=[string]$sync.Hashes[$videoId];changed=[bool]$sync.Changed}
+            return @{accounts=$accounts;history=@($sync.Videos[$videoId]);file_sha=[string]$sync.Hashes[$videoId];changed=[bool]$sync.Changed;native_schedule=[bool]$health.native_schedule}
         }
         if($Action -eq 'sync'){return (Invoke-HistorySync $payload $false)}
         if($Action -eq 'create'){
@@ -1395,6 +1395,11 @@ $script:tikTokWorker = {
                     throw ('Bộ đăng trả về HTTP '+[int]$response.StatusCode+$detail+'. Xem Lịch sử / Lịch đăng để kiểm tra.')
                 }finally{$response.Dispose()}
             }finally{$form.Dispose()}
+        }
+        if($Action -eq 'refresh-link'){
+            $content=[Net.Http.StringContent]::new('',[Text.Encoding]::UTF8,'application/json')
+            try{return (Read-Response ($client.PostAsync($BaseUrl+'/api/history/'+[Uri]::EscapeDataString([string]$payload.key)+'/refresh-link',$content,$CancelToken).GetAwaiter().GetResult()))}
+            finally{$content.Dispose()}
         }
         if($Action -eq 'status'){
             $list=@()
@@ -1568,7 +1573,7 @@ function Get-TikTokStatusText {
     param($Result)
     if ($Result.publish_uncertain) { return 'Chưa rõ kết quả: video có thể đã lên TikTok. Kiểm tra tài khoản trước khi đăng lại.' }
     switch ([string]$Result.status) {
-        'pending' { 'Đã nhận tác vụ. Đang chờ đến giờ đăng.' }
+        'pending' { 'Đã nhận tác vụ, sắp gửi lên TikTok.' }
         'running' { 'Đang gửi video lên TikTok…' }
         'succeeded' { 'TikTok đã nhận yêu cầu đăng thành công. Video có thể cần thời gian xử lý.' }
         'failed' { 'Đăng thất bại. Xem chi tiết trong Lịch đăng ở bảng điều khiển.' }
@@ -1595,6 +1600,70 @@ function Format-TikTokTime {
     try{ $when=[DateTimeOffset]::Parse($Value,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::AssumeUniversal).ToLocalTime(); return $when.ToString($(if($Short){'dd/MM HH:mm'}else{'dd/MM/yyyy HH:mm:ss'})) }catch{return 'chưa rõ giờ'}
 }
 
+function Format-TikTokClock {
+    # "HH:mm dd/MM" in local time (Đã hẹn trên TikTok · 19:00 25/10).
+    param([string]$Value)
+    try { return [DateTimeOffset]::Parse($Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal).ToLocalTime().ToString('HH:mm dd/MM') } catch { return 'chưa rõ giờ' }
+}
+
+function Test-TikTokPostUrl {
+    # The only URLs the app opens or copies: a public TikTok post link built by the backend.
+    param([string]$Url)
+    return [bool]($Url -cmatch '^https://www\.tiktok\.com/@[A-Za-z0-9._]+/video/[0-9]+\z')
+}
+
+function Test-TikTokPostId {
+    # TikTok post ids are 17-20 ASCII digits; anything else is never copied.
+    param([string]$Id)
+    return [bool]($Id -cmatch '^[0-9]{17,20}\z')
+}
+
+function Test-TikTokHeldByTikTok {
+    # TikTok accepted the post and publishes it at tiktok_schedule_time (still in the future).
+    param($Entry, [DateTime]$NowUtc = [DateTime]::UtcNow)
+    if ([string]$Entry.status -ne 'succeeded' -or -not [string]$Entry.tiktok_schedule_time) { return $false }
+    try { return ([DateTimeOffset]::Parse([string]$Entry.tiktok_schedule_time, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal).UtcDateTime -gt $NowUtc) } catch { return $false }
+}
+
+function Get-TikTokLinkText {
+    # Link part of a succeeded entry: the URL, or why there is none yet.
+    param($Entry)
+    if (Test-TikTokPostUrl ([string]$Entry.post_url)) { return [string]$Entry.post_url }
+    if ([string]$Entry.link_state -eq 'found' -and (Test-TikTokPostId ([string]$Entry.post_id))) { return 'Mã bài: ' + [string]$Entry.post_id }
+    switch ([string]$Entry.link_state) {
+        'pending' { return 'Đang lấy link…' }
+        'gave_up' { return 'Chưa lấy được link' }
+        'scheduled_on_tiktok' { return 'Có link sau giờ đăng' }
+    }
+    return ''
+}
+
+function Get-TikTokScheduleBounds {
+    # Hẹn giờ trên TikTok: TikTok holds the post; allowed from 20 minutes to 10 days ahead (local time).
+    param([DateTime]$Now = [DateTime]::Now)
+    # Min is rounded UP to the next whole minute so the minute shown in the hint is accepted.
+    $min = $Now.AddMinutes(20)
+    $floor = $min.AddTicks(-($min.Ticks % [TimeSpan]::TicksPerMinute))
+    if ($floor -lt $min) { $floor = $floor.AddMinutes(1) }
+    return @{ Min = $floor; Max = $Now.AddDays(10) }
+}
+
+function Test-TikTokScheduleDay {
+    param([DateTime]$Day, [DateTime]$Now = [DateTime]::Now)
+    $b = Get-TikTokScheduleBounds $Now
+    return ($Day.Date -ge $b.Min.Date -and $Day.Date -le $b.Max.Date)
+}
+
+function Get-TikTokScheduleError {
+    # '' when TikTok can schedule $When (local time); otherwise the message shown to the user.
+    param([DateTime]$When, [DateTime]$Now = [DateTime]::Now)
+    $b = Get-TikTokScheduleBounds $Now
+    if ($When -lt $b.Min -or $When -gt $b.Max) {
+        return ('Chọn giờ từ ' + $b.Min.ToString('HH:mm dd/MM') + ' đến ' + $b.Max.ToString('HH:mm dd/MM') + ' (20 phút đến 10 ngày tới).')
+    }
+    return ''
+}
+
 function Get-TikTokSortKey {
     param([string]$Value)
     if (-not $Value) { return [long]0 }
@@ -1610,6 +1679,7 @@ function ConvertTo-TikTokHistoryEntry {
         publish_uncertain = [bool]$Entry.publish_uncertain; prior_uncertain = [bool]$Entry.prior_uncertain
         planned_for = [string]$Entry.planned_for; accepted_at = [string]$Entry.accepted_at; created_at = [string]$Entry.created_at
         time_source = [string]$Entry.time_source; sha256 = [string]$Entry.sha256
+        post_url = [string]$Entry.post_url; post_id = [string]$Entry.post_id; link_state = [string]$Entry.link_state; tiktok_schedule_time = [string]$Entry.tiktok_schedule_time
     }
 }
 
@@ -1618,7 +1688,7 @@ function Get-TikTokHistorySignature {
     $text = New-Object System.Text.StringBuilder
     foreach ($h in @($History)) {
         if ($null -eq $h) { continue }
-        [void]$text.Append([string]$h.key).Append('|').Append([string]$h.request_id).Append('|').Append([string]$h.username).Append('|').Append([string]$h.status).Append('|').Append([bool]$h.publish_uncertain).Append('|').Append([bool]$h.prior_uncertain).Append('|').Append([string]$h.planned_for).Append('|').Append([string]$h.accepted_at).Append('|').Append([string]$h.created_at).Append('|').Append([string]$h.time_source).Append('|').Append([string]$h.sha256).Append("`n")
+        [void]$text.Append([string]$h.key).Append('|').Append([string]$h.request_id).Append('|').Append([string]$h.username).Append('|').Append([string]$h.status).Append('|').Append([bool]$h.publish_uncertain).Append('|').Append([bool]$h.prior_uncertain).Append('|').Append([string]$h.planned_for).Append('|').Append([string]$h.accepted_at).Append('|').Append([string]$h.created_at).Append('|').Append([string]$h.time_source).Append('|').Append([string]$h.sha256).Append('|').Append([string]$h.post_url).Append('|').Append([string]$h.post_id).Append('|').Append([string]$h.link_state).Append('|').Append([string]$h.tiktok_schedule_time).Append("`n")
     }
     return $text.ToString()
 }
@@ -1679,6 +1749,7 @@ function Merge-TikTokVideoHistory {
             key = 'local:' + $id; request_id = $id; username = [string]$r.Username; status = (Get-TikTokReceiptState $r ([bool]$NotFound[$id]) $NowUtc)
             publish_uncertain = $false; prior_uncertain = $false; planned_for = [string]$r.ScheduledFor; accepted_at = ''
             created_at = [string]$r.CreatedAt; time_source = 'local'; sha256 = ''
+            post_url = ''; post_id = ''; link_state = ''; tiktok_schedule_time = ''
         })
     }
     return @($all | Sort-Object { Get-TikTokSortKey ([string]$_.created_at) } -Descending)
@@ -1716,8 +1787,11 @@ function Test-TikTokPriorVersion {
 function Get-TikTokEntryLabel {
     param($Entry, [string]$FileSha256 = '')
     $label = switch ([string]$Entry.status) {
-        'succeeded' { 'Đã đăng · ' + (Format-TikTokTime ([string]$Entry.accepted_at)) }
-        'pending' { if ($Entry.planned_for) { 'Đã hẹn · ' + (Format-TikTokTime ([string]$Entry.planned_for)) } else { 'Đã nhận, chờ đăng' } }
+        'succeeded' {
+            if (Test-TikTokHeldByTikTok $Entry) { 'Đã hẹn trên TikTok · ' + (Format-TikTokClock ([string]$Entry.tiktok_schedule_time)) + ' (có thể tắt máy)' }
+            else { $link = Get-TikTokLinkText $Entry; 'Đã đăng · ' + (Format-TikTokTime $(if ([string]$Entry.tiktok_schedule_time) { [string]$Entry.tiktok_schedule_time } else { [string]$Entry.accepted_at })) + $(if ($link) { ' · ' + $link } else { '' }) }
+        }
+        'pending' { if ($Entry.planned_for) { 'Đang gửi lên TikTok để hẹn · ' + (Format-TikTokClock ([string]$Entry.planned_for)) } else { 'Đã nhận, chờ đăng' } }
         'queued' { 'Đã nhận, chờ đăng' }
         'running' { 'Đang đăng' }
         'preparing' { 'Đang chuyển video' }
@@ -1738,7 +1812,7 @@ function Get-TikTokEntryShort {
     param($Entry)
     if ($Entry.publish_uncertain) { return 'Chưa rõ kết quả' }
     $short = switch ([string]$Entry.status) {
-        'pending' { if ($Entry.planned_for) { "Đã hẹn`n" + (Format-TikTokTime ([string]$Entry.planned_for) -Short) } else { 'Chờ đăng…' } }
+        'pending' { if ($Entry.planned_for) { "Đang gửi hẹn`n" + (Format-TikTokClock ([string]$Entry.planned_for)) } else { 'Chờ đăng…' } }
         'queued' { 'Chờ đăng…' }
         'running' { 'Đang đăng…' }
         'preparing' { 'Đang chuyển…' }
@@ -2097,6 +2171,129 @@ function Move-TikTokReceiptToArchive {
     }
 }
 
+# ------------------------------------------------------------- hashtag hay dung cho TikTok (data\tiktok-hashtags.json) ----
+function Get-TikTokHashtagPath { return (Join-Path $root 'data\tiktok-hashtags.json') }
+
+function Get-TikTokHashtagsFromText {
+    # Cac hashtag trong caption (Unicode: chu cai, dau to hop, so, gach duoi). Khong phan biet hoa thuong; giu cach viet dau tien.
+    param([string]$Text)
+    $seen = @{}; $list = New-Object 'System.Collections.Generic.List[string]'
+    if ([string]::IsNullOrEmpty($Text)) { return $list.ToArray() }
+    foreach ($m in [regex]::Matches($Text, '#([\p{L}\p{M}\p{N}_]{1,100})')) {
+        $tag = $m.Value; $key = $tag.ToLowerInvariant()
+        if (-not $seen.ContainsKey($key)) { $seen[$key] = 1; $list.Add($tag) }
+    }
+    return $list.ToArray()
+}
+
+function Read-TikTokHashtags {
+    # Tra ve mang muc @{tag;count;lastUsed}. Thieu file -> rong. File hong -> doi ten .corrupt-<ts> roi coi nhu rong. Khong bao gio nem loi.
+    param([string]$Path = (Get-TikTokHashtagPath))
+    $result = New-Object 'System.Collections.Generic.List[object]'
+    try {
+        if (-not [System.IO.File]::Exists($Path)) { return $result.ToArray() }
+        $json = $null
+        try { $json = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) }
+        catch { Write-FileLog "WARN Không đọc được hashtag đã lưu (đang bị khóa?): $($_.Exception.Message)"; return $result.ToArray() }
+        try {
+            if ([string]::IsNullOrWhiteSpace($json) -or -not $json.TrimStart().StartsWith('{')) { throw 'Không phải đối tượng JSON.' }
+            $obj = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+            if ($null -eq $obj -or $obj -isnot [pscustomobject] -or $null -eq $obj.PSObject.Properties['tags']) { throw 'Thiếu danh sách tags.' }
+            $seen = @{}
+            foreach ($t in @($obj.tags)) {
+                $tag = if ($null -ne $t) { [string]$t.tag } else { '' }
+                if ($tag -notmatch '^#[\p{L}\p{M}\p{N}_]{1,100}$') { continue }
+                $key = $tag.ToLowerInvariant(); if ($seen.ContainsKey($key)) { continue }
+                $seen[$key] = 1
+                $count = 0; if (-not [int]::TryParse([string]$t.count, [ref]$count) -or $count -lt 1) { $count = 1 }
+                $result.Add([pscustomobject]@{ tag = $tag; count = $count; lastUsed = [string]$t.lastUsed })
+            }
+        } catch {
+            $err = $_.Exception.Message
+            $bad = $Path + '.corrupt-' + (Get-Date).ToString('yyyyMMdd-HHmmss')
+            if ([System.IO.File]::Exists($bad)) { $bad += '-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) }
+            try { [System.IO.File]::Move($Path, $bad); Write-FileLog "WARN File hashtag bị hỏng ($err); đã đổi tên thành '$bad'." }
+            catch { Write-FileLog "WARN File hashtag bị hỏng ($err) và không đổi tên được: $($_.Exception.Message)" }
+            $result.Clear()
+        }
+    } catch { Write-FileLog "WARN Đọc hashtag đã lưu lỗi: $($_.Exception.Message)"; $result.Clear() }
+    return $result.ToArray()
+}
+
+function Save-TikTokHashtags {
+    # Ghi nguyen tu (dung Write-KidSettings), toi da 300 muc: bo muc dung lau nhat.
+    param([object[]]$Tags, [string]$Path = (Get-TikTokHashtagPath))
+    $keep = @($Tags | Sort-Object -Property @{ Expression = { [string]$_.lastUsed }; Descending = $true }, @{ Expression = { [int]$_.count }; Descending = $true } | Select-Object -First 300)
+    Write-KidSettings -Path $Path -Data ([ordered]@{ version = 1; tags = @($keep | ForEach-Object { [ordered]@{ tag = [string]$_.tag; count = [int]$_.count; lastUsed = [string]$_.lastUsed } }) })
+}
+
+function Add-TikTokHashtagsFromCaption {
+    # Hoc hashtag tu caption da dang: count++ va lastUsed = bay gio. Nguoi goi phai bat loi (khong duoc lam hong viec dang).
+    param([string]$Caption, [string]$Path = (Get-TikTokHashtagPath))
+    $found = @(Get-TikTokHashtagsFromText $Caption)
+    if (-not $found.Count) { return }
+    $now = [DateTime]::UtcNow.ToString('o')
+    $items = New-Object 'System.Collections.Generic.List[object]'; $index = @{}
+    foreach ($e in @(Read-TikTokHashtags -Path $Path)) { $index[([string]$e.tag).ToLowerInvariant()] = $e; $items.Add($e) }
+    foreach ($tag in $found) {
+        $key = $tag.ToLowerInvariant()
+        if ($index.ContainsKey($key)) { $e = $index[$key]; $e.count = [int]$e.count + 1; $e.lastUsed = $now }
+        else { $e = [pscustomobject]@{ tag = $tag; count = 1; lastUsed = $now }; $index[$key] = $e; $items.Add($e) }
+    }
+    Save-TikTokHashtags -Tags $items.ToArray() -Path $Path
+}
+
+function Remove-TikTokHashtag {
+    param([string]$Tag, [string]$Path = (Get-TikTokHashtagPath))
+    $left = @(Read-TikTokHashtags -Path $Path | Where-Object { ([string]$_.tag) -ine $Tag })
+    Save-TikTokHashtags -Tags $left -Path $Path
+}
+
+function Get-TikTokHashtagToken {
+    # Hashtag dang go do tai con tro (vd "#xu|"): @{Start;End;Prefix} hoac $null. End mo rong qua cac ky tu hashtag sau con tro.
+    param([string]$Text, [int]$Caret)
+    if ($null -eq $Text) { $Text = '' }
+    $Caret = [Math]::Max(0, [Math]::Min($Caret, $Text.Length))
+    $m = [regex]::Match($Text.Substring(0, $Caret), '#([\p{L}\p{M}\p{N}_]*)$')
+    if (-not $m.Success) { return $null }
+    $end = $Caret
+    while ($end -lt $Text.Length -and ([string]$Text[$end]) -match '^[\p{L}\p{M}\p{N}_]$') { $end++ }
+    return @{ Start = $m.Index; End = $end; Prefix = $m.Groups[1].Value }
+}
+
+function Get-TikTokHashtagSuggestions {
+    # Tag goi y (chuoi): bo tag da co trong caption, loc theo phan dang go, xep theo count giam roi lastUsed giam.
+    param([object[]]$Tags, [string]$Text, [int]$Caret, [int]$Max = 20)
+    if ($null -eq $Text) { $Text = '' }
+    $tok = Get-TikTokHashtagToken -Text $Text -Caret $Caret
+    $rest = $Text; $prefix = ''
+    if ($tok) { $rest = $Text.Remove($tok.Start, $tok.End - $tok.Start); $prefix = '#' + $tok.Prefix }
+    $have = @{}; foreach ($t in @(Get-TikTokHashtagsFromText $rest)) { $have[$t.ToLowerInvariant()] = 1 }
+    $pick = @($Tags | Where-Object { $null -ne $_ -and -not $have.ContainsKey(([string]$_.tag).ToLowerInvariant()) -and ($prefix.Length -le 1 -or ([string]$_.tag).StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) } |
+        Sort-Object -Property @{ Expression = { [int]$_.count }; Descending = $true }, @{ Expression = { [string]$_.lastUsed }; Descending = $true } | Select-Object -First $Max)
+    return @($pick | ForEach-Object { [string]$_.tag })
+}
+
+function Add-TikTokHashtagToCaption {
+    # Them tag vao caption: thay phan dang go tai con tro, neu khong thi them o cuoi (co dau cach dau). Reason: exists | toolong.
+    param([string]$Text, [int]$Caret, [string]$Tag, [int]$MaxLength = 2200)
+    if ($null -eq $Text) { $Text = '' }
+    $tok = Get-TikTokHashtagToken -Text $Text -Caret $Caret
+    $rest = $Text; if ($tok) { $rest = $Text.Remove($tok.Start, $tok.End - $tok.Start) }
+    foreach ($t in @(Get-TikTokHashtagsFromText $rest)) {
+        if ($t -ieq $Tag) { return [pscustomobject]@{ Ok = $false; Text = $Text; Caret = $Caret; Reason = 'exists' } }
+    }
+    if ($tok) { $new = $Text.Substring(0, $tok.Start) + $Tag + $Text.Substring($tok.End); $pos = $tok.Start + $Tag.Length }
+    else {
+        $sep = if ($Text.Length -eq 0 -or [char]::IsWhiteSpace($Text[$Text.Length - 1])) { '' } else { ' ' }
+        $new = $Text + $sep + $Tag; $pos = $new.Length
+    }
+    if ($MaxLength -gt 0 -and $new.Length -gt $MaxLength) { return [pscustomobject]@{ Ok = $false; Text = $Text; Caret = $Caret; Reason = 'toolong' } }
+    # Chen o cuoi caption: them dau cach de con tro khong dinh vao tag vua chen (neu khong se bi coi la dang go do tag do).
+    if ($pos -eq $new.Length -and ($MaxLength -le 0 -or $new.Length -lt $MaxLength)) { $new += ' '; $pos++ }
+    return [pscustomobject]@{ Ok = $true; Text = $new; Caret = $pos; Reason = '' }
+}
+
 function Show-TikTokPublishDialog {
     param([string]$FilePath)
     if([string]::IsNullOrWhiteSpace($FilePath) -or -not (Test-Path -LiteralPath $FilePath -PathType Leaf) -or [IO.Path]::GetFileName($FilePath) -notmatch '^\d+-3-hoan-chinh\.mp4$'){Show-Toast 'Chọn video hoàn chỉnh trong Kho trước khi đăng.' -Kind warning;return}
@@ -2111,8 +2308,9 @@ function Show-TikTokPublishDialog {
   <DockPanel><Button x:Name="Refresh" Content="Làm mới" DockPanel.Dock="Right" HorizontalAlignment="Right"/><TextBlock Text="Chọn tài khoản đăng" FontWeight="ExtraBold" VerticalAlignment="Center"/></DockPanel>
   <WrapPanel x:Name="Accounts" Margin="0,8,0,12"/>
   <Border Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource InkFaint}" BorderThickness="1" CornerRadius="16" Padding="14" Margin="0,0,0,16"><StackPanel><TextBlock Text="Lịch sử của video này" FontWeight="ExtraBold"/><StackPanel x:Name="History" Margin="0,6,0,0"/><TextBlock x:Name="Status" Text="Đang kiểm tra tài khoản và lịch sử…" TextWrapping="Wrap" Margin="0,6,0,0" Foreground="{DynamicResource TextMuted}"/></StackPanel></Border>
-  <TextBlock Text="Mô tả video / caption" FontWeight="SemiBold"/><TextBox x:Name="Caption" AcceptsReturn="True" TextWrapping="Wrap" MaxLength="2200" Height="92" VerticalScrollBarVisibility="Auto" Margin="0,6,0,12"/>
-  <CheckBox x:Name="Schedule" Content="Hẹn giờ đăng video" MinHeight="44" Margin="0,0,0,8"/>
+  <TextBlock Text="Mô tả video / caption" FontWeight="SemiBold"/><TextBox x:Name="Caption" AcceptsReturn="True" TextWrapping="Wrap" MaxLength="2200" Height="92" VerticalScrollBarVisibility="Auto" Margin="0,6,0,8"/>
+  <StackPanel Margin="0,0,0,12"><TextBlock x:Name="HashtagHeader" Text="Hashtag hay dùng" FontWeight="SemiBold" Visibility="Collapsed" Margin="0,0,0,6"/><WrapPanel x:Name="HashtagChips"/><TextBlock x:Name="HashtagHint" Text="Hashtag bạn dùng khi đăng sẽ được lưu để gợi ý lần sau." TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource TextMuted}"/></StackPanel>
+  <CheckBox x:Name="Schedule" Content="Hẹn giờ trên TikTok" MinHeight="44" Margin="0,0,0,8" ToolTip="Video được gửi lên TikTok ngay; TikTok giữ bài và tự đăng đúng giờ. Khi thẻ hiện 'Đã hẹn trên TikTok', anh có thể tắt máy."/>
   <Border x:Name="WhenPanel" Visibility="Collapsed" Background="{DynamicResource Surface1}" CornerRadius="18" BorderBrush="{DynamicResource InkFaint}" BorderThickness="1" Padding="14" Margin="0,0,0,14">
    <WrapPanel>
     <StackPanel Width="356" Margin="0,0,14,0">
@@ -2120,7 +2318,7 @@ function Show-TikTokPublishDialog {
      <UniformGrid Columns="7" Margin="0,0,0,4"><TextBlock Text="Th 2" TextAlignment="Center"/><TextBlock Text="Th 3" TextAlignment="Center"/><TextBlock Text="Th 4" TextAlignment="Center"/><TextBlock Text="Th 5" TextAlignment="Center"/><TextBlock Text="Th 6" TextAlignment="Center"/><TextBlock Text="Th 7" TextAlignment="Center"/><TextBlock Text="CN" TextAlignment="Center"/></UniformGrid>
      <UniformGrid x:Name="Days" Columns="7" Rows="6"/>
     </StackPanel>
-    <StackPanel Width="230" Margin="0,8,0,0"><TextBlock Text="Giờ đăng · 24 tiếng" FontWeight="ExtraBold"/><StackPanel Orientation="Horizontal" Margin="0,8,0,10"><TextBox x:Name="Hour" Text="19" Width="68" Height="44" MinHeight="44" Padding="4,0" MaxLength="2" TextAlignment="Center" VerticalContentAlignment="Center" AutomationProperties.Name="Giờ đăng"/><TextBlock Text=" : " FontSize="20" VerticalAlignment="Center"/><TextBox x:Name="Minute" Text="00" Width="68" Height="44" MinHeight="44" Padding="4,0" MaxLength="2" TextAlignment="Center" VerticalContentAlignment="Center" AutomationProperties.Name="Phút đăng"/></StackPanel><TextBlock x:Name="ChosenDate" TextWrapping="Wrap" Margin="0,0,0,12"/><WrapPanel x:Name="TimePresets"/><WrapPanel Margin="0,12,0,8"><Button x:Name="Today" Content="Hôm nay" Margin="0,0,6,6"/><Button x:Name="Tomorrow" Content="Ngày mai" Margin="0,0,0,6"/></WrapPanel><TextBlock Text="Giờ trên máy. Máy tính và bộ đăng nền cần hoạt động vào giờ đã hẹn." FontSize="12" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap"/></StackPanel>
+    <StackPanel Width="230" Margin="0,8,0,0"><TextBlock Text="Giờ đăng · 24 tiếng" FontWeight="ExtraBold"/><StackPanel Orientation="Horizontal" Margin="0,8,0,10"><TextBox x:Name="Hour" Text="19" Width="68" Height="44" MinHeight="44" Padding="4,0" MaxLength="2" TextAlignment="Center" VerticalContentAlignment="Center" AutomationProperties.Name="Giờ đăng"/><TextBlock Text=" : " FontSize="20" VerticalAlignment="Center"/><TextBox x:Name="Minute" Text="00" Width="68" Height="44" MinHeight="44" Padding="4,0" MaxLength="2" TextAlignment="Center" VerticalContentAlignment="Center" AutomationProperties.Name="Phút đăng"/></StackPanel><TextBlock x:Name="ChosenDate" TextWrapping="Wrap" Margin="0,0,0,12"/><WrapPanel x:Name="TimePresets"/><WrapPanel Margin="0,12,0,8"><Button x:Name="Today" Content="Hôm nay" Margin="0,0,6,6"/><Button x:Name="Tomorrow" Content="Ngày mai" Margin="0,0,0,6"/></WrapPanel><TextBlock x:Name="ScheduleHint" FontSize="12" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap"/></StackPanel>
    </WrapPanel>
   </Border>
   <Expander Header="Tùy chọn nâng cao" Margin="0,0,0,10"><WrapPanel><CheckBox x:Name="Comments" Content="Bình luận" IsChecked="True" MinHeight="44" Margin="0,0,18,0"/><CheckBox x:Name="Duet" Content="Song ca" MinHeight="44" Margin="0,0,18,0"/><CheckBox x:Name="Stitch" Content="Ghép nối" MinHeight="44" Margin="0,0,18,0"/><CheckBox x:Name="Private" Content="Chỉ mình tôi" MinHeight="44" Margin="0,0,18,0"/><CheckBox x:Name="AI" Content="Nhãn AI" MinHeight="44"/></WrapPanel></Expander>
@@ -2132,9 +2330,9 @@ function Show-TikTokPublishDialog {
 '@
     $dlg=[Windows.Markup.XamlReader]::Parse($markup);[void]$dlg.Resources.MergedDictionaries.Add((Get-DialogTheme));$dlg.Owner=$win
     $dlg.MaxHeight=[Math]::Max(460,[Windows.SystemParameters]::WorkArea.Height-40)
-    $c=@{};foreach($name in @('FileLabel','Refresh','Accounts','History','Status','Caption','Schedule','WhenPanel','NextMonth','PrevMonth','MonthLabel','Days','Hour','Minute','ChosenDate','TimePresets','Today','Tomorrow','Comments','Duet','Stitch','Private','AI','ConfirmRepost','Dashboard','Close','Submit')){$c[$name]=$dlg.FindName($name)}
+    $c=@{};foreach($name in @('FileLabel','Refresh','Accounts','History','Status','Caption','HashtagHeader','HashtagChips','HashtagHint','Schedule','WhenPanel','NextMonth','PrevMonth','MonthLabel','Days','Hour','Minute','ChosenDate','TimePresets','Today','Tomorrow','ScheduleHint','Comments','Duet','Stitch','Private','AI','ConfirmRepost','Dashboard','Close','Submit')){$c[$name]=$dlg.FindName($name)}
     $c.FileLabel.Text=[IO.Path]::GetFileName($source)
-    $state=@{Task=$null;SelectedAccount='';Entries=@();Ready=$false;SelectedDay=[DateTime]::Today;Month=[DateTime]::Today.AddDays(1-[DateTime]::Today.Day);Submitted=$false;FileSha=''}
+    $state=@{Task=$null;SelectedAccount='';Entries=@();Tags=@(Read-TikTokHashtags);Ready=$false;Native=$false;SelectedDay=[DateTime]::Today;Month=[DateTime]::Today.AddDays(1-[DateTime]::Today.Day);Submitted=$false;FileSha=''}
     $updateSelection={
         $blocking=@('pending','queued','running','preparing')
         $own=@($state.Entries | Where-Object {$_.username -eq $state.SelectedAccount -or (-not $_.username -and $_.status -in $blocking)})
@@ -2147,6 +2345,49 @@ function Show-TikTokPublishDialog {
         elseif($repeat.Count -and -not $c.ConfirmRepost.IsChecked){$c.Status.Text='Video đã được gửi trên tài khoản này hoặc kết quả chưa rõ. Chọn tài khoản khác, hoặc xác nhận đăng lại sau khi kiểm tra.'}
         elseif($state.Ready){$c.Status.Text='Nhập caption rồi bấm Đăng và chạy nền. Anh có thể tiếp tục dùng app ngay.'}
     }.GetNewClosure()
+    # Hashtag hay dung: chip goi y duoi o caption (loc theo hashtag dang go tai con tro).
+    $hashtagUi=@{Render=$null;Remove=$null}
+    $chipClicked={
+        param($sender,$eventArgs)
+        $ctx=$sender.Tag;$cap=$ctx.Controls.Caption
+        $r=Add-TikTokHashtagToCaption -Text $cap.Text -Caret $cap.CaretIndex -Tag $ctx.Tag -MaxLength $cap.MaxLength
+        if($r.Ok){$cap.Text=$r.Text;$cap.CaretIndex=$r.Caret}
+        elseif($r.Reason -eq 'toolong'){$ctx.Controls.Status.Text='Caption đã đạt giới hạn '+$cap.MaxLength+' ký tự, không thêm được hashtag này.'}
+        [void]$cap.Focus();$cap.CaretIndex=$cap.Text.Length
+        & $ctx.Holder.Render
+    }
+    $chipRemove={
+        param($sender,$eventArgs)
+        $ctx=$sender.Tag
+        try{Remove-TikTokHashtag $ctx.Tag;$ctx.State.Tags=@(Read-TikTokHashtags)}catch{Write-FileLog ('WARN TikTok hashtag remove: '+$_.Exception.Message);$ctx.Controls.Status.Text='Không xóa được hashtag khỏi gợi ý.'}
+        & $ctx.Holder.Render
+    }
+    $chipKey={
+        param($sender,$eventArgs)
+        if($eventArgs.Key -eq [Windows.Input.Key]::Delete){$eventArgs.Handled=$true;& $sender.Tag.Holder.Remove $sender $eventArgs}
+    }
+    $hashtagUi.Remove=$chipRemove
+    $hashtagUi.Render={
+        $c.HashtagChips.Children.Clear()
+        $list=@(Get-TikTokHashtagSuggestions -Tags $state.Tags -Text $c.Caption.Text -Caret $c.Caption.CaretIndex -Max 20)
+        $none=(@($state.Tags).Count -eq 0)
+        $c.HashtagHint.Visibility=$(if($none){'Visible'}else{'Collapsed'})
+        $c.HashtagHeader.Visibility=$(if($none){'Collapsed'}else{'Visible'})
+        foreach($tag in $list){
+            $b=New-Object Windows.Controls.Button;$b.Style=$dlg.FindResource('BtnSecondary')
+            $label=New-Object Windows.Controls.TextBlock;$label.Text=$tag;$b.Content=$label
+            $b.MinHeight=34;$b.Padding=[Windows.Thickness]::new(12,0,12,0);$b.Margin=[Windows.Thickness]::new(0,0,6,6)
+            $ctx=@{Tag=$tag;Controls=$c;State=$state;Holder=$hashtagUi}
+            $b.Tag=$ctx;$b.ToolTip='Bấm để thêm vào caption. Chuột phải hoặc phím Delete để xóa khỏi gợi ý.'
+            [Windows.Automation.AutomationProperties]::SetName($b,'Thêm hashtag '+$tag)
+            $menu=New-Object Windows.Controls.ContextMenu;$item=New-Object Windows.Controls.MenuItem;$item.Header='Xóa khỏi gợi ý';$item.Tag=$ctx;$item.Add_Click($chipRemove);[void]$menu.Items.Add($item);$b.ContextMenu=$menu
+            $b.Add_Click($chipClicked);$b.Add_PreviewKeyDown($chipKey)
+            [void]$c.HashtagChips.Children.Add($b)
+        }
+    }.GetNewClosure()
+    $c.Caption.Add_TextChanged({& $hashtagUi.Render}.GetNewClosure())
+    $c.Caption.Add_SelectionChanged({& $hashtagUi.Render}.GetNewClosure())
+    & $hashtagUi.Render
     $calendar=@{Render=$null}
     $dayClicked={
         param($sender,$eventArgs)
@@ -2185,7 +2426,7 @@ function Show-TikTokPublishDialog {
             $button.Content=[string]$day.Day;$button.Tag=$day;$button.MinWidth=44;$button.MinHeight=44;$button.Height=46;$button.Margin=[Windows.Thickness]::new(2)
             $button.Padding=[Windows.Thickness]::new(0);$button.FontSize=14
             $button.Style=$dlg.FindResource($(if($day.Date -eq $state.SelectedDay.Date){'BtnPrimary'}else{'BtnSecondary'}))
-            $button.IsEnabled=($day.Date -ge [DateTime]::Today)
+            $button.IsEnabled=(Test-TikTokScheduleDay $day)
             if($day.Month -ne $state.Month.Month){$button.Opacity=0.55}
             [Windows.Automation.AutomationProperties]::SetName($button,$day.ToString('dddd, dd/MM/yyyy',$vi))
             $button.CommandParameter=@{State=$state;Calendar=$calendar}
@@ -2193,6 +2434,8 @@ function Show-TikTokPublishDialog {
             [void]$c.Days.Children.Add($button)
         }
         $c.ChosenDate.Text='Đã chọn: '+$state.SelectedDay.ToString('dddd, dd/MM/yyyy',$vi)
+        $bounds=Get-TikTokScheduleBounds
+        $c.ScheduleHint.Text='Giờ trên máy. Chọn từ '+$bounds.Min.ToString('HH:mm dd/MM')+' đến '+$bounds.Max.ToString('HH:mm dd/MM')+'. Video được gửi lên TikTok ngay; TikTok giữ bài và tự đăng đúng giờ. Khi thẻ hiện "Đã hẹn trên TikTok", anh có thể tắt máy.'
     }.GetNewClosure()
     # The callback captures a shared object so rebuilding the calendar does not lose its renderer.
     $calendar.Render=$renderCalendar
@@ -2201,7 +2444,7 @@ function Show-TikTokPublishDialog {
     $c.Today.Add_Click({$state.SelectedDay=[DateTime]::Today;$state.Month=$state.SelectedDay.AddDays(1-$state.SelectedDay.Day);& $calendar.Render}.GetNewClosure())
     $c.Tomorrow.Add_Click({$state.SelectedDay=[DateTime]::Today.AddDays(1);$state.Month=$state.SelectedDay.AddDays(1-$state.SelectedDay.Day);& $calendar.Render}.GetNewClosure())
     foreach($time in @('08:00','12:00','19:00','21:00')){$b=New-Object Windows.Controls.Button;$b.Content=$time;$b.Tag=$time;$b.Margin=[Windows.Thickness]::new(0,0,6,6);$b.Add_Click({param($sender,$eventArgs) $parts=([string]$sender.Tag).Split(':');$c.Hour.Text=$parts[0];$c.Minute.Text=$parts[1]}.GetNewClosure());[void]$c.TimePresets.Children.Add($b)}
-    $c.Schedule.Add_Checked({$c.WhenPanel.Visibility='Visible';$c.Private.IsChecked=$false;$c.Private.IsEnabled=$false;$c.Submit.Content='Hẹn giờ và chạy nền';$dlg.UpdateLayout();$c.WhenPanel.BringIntoView()}.GetNewClosure())
+    $c.Schedule.Add_Checked({if(-not (Test-TikTokScheduleDay $state.SelectedDay)){$state.SelectedDay=(Get-TikTokScheduleBounds).Min.Date;$state.Month=$state.SelectedDay.AddDays(1-$state.SelectedDay.Day)};& $calendar.Render;$c.WhenPanel.Visibility='Visible';$c.Private.IsChecked=$false;$c.Private.IsEnabled=$false;$c.Submit.Content='Hẹn giờ trên TikTok';$dlg.UpdateLayout();$c.WhenPanel.BringIntoView()}.GetNewClosure())
     $c.Schedule.Add_Unchecked({$c.WhenPanel.Visibility='Collapsed';$c.Private.IsEnabled=$true;$c.Submit.Content='Đăng và chạy nền'}.GetNewClosure())
     $c.ConfirmRepost.Add_Checked($updateSelection);$c.ConfirmRepost.Add_Unchecked($updateSelection)
     $c.Dashboard.Add_Click({Start-Process ((Get-TikTokEndpoint)+'/accounts')}.GetNewClosure())
@@ -2217,8 +2460,10 @@ function Show-TikTokPublishDialog {
             $scheduled=''
             if($c.Schedule.IsChecked){
                 if($c.Hour.Text -notmatch '^\d{1,2}$' -or [int]$c.Hour.Text -gt 23 -or $c.Minute.Text -notmatch '^\d{1,2}$' -or [int]$c.Minute.Text -gt 59){throw 'Giờ cần trong khoảng 00–23, phút trong khoảng 00–59.'}
+                if(-not $state.Native){throw 'Bộ đăng nền chưa hỗ trợ hẹn giờ trên TikTok. Cập nhật bộ đăng nền rồi khởi động lại.'}
                 $when=$state.SelectedDay.Date.AddHours([int]$c.Hour.Text).AddMinutes([int]$c.Minute.Text)
-                if($when -le [DateTime]::Now){throw 'Vui lòng chọn thời gian trong tương lai.'}
+                $whenError=Get-TikTokScheduleError $when
+                if($whenError){throw $whenError}
                 $scheduled=$when.ToUniversalTime().ToString('o')
             }
             $options=@{allow_comment=[int][bool]$c.Comments.IsChecked;allow_duet=[int][bool]$c.Duet.IsChecked;allow_stitch=[int][bool]$c.Stitch.IsChecked;visibility_type=[int][bool]$c.Private.IsChecked;ai_label=[int][bool]$c.AI.IsChecked}
@@ -2235,11 +2480,13 @@ function Show-TikTokPublishDialog {
             return
         }
         # The job now runs in its own process. Nothing below may re-enable Submit; failures here are logged, not fatal.
+        try{Add-TikTokHashtagsFromCaption $caption}catch{Write-FileLog ('WARN TikTok hashtag save after submit: '+$_.Exception.Message)}
         $warning=''
         try{[void](Add-TikTokLocalReceiptHistory $outDir $videoId @($state.Entries) $record)}catch{$warning=$_.Exception.Message;Write-FileLog ('WARN TikTok local history after submit: '+$warning)}
         try{Update-Gallery}catch{if(-not $warning){$warning=$_.Exception.Message};Write-FileLog ('WARN TikTok gallery refresh after submit: '+$_.Exception.Message)}
         try{$dlg.Close()}catch{Write-FileLog ('WARN TikTok dialog close after submit: '+$_.Exception.Message)}
         if($warning){Show-Toast 'Đã giao video cho bộ đăng nền, nhưng Kho chưa ghi được trạng thái mới. Kho sẽ tự cập nhật khi bộ đăng nền báo kết quả.' -Kind warning}
+        elseif($scheduled){Show-Toast 'Đang gửi video lên TikTok để hẹn giờ. Chỉ tắt máy khi thẻ hiện "Đã hẹn trên TikTok".' -Kind info}
         else{Show-Toast 'Đã giao video cho bộ đăng nền. Kết quả đăng sẽ tự cập nhật trong Kho.' -Kind info}
     }.GetNewClosure())
     $timer=New-Object Windows.Threading.DispatcherTimer;$timer.Interval=[TimeSpan]::FromMilliseconds(250)
@@ -2250,6 +2497,8 @@ function Show-TikTokPublishDialog {
             $result=Complete-TikTokTask $task
             $state.Entries=@($result.history | Where-Object {$null -ne $_})
             $state.FileSha=[string]$result.file_sha
+            $state.Native=[bool]$result.native_schedule
+            if(-not $state.Native){$c.Schedule.IsChecked=$false;$c.Schedule.IsEnabled=$false;$c.Schedule.ToolTip='Bộ đăng nền chưa hỗ trợ hẹn giờ trên TikTok. Cập nhật bộ đăng nền rồi khởi động lại.'}
             if($result.changed){Update-Gallery}
             $c.History.Children.Clear()
             if(-not $state.Entries.Count){$text=New-Object Windows.Controls.TextBlock;$text.Text='Chưa có lịch sử đăng trong hệ thống.';[void]$c.History.Children.Add($text)}
@@ -2257,6 +2506,14 @@ function Show-TikTokPublishDialog {
             foreach($entry in @($state.Entries | Select-Object -First 8)){
                 $text=New-Object Windows.Controls.TextBlock;$text.TextWrapping='Wrap';$text.Margin=[Windows.Thickness]::new(0,4,0,2)
                 $text.Text=$(if($entry.username){'@'+$entry.username}else{'Chưa rõ tài khoản'})+' · '+(Get-TikTokEntryLabel $entry $state.FileSha)
+                if($entry.status -eq 'succeeded' -and $entry.key -and ((Test-TikTokPostUrl ([string]$entry.post_url)) -or (Test-TikTokPostId ([string]$entry.post_id)) -or [string]$entry.link_state -eq 'gave_up')){
+                    $row=New-Object Windows.Controls.WrapPanel;[void]$row.Children.Add($text)
+                    $button=New-Object Windows.Controls.Button;$button.Margin=[Windows.Thickness]::new(0,4,8,4)
+                    if(Test-TikTokPostUrl ([string]$entry.post_url)){$button.Content='Mở bài đăng';$button.Tag=[string]$entry.post_url;$button.Add_Click({param($sender,$eventArgs) [void](Open-TikTokPostUrl ([string]$sender.Tag))})}
+                    elseif(Test-TikTokPostId ([string]$entry.post_id)){$button.Content='Sao chép mã';$button.Tag=[string]$entry.post_id;$button.Add_Click({param($sender,$eventArgs) [void](Copy-TikTokPostId ([string]$sender.Tag))})}
+                    else{$button.Content='Thử lấy lại link';$button.Tag=[string]$entry.key;$button.Add_Click({param($sender,$eventArgs) Start-TikTokLinkRefresh ([string]$sender.Tag);$sender.IsEnabled=$false})}
+                    [void]$row.Children.Add($button);[void]$c.History.Children.Add($row);continue
+                }
                 if($entry.status -ne 'transfer_failed' -or $entry.time_source -ne 'local'){[void]$c.History.Children.Add($text);continue}
                 # "Chưa chuyển được": the backend has no record of this request and its worker is gone (R2).
                 $row=New-Object Windows.Controls.WrapPanel;[void]$row.Children.Add($text)
@@ -4057,6 +4314,7 @@ function New-GalleryItem {
     # Nhan tren anh thu nho: ngan (dd/MM) de khong bi cat; ban day du (kem gio) o tooltip.
     $postedShort = $(if ($isPosted) { 'Đã đăng' + $(if ($postedDate) { ' · ' + $(if ($postedDate -match '^\s*(\d{1,2}/\d{1,2})') { $Matches[1] } else { ($postedDate.Trim() -split '\s+')[0] }) } else { '' }) } else { 'Chưa đăng' })
     $entry = if ($Metadata -and $Metadata.PSObject.Properties[$id]) { $Metadata.$id } else { $null }
+    $postUrl = ''; $postId = ''; $linkKey = ''; $linkState = ''
     $manual = Get-ReupManualState $entry
     if ($entry -and $entry.Source -eq 'autotok-history') {
         # Synced TikTok history (D3/D5): the badge is posted when marked manually OR a post succeeded.
@@ -4069,7 +4327,14 @@ function New-GalleryItem {
             $success = @($history | Where-Object { $_.status -eq 'succeeded' })
             $current = @($success | Where-Object { -not (Test-TikTokPriorVersion $_ $fileSha) })
             $postedShort = $(if (-not $manual.Posted -and $success.Count -and -not $current.Count) { 'Đã đăng (bản trước)' } else { 'Đã đăng' }) + $(if ($postedDate) { "`n$postedDate" } else { '' })
+            $held = @($success | Where-Object { Test-TikTokHeldByTikTok $_ })
+            if ($held.Count -and -not $manual.Posted) {
+                $postedShort = "Đã hẹn trên TikTok`n· " + (Format-TikTokClock ([string]$held[0].tiktok_schedule_time))
+                $postedText = 'Đã hẹn trên TikTok · ' + (Format-TikTokClock ([string]$held[0].tiktok_schedule_time)) + "`nTikTok giữ bài và tự đăng đúng giờ; có thể tắt máy.`n" + $postedText
+            }
         } elseif ($history.Count) { $postedShort = Get-TikTokEntryShort $history[0] }
+        $linkEntry = @($history | Where-Object { $_.status -eq 'succeeded' -and $_.key } | Sort-Object { Get-TikTokSortKey ([string]$_.accepted_at) } -Descending | Select-Object -First 1)
+        if ($linkEntry.Count) { $postId = $(if (Test-TikTokPostId ([string]$linkEntry[0].post_id)) { [string]$linkEntry[0].post_id } else { '' }); $postUrl = $(if (Test-TikTokPostUrl ([string]$linkEntry[0].post_url)) { [string]$linkEntry[0].post_url } else { '' }); $linkKey = [string]$linkEntry[0].key; $linkState = [string]$linkEntry[0].link_state }
     } elseif ($isPosted -and (Test-TikTokEnabled)) {
         $postedShort = 'Đã đăng' + $(if ($postedDate) { "`n$postedDate" } else { '' })
         $postedText += ' (đánh dấu thủ công)'
@@ -4079,8 +4344,9 @@ function New-GalleryItem {
         MetaText = $metaText; DetailText = $detail; Posted = [bool]$isPosted; ManualPosted = [bool]$manual.Posted; PostedText = $postedText; PostedShort = $postedShort
         PostedMultiline = $postedShort.Contains("`n")
         Thumb = $thumb; ThumbPath = $thumbPath; File = $File
+        PostUrl = $postUrl; PostId = $postId; LinkKey = $linkKey; LinkState = $linkState
         # Chu ky hien thi: giong nhau -> giu nguyen doi tuong cu (khong tao lai the, giu cuon/chon).
-        Signature = ([string]$File.Stamp + '|' + $metaText + '|' + $detail + '|' + $postedText + '|' + $postedShort + '|' + [bool]$manual.Posted + '|' + $thumbPath)
+        Signature = ([string]$File.Stamp + '|' + $metaText + '|' + $detail + '|' + $postedText + '|' + $postedShort + '|' + [bool]$manual.Posted + '|' + $thumbPath + '|' + $postUrl + '|' + $postId + '|' + $linkState)
     }
 }
 
@@ -4369,6 +4635,48 @@ function Invoke-GalleryRowAction {
     }
 }
 
+function Open-TikTokPostUrl {
+    param([string]$Url)
+    if (-not (Test-TikTokPostUrl $Url)) { Show-Toast 'Link bài đăng không hợp lệ, không mở.' -Kind warning; return $false }
+    Start-Process $Url
+    return $true
+}
+
+function Copy-TikTokPostUrl {
+    param([string]$Url)
+    if (-not (Test-TikTokPostUrl $Url)) { Show-Toast 'Link bài đăng không hợp lệ, không sao chép.' -Kind warning; return $false }
+    [Windows.Clipboard]::SetText($Url)
+    Show-Toast 'Đã sao chép link bài đăng.' -Kind info
+    return $true
+}
+
+function Copy-TikTokPostId {
+    param([string]$Id)
+    if (-not (Test-TikTokPostId $Id)) { Show-Toast 'Mã bài không hợp lệ, không sao chép.' -Kind warning; return $false }
+    [Windows.Clipboard]::SetText($Id)
+    Show-Toast 'Đã sao chép mã bài đăng.' -Kind info
+    return $true
+}
+
+function Start-TikTokLinkRefresh {
+    # "Thử lấy lại link": the backend looks the link up again (read-only, never reposts).
+    param([string]$Key)
+    if (-not $Key -or -not (Test-TikTokEnabled)) { return }
+    $task = Start-TikTokTask 'refresh-link' @{ key = $Key }
+    $timer = New-Object Windows.Threading.DispatcherTimer
+    $timer.Interval = [TimeSpan]::FromMilliseconds(300)
+    $timer.Tag = $task
+    $timer.Add_Tick({
+        param($sender, $eventArgs)
+        $t = $sender.Tag
+        if (-not $t.Async.IsCompleted) { return }
+        $sender.Stop()
+        try { [void](Complete-TikTokTask $t); Show-Toast 'Đang lấy lại link bài đăng. Kho sẽ tự cập nhật.' -Kind info }
+        catch { Show-Toast ('Chưa yêu cầu lấy lại link được: ' + $_.Exception.Message) -Kind warning }
+    })
+    $timer.Start()
+}
+
 function Show-GalleryCardMenu {
     # Menu "..." tren the Kho. TikTok items only when the integration is configured (D1).
     param($Button,$Item)
@@ -4379,6 +4687,14 @@ function Show-GalleryCardMenu {
         $specs+=,@('Đăng video lên TikTok',0xE898,'post')
         $specs+=,@('Lịch sử đăng video',0xE81C,'history')
         $specs+=,@($(if($Item.ManualPosted){'Bỏ đánh dấu đã đăng'}else{'Đánh dấu đã đăng'}),0xE73E,'mark')
+        if(Test-TikTokPostUrl ([string]$Item.PostUrl)){
+            $specs+=,@('Mở bài đăng',0xE8A7,'openpost')
+            $specs+=,@('Sao chép link',0xE71B,'copylink')
+        }elseif(Test-TikTokPostId ([string]$Item.PostId)){
+            $specs+=,@('Sao chép mã bài',0xE71B,'copyid')
+        }elseif([string]$Item.LinkKey -and [string]$Item.LinkState -eq 'gave_up'){
+            $specs+=,@('Thử lấy lại link',0xE72C,'refreshlink')
+        }
     }
     $specs+=,@('Sao chép để đăng',0xE8C8,'copy')
     $specs+=,@('Mở thư mục',0xE838,'folder')
@@ -4389,7 +4705,7 @@ function Show-GalleryCardMenu {
         if($spec[2] -eq 'delete'){[void]$menu.Items.Add((New-Object Windows.Controls.Separator))}
         $entry=New-Object Windows.Controls.MenuItem
         $entry.Header=[string]$spec[0];$entry.Tag=[string][char][int]$spec[1]
-        $entry.CommandParameter=@{Path=[string]$Item.Path;Action=[string]$spec[2];Item=$Item}
+        $entry.CommandParameter=@{Path=[string]$Item.Path;Action=[string]$spec[2];Item=$Item;PostUrl=[string]$Item.PostUrl;PostId=[string]$Item.PostId;LinkKey=[string]$Item.LinkKey}
         [Windows.Automation.AutomationProperties]::SetName($entry,[string]$spec[0])
         # Read all per-video context from the sender. No nested dynamic-module closures.
         $entry.Add_Click({
@@ -4400,6 +4716,10 @@ function Show-GalleryCardMenu {
                 'post' {Show-TikTokPublishDialog -FilePath $filePath}
                 'history' {Show-TikTokPublishDialog -FilePath $filePath}
                 'mark' {Set-GalleryPosted $context.Item}
+                'openpost' {Open-TikTokPostUrl ([string]$context.PostUrl)}
+                'copylink' {Copy-TikTokPostUrl ([string]$context.PostUrl)}
+                'copyid' {Copy-TikTokPostId ([string]$context.PostId)}
+                'refreshlink' {Start-TikTokLinkRefresh ([string]$context.LinkKey)}
                 'copy' {Copy-ToClipboard $filePath}
                 'folder' {Open-GalleryFile $filePath}
                 'view' {if(Invoke-GalleryView -FilePath $filePath -Controls $ui -NoAutoPlay){Set-PreviewBig $true}}

@@ -1,0 +1,150 @@
+# Changelog
+
+## Unreleased
+
+### Fixed
+- A proxy written as `http://host:port:user:pass` (the provider export format with a scheme added,
+  which isn't valid) was rejected with an error message that showed the password. The message no
+  longer quotes the port text. The npm package had the same problem.
+
+## Go 0.1.0
+
+The first version of the Go module and binary, released from the `go/v0.1.0` tag. The Python
+package is unchanged.
+
+### Added
+- Go module and a single `autotok` binary (source in `go/`). Install the binary with
+  `go install github.com/makiisthenes/TiktokAutoUploader/go/cmd/autotok@latest`, or download it from
+  the `go/v*` GitHub releases (Linux, macOS and Windows, amd64 and arm64). It needs no Python or
+  Node.js, and has the CLI's `login`, `upload`, `show`, `accounts`, `proxy`, `install-browser` and
+  `browser check` commands with the same flags. The library (`go get
+  github.com/makiisthenes/TiktokAutoUploader/go`) has the same uploader, login, per-account
+  proxies, cloud browsers and typed errors as the other packages, with `context.Context`
+  cancellation. It reads and writes the same `~/.autotok/accounts` files, so accounts work in all
+  three. It uses an installed Chrome, Chromium or Edge, or Playwright's Chromium;
+  `autotok install-browser` downloads Chrome for Testing on machines with neither. Its login
+  browser also works with SOCKS5 proxies that need a password. The Go module is versioned
+  separately, starting at 0.1.0, and released from `go/v*` tags.
+
+## 2.1.0
+
+Released together with the first version of the TypeScript SDK on npm (`autotok` 0.1.0).
+
+### Added
+- TypeScript SDK on npm: `npm install autotok` (source in `js/`). It has the same uploader, login,
+  per-account proxies, cloud browsers and typed errors as the Python package, as a typed,
+  promise-based API (`login`, `uploadVideo`, `Client`), and reads and writes the same
+  `~/.autotok/accounts` files, so accounts work in both. No Python needed; Node.js 22.12+. The npm
+  package is versioned separately (starting at 0.1.0) and released from `js-v*` tags.
+- MCP server for AI agents: `autotok mcp` (stdio) or `autotok mcp --http` (streamable HTTP on
+  `127.0.0.1:8000/mcp`), with tools to list accounts and videos, check a session, upload or
+  schedule a video (file or YouTube link), log in, and set or test proxies. Install the new `mcp`
+  extra: `pip install "autotok[mcp]"`.
+- `autotok setup`: a step-by-step wizard with arrow-key menus. It checks the browser (and offers to
+  download Chromium), asks for an account name and a proxy, tests the proxy, then logs in to TikTok
+  through it. `prompt_toolkit` is now a core dependency.
+- Proxy providers: `autotok/proxy_providers.py` lists providers that `autotok setup` and the web
+  app's login page suggest to people without a proxy, opening the provider's sign-up page. The list
+  is empty for now. The web app's login page gets a proxy picker and a Test button, and the API
+  serves the list at `GET /api/proxy/providers`.
+
+### Changed
+- TikTok-side scheduling now goes up to 30 days ahead instead of 10 (#117). TikTok still limits
+  some accounts to 10 days; if it rejects a post scheduled further out, the error says so.
+- MCP server: `upload_video` remembers each upload by account, video and caption. Calling it again
+  (for example after the client timed out) waits for or returns the first upload instead of
+  posting the video twice; pass the new `repost=true` to post the same video again on purpose.
+  Long uploads send progress notifications, so clients that support them keep waiting.
+
+### Fixed
+- Web app: retrying a scheduled upload that was cut off while publishing could post the video
+  twice. Such jobs are now marked "may already be posted", and retrying one asks you to check
+  TikTok first (the API needs `confirm_uncertain: true`). Existing databases are upgraded
+  automatically.
+- Web app: cancelling, editing or deleting a job at the moment the scheduler started it could be
+  lost, and a cancelled job could still run or be retried.
+
+### Security
+- Web app: the API now only answers to known host names (`localhost`, `127.0.0.1`; add more with
+  `AUTOTOK_ALLOWED_HOSTS`). Before, a web page using DNS rebinding could get past the
+  `X-Requested-With` check and upload, change proxies or delete accounts.
+- Web app: the login browser's VNC connection is only opened for the app's own page, and only
+  while a login is in progress. Before, any web page open during a login could watch or control the
+  virtual browser. The VNC server also listens only inside its container now.
+- Cloud browsers: when connecting to a session failed, the error message could include the
+  session's connection URL, which for Steel contains your API key. It is now hidden.
+
+## 2.0.1
+
+Documentation release; no code changes.
+
+- README: install with one line, `uv tool install "autotok[youtube]"` (pipx and pip still work).
+- README: the Termius sponsor logo now has a white version for dark mode.
+- Repository tidy-up: the self-hosted web app lives under `web/`, docs under `docs/`, and outdated
+  files (sample video, old diagrams, `youtube_downloader.py`) are gone.
+
+## 2.0.0
+
+First release on PyPI as **autotok** (`pip install autotok`).
+
+### Added
+- Installable package with an `autotok` command and a Python API (`autotok.Client`,
+  `autotok.upload_video`, `autotok.login`, typed exceptions). `python cli.py` still works.
+- Proxy support everywhere an account talks to TikTok: the login browser, signature generation and
+  every upload request. Proxies are saved per account (`autotok proxy set|clear|test`,
+  `autotok login -p`), accept the common provider formats (including `host:port:user:pass`) and
+  SOCKS5, and are always shown with the password masked. The account proxy is pinned on every
+  request, so `HTTP(S)_PROXY` environment variables can't redirect an account through another IP,
+  and the signing browser can't make direct connections.
+- Cloud browsers: `AUTOTOK_BROWSER=browserbase` or `steel` (Steel Cloud or a self-hosted
+  steel-browser) runs the login and signing browser remotely instead of on your machine. Login
+  happens through a live-view link; the account's proxy is applied to the cloud session. Providers
+  plug into a small factory (`autotok.browsers.register_provider`).
+- Settings can live in a `.env` file (`.env.example` is the template). The CLI reads `./.env`, then
+  `~/.autotok/.env`, without overriding real environment variables; `autotok.load_env()` does the
+  same from Python.
+- `Dockerfile` for the CLI (with or without a local Chromium) and a CI job that builds it and the
+  web app's compose stack.
+- `autotok accounts list|check|remove`, `autotok browser check`, `autotok install-browser`,
+  `autotok shell`, `--browser`, and `python -m autotok`.
+- Sessions can be imported from a browser cookie (`autotok login --sessionid`).
+- Web app: per-account proxy editing and testing, session check, video library (add, delete,
+  schedule by name), immediate upload from the library, proxy field on browser login.
+- Test suite and CI (Python 3.10–3.13, package build, web app build) and a PyPI publishing
+  workflow using trusted publishing.
+
+### Changed
+- Request signing runs in Python Playwright; Node.js is no longer needed.
+- Login uses Playwright Chromium (honours the account's proxy); undetected-chromedriver and Selenium
+  are no longer dependencies.
+- Sessions are stored as JSON in `~/.autotok/accounts` (owner-only permissions). 1.x pickle files in
+  `CookiesDir/` are migrated automatically with a safe loader.
+- Uploads reuse the user agent of the browser that logged in, instead of a random one per upload.
+- `-sc/--schedule` schedules on TikTok's side again (15 minutes to 10 days).
+- Licence: AGPL-3.0 with a commercial option (see README).
+
+### Fixed
+- Privacy, comment, duet and stitch settings were ignored: every post went out public with
+  everything allowed.
+- Hashtags weren't clickable (the caption markup was not sent), and emoji shifted hashtag offsets.
+- Successful uploads were reported as failures by the API and scheduler, which then retried them,
+  so a scheduled post could go out up to three times. The scheduler now only retries failures that
+  happened before publishing, and never retries a job that was interrupted mid-upload.
+- YouTube downloads always reused the same file name, so a second link re-posted the first video.
+- A missing session made the library call `sys.exit`, killing the API or scheduler.
+- Uploads could hang forever if signing failed; failures are now reported as errors.
+- Web app: uploads over 1 MB were rejected by nginx; uploads blocked the API while running; login
+  failures and timeouts were never shown; ticking an option checkbox could stop the form from
+  submitting; `docker compose up --build` failed on a clean machine because the shared base image
+  was not built first.
+- Login callbacks from the virtual browser are now signed, so other local processes can't inject a
+  session.
+
+### Security
+- The web app's API no longer allows cross-origin requests, and `POST`/`PATCH`/`DELETE` requests
+  must send `X-Requested-With: autotok`, so other web pages can't drive the local API.
+- Proxy passwords are never returned by the API or shown in logs and `repr()`.
+
+### Removed
+- `config.txt`, `setup.py` and the unused ImageMagick video-editing helpers.
+- The `cli.py schedule list|cancel` commands (use the web app's Schedules page).

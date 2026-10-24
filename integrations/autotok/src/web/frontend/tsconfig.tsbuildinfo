@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/locale.ts","./src/main.tsx","./src/api/client.ts","./src/components/schedulepicker.tsx","./src/components/sidebar.tsx","./src/pages/accounts.tsx","./src/pages/login.tsx","./src/pages/schedules.tsx","./src/pages/upload.tsx","./src/pages/videos.tsx"],"version":"5.9.3"}
