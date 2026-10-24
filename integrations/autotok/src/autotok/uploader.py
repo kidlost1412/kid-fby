@@ -6,7 +6,9 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import string
+import subprocess
 import time
 import uuid
 import zlib
@@ -33,6 +35,42 @@ from .proxy import Proxy, parse_proxy, proxied_session
 from .signer import Signer
 
 log = logging.getLogger("autotok")
+
+PROBE_TIMEOUT = 20
+
+
+def _find_ffprobe() -> str | None:
+    return shutil.which("ffprobe") or (os.environ.get("KID_FBY_FFPROBE") or None)
+
+
+def probe_video(path: Path) -> dict | None:
+    """Best-effort ffprobe of a local file: width, height, duration_ms, has_audio.
+
+    Returns None when ffprobe is missing or fails; the caller then omits the fields.
+    """
+    exe = _find_ffprobe()
+    if not exe:
+        log.debug("ffprobe not found; skipping video probe")
+        return None
+    cmd = [exe, "-v", "error", "-print_format", "json",
+           "-show_entries", "stream=codec_type,width,height:format=duration", str(path)]
+    try:
+        out = subprocess.run(cmd, capture_output=True, timeout=PROBE_TIMEOUT, check=True, shell=False).stdout
+        data = json.loads(out.decode("utf-8", "replace"))
+        streams = data.get("streams") or []
+        video = next((s for s in streams if s.get("codec_type") == "video"), None)
+        if video is None:
+            raise ValueError("no video stream")
+        result = {
+            "width": int(video["width"]),
+            "height": int(video["height"]),
+            "duration_ms": int(round(float(data["format"]["duration"]) * 1000)),
+            "has_audio": any(s.get("codec_type") == "audio" for s in streams),
+        }
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
+        log.warning("ffprobe failed (%s); publishing without size/duration fields", exc)
+        return None
+    return result
 
 MAX_CAPTION_LENGTH = 2200
 MIN_SCHEDULE = timedelta(minutes=15)
@@ -332,7 +370,8 @@ class Client:
             )
             scheduled_for = None
             payload = self._payload(creation_id, video_id, caption, caption_markup, text_extra,
-                                    vis, allow_comment, allow_duet, allow_stitch, ai_label)
+                                    vis, allow_comment, allow_duet, allow_stitch, ai_label,
+                                    probe=probe_video(path))
             if publish_at is not None:
                 ts = int(publish_at.timestamp())
                 earliest = int(time.time() + MIN_SCHEDULE.total_seconds())
@@ -447,13 +486,14 @@ class Client:
 
     @staticmethod
     def _payload(creation_id, video_id, caption, markup, text_extra, visibility,
-                 allow_comment, allow_duet, allow_stitch, ai_label) -> dict:
+                 allow_comment, allow_duet, allow_stitch, ai_label, probe=None) -> dict:
         feature = {
             "geofencing_regions": [],
             "playlist_name": "",
             "playlist_id": "",
             "tcm_params": '{"commerce_toggle_info":{}}',
             "sound_exemption": 0,
+            "music_copyright": {"result": 1},
             "anchors": [],
             "vedit_common_info": {"draft": "", "video_id": video_id},
             "privacy_setting_info": {
@@ -461,24 +501,43 @@ class Client:
                 "allow_duet": int(bool(allow_duet)),
                 "allow_stitch": int(bool(allow_stitch)),
                 "allow_comment": int(bool(allow_comment)),
+                # Defaults TikTok Studio sends today; scheduled posts fail with
+                # "Invalid parameters" without them.
+                "allow_content_reuse": 1,
+                "allow_ai_remix": 2,
             },
+            "content_check_id": "",
         }
         if ai_label:
             feature["aigc_info"] = {"aigc_label_type": 1}
+        info = {
+            "text": caption,
+            "text_extra": text_extra,
+            "markup_text": markup,
+            "music_info": {"origin_volume": "100"},
+            "poster_delay": 0,
+            "cloud_edit_is_use_video_canvas": False,
+            "is_upload_audio_track": False,
+            "mature_theme_type": 0,
+        }
+        if probe:
+            # Only what ffprobe really reported; never guessed.
+            if probe.get("width") and probe.get("height"):
+                info["cloud_edit_video_width"] = probe["width"]
+                info["cloud_edit_video_height"] = probe["height"]
+            if probe.get("duration_ms"):
+                info["video_track_time_range_list"] = [
+                    {"start_time_in_ms": 0, "end_time_in_ms": probe["duration_ms"]}]
+            if "has_audio" in probe:
+                info["has_original_audio"] = 1 if probe["has_audio"] else 0
         return {
-            "post_common_info": {"creation_id": creation_id, "enter_post_page_from": 1, "post_type": 3},
+            "post_common_info": {"creation_id": creation_id, "enter_post_page_from": 8, "post_type": 3},
             "feature_common_info_list": [feature],
             "single_post_req_list": [{
                 "batch_index": 0,
                 "video_id": video_id,
                 "is_long_video": 0,
-                "single_post_feature_info": {
-                    "text": caption,
-                    "text_extra": text_extra,
-                    "markup_text": markup,
-                    "music_info": {},
-                    "poster_delay": 0,
-                },
+                "single_post_feature_info": info,
             }],
         }
 

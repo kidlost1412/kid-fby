@@ -75,7 +75,8 @@ def test_upload_sends_requested_settings(client, video_file):
     body = json.loads(call.request.body)
     feature = body["feature_common_info_list"][0]
     assert feature["privacy_setting_info"] == {
-        "visibility_type": 1, "allow_duet": 1, "allow_stitch": 1, "allow_comment": 0}
+        "visibility_type": 1, "allow_duet": 1, "allow_stitch": 1, "allow_comment": 0,
+        "allow_content_reuse": 1, "allow_ai_remix": 2}
     assert feature["aigc_info"] == {"aigc_label_type": 1}
     assert "schedule_time" not in feature
     info = body["single_post_req_list"][0]["single_post_feature_info"]
@@ -93,8 +94,81 @@ def test_defaults_are_public_without_ai_label(client, video_file):
     client.upload(video_file, "plain caption")
     feature = json.loads(publish_call(responses).request.body)["feature_common_info_list"][0]
     assert feature["privacy_setting_info"] == {
-        "visibility_type": 0, "allow_duet": 0, "allow_stitch": 0, "allow_comment": 1}
+        "visibility_type": 0, "allow_duet": 0, "allow_stitch": 0, "allow_comment": 1,
+        "allow_content_reuse": 1, "allow_ai_remix": 2}
     assert "aigc_info" not in feature
+
+
+@pytest.fixture(autouse=True)
+def no_real_ffprobe(monkeypatch):
+    monkeypatch.setattr(uploader_mod, "probe_video", lambda path: None)
+
+
+PROBE_OK = {"width": 720, "height": 1280, "duration_ms": 5937, "has_audio": True}
+
+
+@responses.activate
+def test_payload_matches_studio_shape_for_scheduled_post(client, video_file, monkeypatch):
+    monkeypatch.setattr(uploader_mod, "probe_video", lambda path: dict(PROBE_OK))
+    mock_tiktok(responses)
+    client.upload(video_file, "test-schedule", schedule=3600)
+    body = json.loads(publish_call(responses).request.body)
+    assert body["post_common_info"]["enter_post_page_from"] == 8
+    feature = body["feature_common_info_list"][0]
+    assert isinstance(feature["schedule_time"], int)
+    assert feature["music_copyright"] == {"result": 1}
+    assert feature["content_check_id"] == ""
+    info = body["single_post_req_list"][0]["single_post_feature_info"]
+    assert info["music_info"] == {"origin_volume": "100"}
+    assert (info["cloud_edit_video_width"], info["cloud_edit_video_height"]) == (720, 1280)
+    assert info["video_track_time_range_list"] == [{"start_time_in_ms": 0, "end_time_in_ms": 5937}]
+    assert info["has_original_audio"] == 1
+    assert info["cloud_edit_is_use_video_canvas"] is False
+    assert info["is_upload_audio_track"] is False
+    assert info["mature_theme_type"] == 0
+    assert "cover_info" not in info
+
+
+@responses.activate
+def test_silent_file_has_no_original_audio(client, video_file, monkeypatch):
+    monkeypatch.setattr(uploader_mod, "probe_video", lambda path: {**PROBE_OK, "has_audio": False})
+    mock_tiktok(responses)
+    client.upload(video_file, "silent")
+    info = json.loads(publish_call(responses).request.body)["single_post_req_list"][0]["single_post_feature_info"]
+    assert info["has_original_audio"] == 0
+
+
+@responses.activate
+def test_probe_failure_omits_probe_fields_but_still_publishes(client, video_file):
+    mock_tiktok(responses)
+    result = client.upload(video_file, "no probe", schedule=3600)
+    assert result.video_id == "v123"
+    info = json.loads(publish_call(responses).request.body)["single_post_req_list"][0]["single_post_feature_info"]
+    for key in ("cloud_edit_video_width", "cloud_edit_video_height",
+                "video_track_time_range_list", "has_original_audio"):
+        assert key not in info
+
+
+def test_probe_video_returns_none_when_ffprobe_missing(video_file, monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(uploader_mod, "_find_ffprobe", lambda: None)
+    assert uploader_mod.probe_video(video_file) is None
+
+
+def test_probe_video_parses_ffprobe_json(video_file, monkeypatch):
+    monkeypatch.undo()
+    out = (b'{"streams":[{"codec_type":"video","width":720,"height":1280},{"codec_type":"audio"}],'
+           b'"format":{"duration":"5.937000"}}')
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen.update(kw)
+        return type("R", (), {"stdout": out})()
+
+    monkeypatch.setattr(uploader_mod, "_find_ffprobe", lambda: "ffprobe")
+    monkeypatch.setattr(uploader_mod.subprocess, "run", fake_run)
+    assert uploader_mod.probe_video(video_file) == PROBE_OK
+    assert seen["timeout"] == 20 and not seen.get("shell")
 
 
 @pytest.mark.parametrize("status", [408, 429, 500, 503])

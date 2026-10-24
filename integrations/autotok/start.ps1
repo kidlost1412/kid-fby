@@ -79,6 +79,10 @@ foreach ($taskService in $taskMissing) {
     }
 }
 
+# Uploader probes video size/duration with ffprobe; point it at Kid FB.Y's bundled copy when present.
+$taskFfprobe = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'toolsfmpegfprobe.exe'
+if (-not $env:KID_FBY_FFPROBE -and (Test-Path -LiteralPath $taskFfprobe -PathType Leaf)) { $env:KID_FBY_FFPROBE = $taskFfprobe }
+
 foreach ($taskService in $taskMissing) {
     $taskProcess = Start-Process -FilePath $taskPython -ArgumentList @('"' + $taskHost + '"', $taskService) `
         -WorkingDirectory $taskRoot -WindowStyle Hidden -PassThru `
