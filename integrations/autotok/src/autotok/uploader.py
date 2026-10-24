@@ -9,6 +9,7 @@ import secrets
 import shutil
 import string
 import subprocess
+import sys
 import time
 import uuid
 import zlib
@@ -16,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Union
+from urllib.parse import quote
 
 import requests
 from requests_auth_aws_sigv4 import AWSSigV4
@@ -82,6 +84,43 @@ DEFAULT_DATACENTER = "useast2a"
 AID = 1988
 
 Schedule = Union[int, float, timedelta, datetime, None]
+
+
+# Windows time zone ids -> IANA names for the tz_name TikTok expects. TIKTOK_TZ_NAME overrides.
+_WINDOWS_TZ = {
+    "SE Asia Standard Time": "Asia/Bangkok", "China Standard Time": "Asia/Shanghai",
+    "Singapore Standard Time": "Asia/Singapore", "Tokyo Standard Time": "Asia/Tokyo",
+    "Korea Standard Time": "Asia/Seoul", "Taipei Standard Time": "Asia/Taipei",
+    "India Standard Time": "Asia/Kolkata", "UTC": "UTC", "GMT Standard Time": "Europe/London",
+    "W. Europe Standard Time": "Europe/Berlin", "Eastern Standard Time": "America/New_York",
+    "Central Standard Time": "America/Chicago", "Pacific Standard Time": "America/Los_Angeles",
+}
+
+
+def local_tz_name() -> str:
+    env = os.environ.get("TIKTOK_TZ_NAME", "").strip()
+    if env:
+        return env
+    if sys.platform == "win32":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\TimeZoneInformation") as k:
+                win = winreg.QueryValueEx(k, "TimeZoneKeyName")[0].replace(chr(0), '').strip()
+            if win in _WINDOWS_TZ:
+                return _WINDOWS_TZ[win]
+        except OSError:
+            pass
+    else:
+        try:
+            link = os.path.realpath("/etc/localtime")
+            if "zoneinfo/" in link:
+                return link.split("zoneinfo/", 1)[1]
+        except OSError:
+            pass
+    # Etc/GMT names have inverted signs: UTC+7 is Etc/GMT-7.
+    offset = datetime.now().astimezone().utcoffset() or timedelta(0)
+    hours = int(offset.total_seconds() // 3600)
+    return "UTC" if hours == 0 else f"Etc/GMT{-hours:+d}"
 
 
 @dataclass
@@ -544,7 +583,10 @@ class Client:
     def _publish(self, session: requests.Session, payload: dict) -> dict:
         ms_token = session.cookies.get("msToken") or ""
         base = "https://www.tiktok.com/api/v1/web/project/post/"
-        query = f"app_name=tiktok_web&channel=tiktok_web&device_platform=web&aid={AID}&msToken={ms_token}"
+        tz = local_tz_name()
+        # TikTok Studio sends tz_name; scheduled posts are rejected ("Invalid parameters") without it.
+        query = (f"app_name=tiktok_web&channel=tiktok_web&device_platform=web&tz_name={quote(tz, safe='')}"
+                 f"&aid={AID}&msToken={ms_token}")
         if self._signer is not None:
             sig = self._signer.sign(f"{base}?{query}")
         else:
@@ -555,6 +597,7 @@ class Client:
             "app_name": "tiktok_web",
             "channel": "tiktok_web",
             "device_platform": "web",
+            "tz_name": tz,
             "aid": AID,
             "msToken": ms_token,
             "X-Bogus": sig.x_bogus,
