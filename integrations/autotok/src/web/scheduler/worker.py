@@ -30,7 +30,7 @@ from api.models import Account, ScheduledUpload, UploadHistory
 from api.services import tiktok_adapter, youtube
 from api.services import videos as library
 from api.services import links
-from api.services.history import record_success, schedule_key, track_schedule
+from api.services.history import record_failure, record_success, schedule_key, track_schedule
 from api.services.tiktok_adapter import SCHEDULE_MODE_OPTION, UploadOutcome
 
 log = logging.getLogger("scheduler.worker")
@@ -290,6 +290,9 @@ def finalize(schedule_id: int, outcome: UploadOutcome, *, attempts: int, key: Op
             entry = track_schedule(s, row)
             if outcome.ok:
                 record_success(entry, outcome, row.title)
+                s.add(entry)
+            else:
+                record_failure(entry, outcome)
                 s.add(entry)
             s.commit()
             return

@@ -52,6 +52,8 @@ export interface Schedule {
   /** Built by the backend only: https://www.tiktok.com/@user/video/<id>. */
   post_url?: string | null;
   link_state?: "" | "pending" | "found" | "gave_up" | "scheduled_on_tiktok";
+  /** Sanitized answer TikTok gave to a failed/uncertain attempt (a string if it was cut at the size cap). */
+  tiktok_response?: unknown;
 }
 
 export interface VideoFile {

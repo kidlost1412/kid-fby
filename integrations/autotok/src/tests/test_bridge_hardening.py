@@ -1151,3 +1151,120 @@ def test_absent_source_sha256_keeps_uploaded_bytes_identity(client):
     r = post(client, data=b"plain-bytes")
     assert r.status_code == 200, r.text
     assert len(lookup(client, sha256=hashlib.sha256(b"plain-bytes").hexdigest())) == 1
+
+
+
+# ======================= TikTok error response is kept =======================
+
+def _fail_json(exc):
+    from api.services.tiktok_adapter import error_response_json
+    return json.loads(error_response_json(exc))
+
+
+def test_rejected_publish_keeps_sanitized_response_with_step_and_http_status():
+    from autotok.errors import PublishError
+    body = {"status_code": 5, "status_msg": "Invalid parameters", "log_id": "2026LOG1",
+            "extra": {"description": "caption bad", "now": 1}, "message": "m",
+            "sessionid": "SECRET1", "msToken": "SECRET2", "data": {"cookie_jar": "SECRET3"},
+            "detail": "sessionid=SECRET4; Path=/"}
+    with pytest.raises(PublishError) as exc:
+        _publish(_Resp(200, body))
+    stored = _fail_json(exc.value)
+    assert stored["step"] == "publish" and stored["http_status"] == 200
+    resp = stored["response"]
+    assert (resp["status_code"], resp["status_msg"], resp["log_id"]) == (5, "Invalid parameters", "2026LOG1")
+    assert resp["extra"] == {"description": "caption bad", "now": 1} and resp["message"] == "m"
+    assert resp["detail"] == "[removed]"
+    assert "SECRET" not in json.dumps(stored)
+
+
+def test_publish_http_4xx_keeps_body_text_when_not_json():
+    from autotok.errors import PublishError
+    with pytest.raises(PublishError) as exc:
+        _publish(_Resp(403, "<html>forbidden</html>"))
+    stored = _fail_json(exc.value)
+    assert stored == {"step": "publish", "http_status": 403, "response": {"body": "<html>forbidden</html>"}}
+
+
+def test_uncertain_publish_responses_are_kept():
+    from autotok.errors import PublishUncertainError
+    with pytest.raises(PublishUncertainError) as exc:
+        _publish(_Resp(502, {"status_msg": "bad gateway"}))
+    assert _fail_json(exc.value) == {"step": "publish", "http_status": 502,
+                                     "response": {"status_msg": "bad gateway"}}
+    with pytest.raises(PublishUncertainError) as exc:
+        _publish(_Resp(200, {"data": {}, "log_id": "L9"}))  # 200 without status_code
+    assert _fail_json(exc.value)["response"] == {"data": {}, "log_id": "L9"}
+    with pytest.raises(PublishUncertainError) as exc:
+        _publish(_Resp(200, "<html>"))
+    assert _fail_json(exc.value) == {"step": "publish", "http_status": 200, "body": "<html>"}
+
+
+class _ReqSess:
+    def __init__(self, resp):
+        self.resp = resp
+
+    def request(self, *a, **kw):
+        return self.resp
+
+
+def _client_for_requests():
+    from autotok.uploader import Client
+    c = Client.__new__(Client)
+    c.timeout = 1
+    return c
+
+
+def test_upload_error_with_non_json_body_keeps_first_2kb():
+    from autotok.errors import UploadError
+    text = "x" * 5000
+    with pytest.raises(UploadError) as exc:
+        _client_for_requests()._request(_ReqSess(_Resp(500, text)), "POST", "http://t", "create project")
+    stored = _fail_json(exc.value)
+    assert stored["step"] == "create project" and stored["http_status"] == 500
+    assert stored["body"] == "x" * 2048 and "response" not in stored
+
+
+def test_upload_error_with_json_body_keeps_parsed_response_and_transfer_step():
+    from autotok.errors import UploadError
+    with pytest.raises(UploadError) as exc:
+        _client_for_requests()._request(_ReqSess(_Resp(403, {"status_msg": "denied", "token": "T"})),
+                                        "GET", "http://t", "upload auth")
+    stored = _fail_json(exc.value)
+    assert stored["step"] == "transfer" and stored["http_status"] == 403
+    assert stored["response"] == {"status_msg": "denied"}
+
+
+def test_error_without_tiktok_answer_stores_nothing():
+    from api.services.tiktok_adapter import error_response_json
+    from autotok.errors import NotLoggedInError
+    assert error_response_json(NotLoggedInError("x")) == ""
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_failed_attempt_response_reaches_history_and_api(client, monkeypatch, uncertain):
+    stored = json.dumps({"step": "publish", "http_status": 200,
+                         "response": {"status_code": 5, "status_msg": "Invalid parameters", "log_id": "L1"}})
+    monkeypatch.setattr("api.services.tiktok_adapter.upload_from_options",
+                        lambda *a: UploadOutcome(ok=False, message="TikTok rejected the post: Invalid parameters (status_code=5)",
+                                                 uncertain=uncertain, response_json=stored))
+    sid, _ = _due_desktop_job(client)
+    assert worker.tick()
+    with Session(db.engine) as s:
+        key = history.schedule_key(s.get(ScheduledUpload, sid))
+        assert s.get(UploadHistory, key).publish_response_json == stored
+    entry = client.get(f"/api/history/entry/{key}").json()
+    assert json.loads(entry["publish_response_json"])["response"]["status_msg"] == "Invalid parameters"
+    row = next(r for r in client.get("/api/schedules").json() if r["id"] == sid)
+    assert row["tiktok_response"]["step"] == "publish" and row["tiktok_response"]["http_status"] == 200
+    assert client.get(f"/api/schedules/{sid}").json()["tiktok_response"]["response"]["log_id"] == "L1"
+
+
+def test_schedules_do_not_expose_response_for_non_failed_rows(client, monkeypatch):
+    monkeypatch.setattr("api.services.tiktok_adapter.upload_from_options",
+                        lambda *a: UploadOutcome(ok=True, message="published", video_id="v",
+                                                 response_json='{"status_code": 0}'))
+    sid, _ = _due_desktop_job(client)
+    assert worker.tick()
+    row = next(r for r in client.get("/api/schedules").json() if r["id"] == sid)
+    assert row["status"] == "succeeded" and row["tiktok_response"] is None

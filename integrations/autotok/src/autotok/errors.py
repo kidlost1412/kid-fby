@@ -60,21 +60,26 @@ class UploadError(AutotokError):
 
     retryable = True
 
-    def __init__(self, message: str, *, status: int | None = None, body: str | None = None):
+    def __init__(self, message: str, *, status: int | None = None, body: str | None = None,
+                 response: dict | None = None, step: str | None = None):
         super().__init__(message)
         self.status = status
-        self.body = body
+        self.body = body  # first 2 KB of the raw text
+        self.response = response  # the parsed JSON body, when it parsed
+        self.step = step  # the request that failed, e.g. "create project", "upload auth"
 
 
 class PublishError(AutotokError):
     """TikTok rejected the post, e.g. invalid parameters or a guidelines block."""
 
     def __init__(self, message: str, *, status_code: int | None = None, status_msg: str | None = None,
-                 response: dict | None = None):
+                 response: dict | None = None, http_status: int | None = None):
         super().__init__(message)
         self.status_code = status_code
         self.status_msg = status_msg
         self.response = response or {}
+        self.step = "publish"
+        self.http_status: int | None = http_status
 
 
 class PublishUncertainError(AutotokError):
@@ -82,3 +87,11 @@ class PublishUncertainError(AutotokError):
 
     Check the account on TikTok before trying again.
     """
+
+    def __init__(self, message: str, *, response: dict | None = None, body: str | None = None,
+                 http_status: int | None = None):
+        super().__init__(message)
+        self.step = "publish"
+        self.response = response
+        self.body = body
+        self.http_status = http_status

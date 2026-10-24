@@ -67,7 +67,7 @@ _SECRET_MARKERS = ("token", "cookie", "session", "sign", "ticket", "auth", "pass
                    "csrf", "sid", "ttwid", "odin", "uid_tt", "key")
 # Fields the app needs, kept even if a marker above matches part of the name (lower-case).
 _KEEP_KEYS = {"item_id", "aweme_id", "itemid", "status_code", "status_msg", "creation_id", "video_id",
-              "single_post_resp_list", "data"}
+              "single_post_resp_list", "data", "log_id", "extra", "message", "description"}
 # A string value that looks like a cookie header or a credential, whatever its key is called.
 _SECRET_VALUE = re.compile(r"sessionid=|sid_tt=|passport|Bearer ", re.I)
 MAX_RESPONSE_JSON = 8 * 1024
@@ -186,12 +186,24 @@ def _creation_id() -> str:
     return "".join(secrets.choice(alphabet) for _ in range(21))
 
 
+MAX_ERROR_BODY = 2048
+
+
+def _parsed(r: requests.Response):
+    """The response body as JSON when it parses (and is an object), else None."""
+    try:
+        data = r.json()
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _json(r: requests.Response, what: str) -> dict:
     try:
         return r.json()
     except ValueError:
         raise UploadError(f"{what}: TikTok returned a non-JSON response (HTTP {r.status_code})",
-                          status=r.status_code, body=r.text[:500]) from None
+                          status=r.status_code, body=r.text[:MAX_ERROR_BODY], step=what) from None
 
 
 class Client:
@@ -249,9 +261,10 @@ class Client:
         try:
             r = session.request(method, url, timeout=timeout or self.timeout, **kwargs)
         except requests.RequestException as exc:
-            raise UploadError(f"{what}: network error: {exc}") from exc
+            raise UploadError(f"{what}: network error: {exc}", step=what) from exc
         if expect_ok and r.status_code != 200:
-            raise UploadError(f"{what}: HTTP {r.status_code}", status=r.status_code, body=r.text[:500])
+            raise UploadError(f"{what}: HTTP {r.status_code}", status=r.status_code, body=r.text[:MAX_ERROR_BODY],
+                              response=_parsed(r), step=what)
         return r
 
     def check_session(self) -> bool:
@@ -308,7 +321,8 @@ class Client:
             if "project" not in data:
                 raise UploadError(
                     "create project: TikTok did not return a project. The session may have expired "
-                    "or the datacenter cookie is wrong; log in again.", body=json.dumps(data)[:500]
+                    "or the datacenter cookie is wrong; log in again.", status=200,
+                    body=json.dumps(data)[:MAX_ERROR_BODY], response=data, step="create project"
                 )
 
             video_id = self._transfer(session, path)
@@ -337,6 +351,7 @@ class Client:
                         f"{exc}. This post was scheduled more than 10 days ahead, and some accounts "
                         "can only schedule up to 10 days; try an earlier time.",
                         status_code=exc.status_code, status_msg=exc.status_msg, response=exc.response,
+                        http_status=exc.http_status,
                     ) from exc
                 raise
 
@@ -375,8 +390,10 @@ class Client:
             store_uri, store_auth = store["StoreUri"], store["Auth"]
             upload_host, session_key = node["UploadHost"], node["SessionKey"]
         except (KeyError, IndexError, TypeError):
-            raise UploadError("apply upload: unexpected response from TikTok",
-                              body=json.dumps(apply)[:500]) from None
+            raise UploadError("apply upload: unexpected response from TikTok", status=200,
+                              body=json.dumps(apply)[:MAX_ERROR_BODY],
+                              response=apply if isinstance(apply, dict) else None,
+                              step="apply upload") from None
 
         upload_id = str(uuid.uuid4())
         crcs: list[str] = []
@@ -501,25 +518,30 @@ class Client:
         if r.status_code != 200:
             if r.status_code >= 500 or r.status_code in (408, 429):
                 raise PublishUncertainError(
-                    f"publish: HTTP {r.status_code}; check the account before retrying."
+                    f"publish: HTTP {r.status_code}; check the account before retrying.",
+                    response=_parsed(r), body=r.text[:MAX_ERROR_BODY], http_status=r.status_code,
                 )
-            raise PublishError(f"publish: HTTP {r.status_code}", status_code=None, status_msg=r.text[:300])
+            raise PublishError(f"publish: HTTP {r.status_code}", status_code=None, status_msg=r.text[:300],
+                               response=_parsed(r) or {"body": r.text[:MAX_ERROR_BODY]},
+                               http_status=r.status_code)
         try:
             data = r.json()
         except ValueError:
             raise PublishUncertainError(
-                "publish: TikTok returned a non-JSON response; check the account before retrying."
+                "publish: TikTok returned a non-JSON response; check the account before retrying.",
+                body=r.text[:MAX_ERROR_BODY], http_status=r.status_code,
             ) from None
         code = data.get("status_code") if isinstance(data, dict) else None
         if type(code) is not int:
             # Missing, null, "0", 0.0 or true: not TikTok's documented answer, so the outcome is unknown.
             raise PublishUncertainError(
-                f"publish: TikTok returned no usable status_code ({code!r}); check the account before retrying."
+                f"publish: TikTok returned no usable status_code ({code!r}); check the account before retrying.",
+                response=data if isinstance(data, dict) else {"body": data}, http_status=r.status_code,
             )
         if code != 0:
             msg = data.get("status_msg") or ""
             raise PublishError(f"TikTok rejected the post: {msg or 'unknown error'} (status_code={code})",
-                               status_code=code, status_msg=msg, response=data)
+                               status_code=code, status_msg=msg, response=data, http_status=r.status_code)
         return data
 
 

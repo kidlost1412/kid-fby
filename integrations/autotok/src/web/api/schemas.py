@@ -5,7 +5,7 @@ polluting the ORM layer. These schemas are what appears in `/docs`.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -240,6 +240,7 @@ class ScheduledUploadRead(BaseModel):
     post_id: Optional[str] = None
     post_url: Optional[str] = None
     link_state: str = ""
+    tiktok_response: Optional[Any] = None  # sanitized TikTok answer; failed/uncertain rows only
 
     model_config = {"from_attributes": True}
 

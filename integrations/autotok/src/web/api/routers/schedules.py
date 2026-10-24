@@ -67,6 +67,11 @@ def _with_prior_uncertain(session: Session, rows) -> List[ScheduledUploadRead]:
             item.tiktok_schedule_time = item.tiktok_schedule_time.replace(tzinfo=timezone.utc)
         if entry:
             item.post_id, item.post_url, item.link_state = entry.post_id, entry.post_url, entry.link_state or ""
+            if (row.status == "failed" or row.publish_uncertain) and entry.publish_response_json:
+                try:
+                    item.tiktok_response = json.loads(entry.publish_response_json)
+                except ValueError:  # cut at the size cap: show the raw text
+                    item.tiktok_response = entry.publish_response_json
         out.append(item)
     return out
 

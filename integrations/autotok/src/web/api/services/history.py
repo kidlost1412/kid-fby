@@ -67,6 +67,13 @@ def record_success(entry: UploadHistory, outcome, caption: str | None = None) ->
         entry.link_state, entry.link_next_at = "pending", now + LINK_FIRST_DELAY
 
 
+def record_failure(entry: UploadHistory, outcome) -> None:
+    """Keep what TikTok answered for a failed or uncertain attempt (the latest attempt wins)."""
+    text = getattr(outcome, "response_json", "") or None
+    if text:
+        entry.publish_response_json = text
+
+
 def reel_id_from_name(name: str) -> str:
     match = re.match(r"^(\d+)-3-hoan-chinh\.mp4$", name or "", re.I)
     return match.group(1) if match else ""
@@ -266,6 +273,8 @@ def finish_direct(session: Session, entry: UploadHistory, outcome, caption: str 
     entry.result_text = outcome.message
     if outcome.ok:
         record_success(entry, outcome, caption)
+    else:
+        record_failure(entry, outcome)
     session.add(entry)
     session.commit()
 

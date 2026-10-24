@@ -48,6 +48,25 @@ def native_schedule(options: dict[str, Any]) -> Optional[datetime]:
     return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
+def error_response_json(exc: Exception) -> str:
+    """Sanitized {"step", "http_status", "response"|"body"} for a failed attempt, "" if TikTok never answered."""
+    step = getattr(exc, "step", None)
+    if not step:
+        return ""
+    response = getattr(exc, "response", None)
+    wrapper: dict[str, Any] = {
+        "step": step if step in ("create project", "publish") else "transfer",
+        "http_status": getattr(exc, "http_status", None) or getattr(exc, "status", None),
+    }
+    if step not in ("create project", "publish"):
+        wrapper["detail"] = step
+    if response:
+        wrapper["response"] = response
+    elif getattr(exc, "body", None):
+        wrapper["body"] = exc.body[:2048]
+    return sanitize_response(wrapper)
+
+
 def upload_from_options(username: str, video_path: str, title: str, options: dict[str, Any]) -> UploadOutcome:
     try:
         schedule = native_schedule(options)
@@ -68,7 +87,8 @@ def upload_from_options(username: str, video_path: str, title: str, options: dic
         )
     except AutotokError as exc:
         return UploadOutcome(ok=False, message=str(exc), retryable=exc.retryable,
-                             uncertain=isinstance(exc, PublishUncertainError))
+                             uncertain=isinstance(exc, PublishUncertainError),
+                             response_json=error_response_json(exc))
     except Exception as exc:  # a bug: never retry automatically, it may have posted
         log.exception("unexpected upload failure")
         return UploadOutcome(ok=False, message=f"unexpected error: {exc}", retryable=False, uncertain=True)

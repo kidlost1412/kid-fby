@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { Accounts, Schedules, type Schedule } from "../api/client";
 import { formatDateTime, localizeMessage, scheduleStatus } from "../locale";
 import { Ban, ExternalLink, RotateCw, Trash2 } from "lucide-react";
@@ -30,6 +31,31 @@ const statusClass = (s: Schedule) => {
     default:          return "bg-amber-100 text-amber-700"; // pending
   }
 };
+
+function TikTokErrorDetails({ data }: { data: unknown }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+  const copy = () => {
+    navigator.clipboard.writeText(text).then(
+      () => { setCopied(true); setTimeout(() => setCopied(false), 1500); },
+      () => window.alert("Không sao chép được. Hãy bôi đen nội dung và sao chép thủ công."),
+    );
+  };
+  return (
+    <div className="mt-1">
+      <button className="text-xs underline text-slate-600" onClick={() => setOpen(!open)}>
+        {open ? "Ẩn chi tiết lỗi TikTok" : "Chi tiết lỗi TikTok"}
+      </button>
+      {open && (
+        <div className="mt-1">
+          <pre className="max-w-xs max-h-60 overflow-auto whitespace-pre-wrap break-all rounded bg-slate-50 p-2 text-xs">{text}</pre>
+          <button className="mt-1 text-xs underline text-brand-600" onClick={copy}>{copied ? "Đã sao chép" : "Sao chép"}</button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 const actionBtn = "inline-flex min-h-10 items-center gap-1 rounded-md border px-3 text-sm font-medium whitespace-nowrap";
 
@@ -137,6 +163,7 @@ export default function SchedulesPage() {
                       {localizeMessage(s.result_text)}
                     </div>
                   )}
+                  {s.tiktok_response != null && s.tiktok_response !== "" && <TikTokErrorDetails data={s.tiktok_response} />}
                 </td>
                 <td className="p-3 whitespace-nowrap">
                   {safeLink(s.post_url)

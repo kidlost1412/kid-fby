@@ -2514,6 +2514,13 @@ function Show-TikTokPublishDialog {
                     else{$button.Content='Thử lấy lại link';$button.Tag=[string]$entry.key;$button.Add_Click({param($sender,$eventArgs) Start-TikTokLinkRefresh ([string]$sender.Tag);$sender.IsEnabled=$false})}
                     [void]$row.Children.Add($button);[void]$c.History.Children.Add($row);continue
                 }
+                if($entry.status -eq 'failed'){
+                    # TikTok's answer to the failed attempt is kept by the background poster: its Lịch đăng page shows it.
+                    $row=New-Object Windows.Controls.WrapPanel;[void]$row.Children.Add($text)
+                    $button=New-Object Windows.Controls.Button;$button.Content='Xem chi tiết lỗi';$button.Margin=[Windows.Thickness]::new(0,4,8,4)
+                    $button.Add_Click({Start-Process ((Get-TikTokEndpoint)+'/schedules')}.GetNewClosure())
+                    [void]$row.Children.Add($button);[void]$c.History.Children.Add($row);continue
+                }
                 if($entry.status -ne 'transfer_failed' -or $entry.time_source -ne 'local'){[void]$c.History.Children.Add($text);continue}
                 # "Chưa chuyển được": the backend has no record of this request and its worker is gone (R2).
                 $row=New-Object Windows.Controls.WrapPanel;[void]$row.Children.Add($text)
