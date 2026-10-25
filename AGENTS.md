@@ -3,7 +3,7 @@
 ## Đọc và đối chiếu
 
 - Đọc `BAN-GIAO.md` rồi đối chiếu mã trước khi kết luận. Tài liệu là bản đồ theo nguồn tại thời điểm bàn giao (rà 21/10/2026, nhánh `audit-fixes-2.1`, commit `7f5851a` cùng `main`), không thay cho kiểm chứng.
-- Phiên bản nguồn ở `core/version.txt` (hiện 2.1.0, đã phát hành tag `v2.1.0`). `build-local.ps1` sinh metadata EXE theo file này. `version.json` và `version.json.sig` đã ký, nằm trên `main`, khớp các file phân phối của 2.1.0; mọi thay đổi file phân phối sau đó cần `publish.ps1` mới.
+- Phiên bản nguồn ở `core/version.txt` (hiện 2.2.0, đã phát hành tag `v2.2.0` trên `main`). `build-local.ps1` sinh metadata EXE theo file này. `version.json` và `version.json.sig` đã ký (15 file, gồm `core/autotok-bundle.zip`), nằm trên `main`, khớp các file phân phối của 2.2.0; mọi thay đổi file phân phối sau đó cần `publish.ps1` mới.
 - Tìm hàm theo tên bằng `rg`; tránh in cả dòng Base64 rất dài gần đầu GUI. Dùng `--max-columns 180` hoặc AST để đọc `$wpfGifPlayerB64`.
 
 ## Nơi sửa
@@ -20,13 +20,14 @@
 | Launcher, single-instance, resource nhúng, giao dịch update | `Program.cs`, `core/updater.ps1` |
 | Build, ký manifest và chuẩn bị phát hành | `build-local.ps1`, `publish.ps1`, `new-signing-key.ps1` |
 | Tích hợp TikTok: hộp đăng, hàng chuyển, hashtag, link bài | `core/kid-fby-gui.ps1`; làm sạch video `core/kid-fby.ps1`; backend `integrations/autotok/` |
+| Bộ cài backend TikTok một chấm, gói `core/autotok-bundle.zip` | `integrations/autotok/kid-install.ps1`, `build-autotok-bundle.ps1`; nút cài ở trang Công cụ trong `core/kid-fby-gui.ps1` |
 
 ## Chạy, kiểm, build, phát hành
 
 - Gốc dự án: `D:\reup video fb meta\`. Nhánh làm việc `audit-fixes-2.1`, nhánh chính `main`.
 - GUI: `.\Kid-FB.Y.exe`; tự kiểm khởi tạo: `.\Kid-FB.Y.exe -SelfTest`. Engine: `powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\core\kid-fby.ps1 -Check` (tham số ở đầu `core/kid-fby.ps1`).
 - Biến môi trường khi thử: `KID_FBY_NO_MSGBOX=1` (không bật hộp thoại), `KID_FBY_ALLOW_MULTI=1` (bỏ chặn mở nhiều phiên).
-- Repo không có bộ test hồi quy; `-SelfTest` là kiểm duy nhất trong repo. Harness đặt ngoài repo, dùng thư mục xuất tạm.
+- Repo không có bộ test hồi quy cho GUI/engine; `-SelfTest` là kiểm duy nhất cho phần đó. Backend autotok có pytest trong `integrations/autotok/src` (25/10/2026: 454 passed, 5 skipped, 1 xfailed). Harness GUI đặt ngoài repo, dùng thư mục xuất tạm.
 - Build: `powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\build-local.ps1` (csc .NET Framework 4, `Framework64\v4.0.30319`). Build ghi lại Base64 GIF trong `core/kid-fby-gui.ps1` nếu `.cs` đổi, kiểm 13 resource và SelfTest ở thư mục tạm; đạt khi in `PASS: fresh launcher SelfTest and all thirteen embedded resource hashes`. Build không đổi `version.json`.
 - Phát hành: `.\publish.ps1 -Version x.y.z [-Note "..."] [-Mandatory] -NoPush`; phiên bản phải lớn hơn `core/version.txt`; script đổi `version.txt`, EXE, manifest ngay và không hoàn tác. Thiếu `-NoPush` thì script tự commit, tag `v<x.y.z>` và push `main`: chỉ chủ dự án chạy.
 - Không đọc, chép hay gửi ra ngoài (kể cả cho công cụ AI khác) nội dung `data/`, `output/`, `logs/`, khóa ký.
@@ -54,6 +55,8 @@
 - Đổi `Get-CleanOutputArgs`, `Invoke-CleanVideoMux` hoặc `Test-TikTokCleanFile` phải chạy lại kiểm số keyframe và số khung trên fixture.
 - Hẹn giờ TikTok (`link_state` = `scheduled_on_tiktok`): đổi/hủy làm trong TikTok Studio; app chỉ xóa bản ghi của mình.
 - `integrations/autotok/` là mã AGPL-3.0 (upstream + sửa đổi): giữ `LICENSE` và ghi công. `.venv`, `runtime`, `config.json`, `data` không đưa vào git.
+- `core/autotok-bundle.zip` do `build-autotok-bundle.ps1` dựng (tất định, từ file git-tracked theo allowlist); không sửa zip tay. Đổi `kid-install.ps1` hoặc allowlist thì dựng lại gói rồi `publish.ps1` mới.
+- Trạng thái bộ cài trên máy (`integrations/autotok-releases`, `autotok-python311`, `autotok-current.json`, `autotok-config.json`, `autotok-start.ps1`, `autotok-install.log`) nằm trong `.gitignore`; không đưa vào git. Đổi giao dịch cài (drain, chuyển `current`, rollback) phải kiểm lại cả đường lỗi.
 - `integrations/tiktok/local.json`, khóa, cookie và dữ liệu backend (mặc định `%LOCALAPPDATA%\KidFBY\autotok-data`, hoặc `DataDir`) không đưa vào git hay tài liệu. Không đăng TikTok thật khi chủ dự án chưa cho phép.
 
 ## Dữ liệu cần giữ
