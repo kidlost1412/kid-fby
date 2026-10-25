@@ -30,3 +30,4 @@ integrations/autotok-config.json
 integrations/autotok-start.ps1
 integrations/autotok-install.log
 integrations/autotok-*.lock
+integrations/autotok-takeover-journal.json*

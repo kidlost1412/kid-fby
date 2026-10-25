@@ -146,8 +146,23 @@ function Remove-DirectorySafe([string]$Path) {
             Write-Log "WARN not deleting $full : it holds the data folder $data"; return $false
         }
     }
-    try { Remove-Item -LiteralPath $full -Recurse -Force; return $true }
+    try { Remove-TreeNoFollow $full; return $true }
     catch { Write-Log "WARN cannot delete $full : $($_.Exception.Message)"; return $false }
+}
+function Remove-TreeNoFollow([string]$Path) {
+    # Never follows a junction/symlink: a reparse point is removed as a link (the target stays), everything else is deleted.
+    $info = New-Object IO.DirectoryInfo($Path)
+    if ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        Write-Log "WARN reparse point removed as a link only (target kept): $Path"
+        [IO.Directory]::Delete($Path, $false); return
+    }
+    foreach ($child in $info.GetFileSystemInfos()) {
+        $isDir = [bool]($child.Attributes -band [IO.FileAttributes]::Directory)
+        if ($isDir) { Remove-TreeNoFollow $child.FullName }
+        else { $child.Attributes = [IO.FileAttributes]::Normal; [IO.File]::Delete($child.FullName) }
+    }
+    $info.Attributes = [IO.FileAttributes]::Directory
+    [IO.Directory]::Delete($Path, $false)
 }
 
 # --------------------------------------------------------- bundle checking ----
@@ -619,6 +634,25 @@ function Assert-DataDirAllowed([string]$Dir, [string]$Source) {
     $first = if ($within) { $full.Substring($Integrations.Length + 1).Split('\')[0] } else { '' }
     if ($full -ieq $Integrations -or ($within -and ($first -ieq 'autotok-releases' -or $first -like 'autotok-python311*'))) {
         Stop-Install 'datadir-invalid' "Thư mục dữ liệu bộ đăng '$Dir' (từ $Source) nằm trong thư mục cài đặt mà trình cài sẽ thay hoặc xoá. Chọn thư mục khác (ví dụ D:\TikTokData), chuyển dữ liệu sang đó rồi thử lại."
+    }
+    # Junction/symlink aliases: the path may look safe but resolve into a managed folder.
+    $probe = $full
+    while ($probe -and $probe.Length -gt 3) {
+        if (Test-Path -LiteralPath $probe) {
+            $item = Get-Item -LiteralPath $probe -Force
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                Write-Log "WARN data folder path passes through a reparse point: $probe (from $Source)"
+                foreach ($t in @($item.Target)) {
+                    if (-not $t) { continue }
+                    $tFull = ''
+                    try { $tFull = [IO.Path]::GetFullPath(([string]$t -replace '^\\\?\?\\', '')).TrimEnd('\') } catch { Write-Log "WARN cannot resolve link target '$t' of $probe" }
+                    if ($tFull -and ($tFull -ieq $Releases.TrimEnd('\') -or $tFull.StartsWith($Releases.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -or $tFull -like (Join-Path $Integrations 'autotok-python311*') -or $tFull -ieq $Integrations)) {
+                        Stop-Install 'datadir-invalid' "Thư mục dữ liệu bộ đăng '$Dir' (từ $Source) là lối tắt (junction/symlink) trỏ vào thư mục cài đặt mà trình cài sẽ thay hoặc xoá. Chọn thư mục thật khác (ví dụ D:\TikTokData)."
+                    }
+                }
+            }
+        }
+        $probe = [IO.Path]::GetDirectoryName($probe)
     }
 }
 function Resolve-DataDir($StarterInfo) {

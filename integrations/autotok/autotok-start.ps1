@@ -29,6 +29,7 @@ $start = Join-Path (Join-Path (Join-Path $integrations 'autotok-releases') $rele
 if (-not (Test-Path -LiteralPath $start -PathType Leaf)) { throw "Thiếu bản bộ đăng TikTok đang dùng: $start" }
 
 # Data folder: AUTOTOK_DATA_DIR from the environment wins (same order as run_autotok_web.py), else autotok-config.json.
+$incomingDataDir = $env:AUTOTOK_DATA_DIR   # $null = not set; restored before a foreign starter runs
 if (-not $env:AUTOTOK_DATA_DIR) {
     $configPath = Join-Path $integrations 'autotok-config.json'
     if (Test-Path -LiteralPath $configPath -PathType Leaf) {
@@ -117,6 +118,8 @@ if ([IO.File]::Exists($journalPath)) {
         $starter = [string]$journal.starter
         if (-not $starter -or -not (Test-Path -LiteralPath $starter -PathType Leaf)) { throw "Bộ đăng TikTok mới không chạy được; đã trả lại cấu hình bộ đăng cũ nhưng không thấy file khởi động của nó ($starter)." }
         Write-Warning "Bộ đăng TikTok mới không chạy được; đã trả lại bộ đăng cũ ($starter)."
+        # The old setup picks its own data folder: undo the managed-config override (env wins in run_autotok_web.py).
+        if ($null -eq $incomingDataDir) { Remove-Item -LiteralPath Env:\AUTOTOK_DATA_DIR -ErrorAction SilentlyContinue } else { $env:AUTOTOK_DATA_DIR = $incomingDataDir }
         & $starter
         return
     }
