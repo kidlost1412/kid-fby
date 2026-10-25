@@ -1,6 +1,6 @@
 ﻿# Bàn giao kỹ thuật Kid FB.Y
 
-Ngày rà: 21/10/2026 (đoạn 2.2.0 cập nhật 25/10/2026); lúc rà 21/10, nhánh `audit-fixes-2.1` cùng commit với `main` @ `7f5851a`. `core/version.txt` = 2.2.0; bản 2.2.0 đã phát hành qua `publish.ps1`: tag `v2.2.0` trên `main`, `version.json` và `version.json.sig` đã ký, 15 file, gồm `core/autotok-bundle.zip`. Bản 2.1.0 có tag `v2.1.0`. Bản 2.2.0 phát hành từ nhánh `audit-fixes-2.1` gộp vào `main`. Tài liệu mô tả hành vi có trong nguồn, không chứng nhận không có lỗi, hiệu năng hay kết quả của Facebook.
+Ngày rà: 21/10/2026 (đoạn 3.0.0 cập nhật 25/10/2026); lúc rà 21/10, nhánh `audit-fixes-2.1` cùng commit với `main` @ `7f5851a`. `core/version.txt` = 3.0.0; bản 3.0.0 đã phát hành qua `publish.ps1`: tag `v3.0.0` trên `main`, `version.json` và `version.json.sig` đã ký, 15 file, gồm `core/autotok-bundle.zip`. Bản 2.1.0 có tag `v2.1.0`. Bản 3.0.0 phát hành từ nhánh `audit-fixes-2.1` gộp vào `main`. Tài liệu mô tả hành vi có trong nguồn, không chứng nhận không có lỗi, hiệu năng hay kết quả của Facebook.
 
 ## 1. Cây dự án và công nghệ
 
@@ -113,7 +113,7 @@ Engine in qua `Write-Host`, GUI đọc ở Information stream (`Invoke-EngineEve
 2. `core/version.txt` là số x.y.z dùng cho GUI và metadata launcher. Build sinh AssemblyInfo tạm ngoài repo, compile Assembly/File=x.y.z.0, Product=x.y.z; không còn hardcode trong Program.cs.
 3. `build-local.ps1` thay đúng assignment `$wpfGifPlayerB64` theo byte `.cs`, parse sáu PS (kể cả `updater.ps1`), kiểm hai XAML (BOM, CRLF, XML hợp lệ) và ba font (chữ ký TrueType), dùng `C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe`, compile icon và **mười ba resource**.
 4. Build thử EXE `-SelfTest` trong thư mục tạm (đặt `KID_FBY_ALLOW_MULTI=1` để không va mutex với bản đang mở), kiểm exit, `BOOT_OK` và hash từng resource (font phải trùng từng byte); build không đổi `version.json` hoặc push/tag/commit.
-5. `publish.ps1 -Version <mới> -NoPush` tăng version, build, ghi manifest và chữ ký. Nó vẫn đổi file/version cục bộ. Không dùng lệnh này như lệnh kiểm tra không side effect. Lệnh không có `-NoPush` còn có thao tác Git (`git add -A`, commit, tag, push); đọc phần cuối script trước khi chạy. Từ 2.2.0, `publish.ps1` còn dựng `core/autotok-bundle.zip` (qua `build-autotok-bundle.ps1`) và dừng nếu gói không có trong manifest.
+5. `publish.ps1 -Version <mới> -NoPush` tăng version, build, ghi manifest và chữ ký. Nó vẫn đổi file/version cục bộ. Không dùng lệnh này như lệnh kiểm tra không side effect. Lệnh không có `-NoPush` còn có thao tác Git (`git add -A`, commit, tag, push); đọc phần cuối script trước khi chạy. Từ 3.0.0, `publish.ps1` còn dựng `core/autotok-bundle.zip` (qua `build-autotok-bundle.ps1`) và dừng nếu gói không có trong manifest.
 6. Manifest ghi hash raw cho binary/ZIP; text được bỏ BOM và chuẩn hóa CRLF→LF trước SHA256, size vẫn là byte file trên đĩa. Hash raw của PS không nhất thiết bằng hash chuẩn hóa trong manifest. Manifest liệt kê file trực tiếp trong `core/` (`.ps1 .ico .txt .json .zip`), `core/ui/*.xaml`, `core/ui/fonts/OFL.txt` và `Kid-FB.Y.exe`; **các file `.ttf` chưa được liệt kê** (font đến máy khách qua EXE mới, vì updater cũ chuẩn hóa text sẽ làm hỏng font). `core/wpf-gif-player.cs` không nằm trong manifest.
 
 `publish.ps1` hiện không tự rollback version/config/EXE khi bước build lỗi; cần kiểm tra diff và phục hồi trên bản sao hoặc bằng thay đổi đã xác định. `-NoPush` còn có thể khởi tạo Git nếu thư mục chưa có repo, dù không commit/tag/push.
@@ -128,7 +128,7 @@ Mười ba resource nhúng: chín file `kid-fby-gui.ps1`, `kid-fby.ps1`, `whispe
 
 Luồng: tải `version.json` và `version.json.sig` (nguồn `raw.githubusercontent.com`, mirror `ghproxy.net`/`gh-proxy.com` chỉ là dự phòng), xác minh chữ ký RSA-SHA256 (khóa công khai nhúng trong `$UpdatePublicKeyXml`) **trên đúng byte manifest đã tải**, rồi mới đọc manifest. Từng file payload phải khớp SHA256 trong manifest đã xác thực trước khi ghi staging và READY bền. Launcher giữ khóa, `RecoverPending` trước `ApplyUpdate`, kiểm đường dẫn/dung lượng, sao lưu và thay version cuối. Journal/checksum/token/BOOT_OK tham gia xác nhận hoặc phục hồi; GUI mới không báo BOOT_OK trong 120 giây thì rollback và đánh dấu phiên bản đó lỗi (`failed-<ver>.flag`).
 
-**Khóa ký đã có.** `new-signing-key.ps1` tạo cặp RSA 3072 bit (mặc định ở `%USERPROFILE%\.kidfby\`, từ chối lưu trong repo, từ chối ghi đè nếu không có `-Force`). Khóa công khai đã gắn trong `$UpdatePublicKeyXml` của `core/updater.ps1`, không còn placeholder. Khóa riêng nằm ngoài repo ở `%USERPROFILE%\.kidfby\update-signing-private.xml` trên máy phát hành; **phải sao lưu**, vì mất khóa thì không phát hành được cập nhật cho máy đã cài. `publish.ps1` dừng khi thiếu khóa riêng, khi khóa riêng nằm trong repo, khi còn chuỗi `<<PUBLIC_KEY_PLACEHOLDER>>` trong `core/updater.ps1` (bước kiểm này chỉ khớp đúng chuỗi đó), hoặc khi modulus khóa công khai không khớp khóa ký. `version.json` và `version.json.sig` của 2.2.0 đã ký (15 file) và nằm trên `main`. Lịch sử: 2.1.0 đã ký và phát hành trước đó. Chữ ký manifest bảo vệ tính toàn vẹn nguồn cập nhật; nó không phải chữ ký Authenticode của EXE.
+**Khóa ký đã có.** `new-signing-key.ps1` tạo cặp RSA 3072 bit (mặc định ở `%USERPROFILE%\.kidfby\`, từ chối lưu trong repo, từ chối ghi đè nếu không có `-Force`). Khóa công khai đã gắn trong `$UpdatePublicKeyXml` của `core/updater.ps1`, không còn placeholder. Khóa riêng nằm ngoài repo ở `%USERPROFILE%\.kidfby\update-signing-private.xml` trên máy phát hành; **phải sao lưu**, vì mất khóa thì không phát hành được cập nhật cho máy đã cài. `publish.ps1` dừng khi thiếu khóa riêng, khi khóa riêng nằm trong repo, khi còn chuỗi `<<PUBLIC_KEY_PLACEHOLDER>>` trong `core/updater.ps1` (bước kiểm này chỉ khớp đúng chuỗi đó), hoặc khi modulus khóa công khai không khớp khóa ký. `version.json` và `version.json.sig` của 3.0.0 đã ký (15 file) và nằm trên `main`. Lịch sử: 2.1.0 đã ký và phát hành trước đó. Chữ ký manifest bảo vệ tính toàn vẹn nguồn cập nhật; nó không phải chữ ký Authenticode của EXE.
 
 Không xóa `core/_update`, `core/_backup`, READY, journal hay backup theo tên/tuổi file khi chưa biết giao dịch đã kết thúc. Backup còn lại có thể là đường phục hồi.
 
@@ -171,7 +171,7 @@ Các báo cáo và harness nằm ngoài repo (thư mục tạm của phiên làm
 - Lượt dọn 19/10/2026 (bản 2.0.1 trước nhánh này) từng kiểm 30 assertion engine, harness GUI, metadata build và một lượt Android thật (Reel `4340858519560389`). Mã đã thay đổi lớn từ đó (engine, GUI, launcher, updater), nên kết quả ấy chỉ còn giá trị lịch sử.
 - Phát hành 2.1.0 (21/10/2026): đường cập nhật thật, bản sao app 2.0.1 (updater cũ) nhận 2.1.0 từ GitHub, tải 11 file, SHA256 khớp, launcher cũ áp dụng; EXE 2.1.0.0; lần mở thứ hai launcher mới giải nén phông Nunito; `-SelfTest` exit 0; updater mới kiểm chữ ký trên GitHub thật (`signed=true`). Sau khi cập nhật từ 2.0.1 cần mở app thêm một lần để có Nunito, vì phông không nằm trong manifest.
 - Chạy thật 21/10/2026, 20 link: 2 lưu; 16 `vietnamese-unavailable` (bằng chứng: menu chỉ có "Âm thanh gốc" và "Tính năng dịch giọng nói hiện chưa hỗ trợ", đọc 3 lần trong khoảng 6,5 s); 2 chưa xác nhận (một mục `dub-unverified`; một mục `low-confidence` với đỉnh tương quan 0,886 và tỷ lệ 1,10 sau 2 lần thu); 0 lỗi. Một video xuất với `syncDriftMs` 949 (có cảnh báo, chưa nghe kiểm). Giới hạn: ngưỡng tỷ lệ 1,15 có thể chặt với video nhiều cảnh giống nhau; trôi lớn (> ~300 ms) hiện vẫn xuất kèm cảnh báo, chờ chủ dự án nghe kiểm để quyết định có chặn hay không.
-- Đợt 5: hai bộ kiểm định độc lập, **nằm ngoài repo trên máy làm việc** (thư mục tạm của phiên, không có trong clone Git): `qa-independent` (280 ca; lần chạy 21/10/2026: 254 PASS; các FAIL còn lại là test kỳ vọng hành vi cũ đã đổi có chủ đích, giới hạn đã biết Reel < 2 s và onset ngắt quãng, và khóa ký/manifest khi đó chưa phát hành; nay đã có 2.1.0 và 2.2.0 đã ký) và `ui-critic` (đo video: 1440×900 → 381×677, 1366×768 → 280×498, 1920×1080 → 455×809, 1366@150% → 158×282).
+- Đợt 5: hai bộ kiểm định độc lập, **nằm ngoài repo trên máy làm việc** (thư mục tạm của phiên, không có trong clone Git): `qa-independent` (280 ca; lần chạy 21/10/2026: 254 PASS; các FAIL còn lại là test kỳ vọng hành vi cũ đã đổi có chủ đích, giới hạn đã biết Reel < 2 s và onset ngắt quãng, và khóa ký/manifest khi đó chưa phát hành; nay đã có 2.1.0 và 3.0.0 đã ký) và `ui-critic` (đo video: 1440×900 → 381×677, 1366×768 → 280×498, 1920×1080 → 455×809, 1366@150% → 158×282).
 - **Chưa kiểm:** Reel tự lặp thật trên Android (`SYNC_LOOP` mới chạy với fixture); nghe/xem lệch tiếng–hình bằng tai (mới đo bằng khớp khung hình); đường tự thu lại (`start-missing`/`low-confidence`/`short-capture`) mới chạy qua giả lập, các lượt Android thật đều đạt ngay lần một; độ trôi 150–320 ms xuất hiện thường xuyên ở player Facebook và giả định "audio là đồng hồ chủ, lấy bậc d thấp nhất" chưa được xác nhận bằng nghe; updater với manifest đã ký thật chỉ kiểm một lần trên đường 2.0.1 → 2.1.0 (máy phát hành, không kiểm trên máy khác); `publish.ps1` đã dùng cho 2.1.0 nhưng chưa kiểm lại; DPI thật (số đo 150% ở trên là mô phỏng) và nhiều màn hình chưa kiểm; chất lượng dịch Meta không thuộc phạm vi kiểm.
 - Chưa bao phủ toàn bộ biến thể UI Facebook, thiết bị Android, mirror tải/cài, codec/driver GPU, clip dài (đường chữ ký ba đoạn cho video trên 300 giây) hoặc sự cố ổ đĩa/nguồn điện. Không lấy kết quả này để suy ra FPS, CPU, đồng bộ audio hay tất cả tính năng đều đúng.
 
@@ -187,9 +187,9 @@ So với bản 2.0.1, bản 2.1.0 (nhánh `audit-fixes-2.1`, nay cùng commit v�
 
 Giữ media đầu vào/bản hoàn chỉnh/lịch sử/công cụ đang dùng. Các fallback tải/cài, lớp GIF/cache/worker, helper Whisper, lịch sử và dữ liệu phục hồi còn có caller hoặc mục đích nên được giữ. Thư mục `output\.thumbs` có thể còn trên máy đã chạy bản thử trước đợt 4 và xóa tay được; ảnh thu nhỏ mới nằm ở `.cache\thumbs`. Tài liệu này cập nhật theo commit `7f5851a` trên `main` và chưa commit theo yêu cầu của tác vụ; không viết lại lịch sử Git.
 
-## 8. Tích hợp TikTok cục bộ — 24/10/2026, có trong 2.2.0 (25/10/2026)
+## 8. Tích hợp TikTok cục bộ — 24/10/2026, có trong 3.0.0 (25/10/2026)
 
-Mục đích: đăng video từ Kho lên TikTok qua autotok (`integrations/autotok/`, trong repo), không sao chép file tay. Facebook vẫn là luồng chính; tích hợp này không đổi engine tải Facebook, ngưỡng đồng bộ hay giao thức STAGE/RESULT. Bản 2.2.0 phát hành tích hợp này cùng bộ cài một chấm (xem "Bộ cài một chấm" dưới mục 9).
+Mục đích: đăng video từ Kho lên TikTok qua autotok (`integrations/autotok/`, trong repo), không sao chép file tay. Facebook vẫn là luồng chính; tích hợp này không đổi engine tải Facebook, ngưỡng đồng bộ hay giao thức STAGE/RESULT. Bản 3.0.0 phát hành tích hợp này cùng bộ cài một chấm (xem "Bộ cài một chấm" dưới mục 9).
 
 ### Bật hay tắt
 
@@ -211,7 +211,7 @@ Mục đích: đăng video từ Kho lên TikTok qua autotok (`integrations/autot
 - Kiểm health trước; backend tắt thì không băm hash. Tra cứu theo lô 500 video. SHA256 đọc theo khối, hủy được. Cache định danh `.cache\tiktok-identities.json`, chỉ ghi khi có thay đổi.
 - Không tới được backend: hiện nhãn "TikTok chưa cập nhật". Lỗi báo một lần cho mỗi request_id trong phiên, chỉ với biên nhận trong 24 giờ.
 
-## 9. Hàng chuyển nền và biên nhận — 24/10/2026, có trong 2.2.0 (25/10/2026)
+## 9. Hàng chuyển nền và biên nhận — 24/10/2026, có trong 3.0.0 (25/10/2026)
 
 Mục này thay phần hộp đăng và đồng bộ của bản 23/10 (đã bỏ).
 
@@ -273,7 +273,7 @@ Mục này thay phần hộp đăng và đồng bộ của bản 23/10 (đã b�
 - `/health`: `history_version` 2, `native_schedule` 1, `post_links` 1. DB `SCHEMA_VERSION` 3.
 - Test backend: 454 passed, 5 skipped, 1 xfailed (pytest chạy trong `integrations/autotok/src`; 25/10/2026, trước đó là 428).
 
-### Bộ cài một chấm (2.2.0, 25/10/2026)
+### Bộ cài một chấm (3.0.0, 25/10/2026)
 
 - Mục đích: cài hoặc cập nhật backend autotok từ trong app, không chép file tay.
 - Gói: `build-autotok-bundle.ps1` dựng `core/autotok-bundle.zip` theo cách tất định, từ file theo git trong allowlist, lọc theo đuôi, kèm `bundle.json` (SHA256 từng file). `publish.ps1` dựng gói và dừng nếu gói thiếu trong manifest.
@@ -300,4 +300,4 @@ Mục này thay phần hộp đăng và đồng bộ của bản 23/10 (đã b�
 - Không truy vấn được bài đăng thủ công ngoài app.
 - Hẹn mới đã chuyển lên TikTok, nhưng job chờ cục bộ cũ vẫn cần scheduler autotok chạy đúng giờ. Chưa cài dịch vụ Windows, chưa tự khởi động cùng máy.
 - **Chưa kiểm**: đăng video TikTok thật; xác minh bài trên hồ sơ; Reel Facebook thật; nhiều DPI cho hộp đăng; phản hồi publish có mã bài; bài hẹn lên đúng giờ khi máy tắt; bộ cài một chấm trên dịch vụ thật (chỉ kiểm với lớp dịch vụ giả). Kiểm bằng fixture và backend giả lập: harness WPF Windows PowerShell 5.1 STA; test làm sạch và đồng bộ trên fixture.
-- Phiên bản 2.2.0 đã phát hành qua `publish.ps1`: `core/version.txt` = 2.2.0, `version.json` và `version.json.sig` đã ký (15 file, gồm `core/autotok-bundle.zip`). Các thay đổi tích hợp TikTok và bộ cài nằm trong bản này (mục 8, 9).
+- Phiên bản 3.0.0 đã phát hành qua `publish.ps1`: `core/version.txt` = 3.0.0, `version.json` và `version.json.sig` đã ký (15 file, gồm `core/autotok-bundle.zip`). Các thay đổi tích hợp TikTok và bộ cài nằm trong bản này (mục 8, 9).

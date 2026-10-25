@@ -3,7 +3,7 @@
 ## Đọc và đối chiếu
 
 - Đọc `BAN-GIAO.md` rồi đối chiếu mã trước khi kết luận. Tài liệu là bản đồ theo nguồn tại thời điểm bàn giao (rà 21/10/2026, nhánh `audit-fixes-2.1`, commit `7f5851a` cùng `main`), không thay cho kiểm chứng.
-- Phiên bản nguồn ở `core/version.txt` (hiện 2.2.0, đã phát hành tag `v2.2.0` trên `main`). `build-local.ps1` sinh metadata EXE theo file này. `version.json` và `version.json.sig` đã ký (15 file, gồm `core/autotok-bundle.zip`), nằm trên `main`, khớp các file phân phối của 2.2.0; mọi thay đổi file phân phối sau đó cần `publish.ps1` mới.
+- Phiên bản nguồn ở `core/version.txt` (hiện 3.0.0, đã phát hành tag `v3.0.0` trên `main`). `build-local.ps1` sinh metadata EXE theo file này. `version.json` và `version.json.sig` đã ký (15 file, gồm `core/autotok-bundle.zip`), nằm trên `main`, khớp các file phân phối của 3.0.0; mọi thay đổi file phân phối sau đó cần `publish.ps1` mới.
 - Tìm hàm theo tên bằng `rg`; tránh in cả dòng Base64 rất dài gần đầu GUI. Dùng `--max-columns 180` hoặc AST để đọc `$wpfGifPlayerB64`.
 
 ## Nơi sửa
