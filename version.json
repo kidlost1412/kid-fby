@@ -1,16 +1,16 @@
 {
-    "version":  "3.0.0",
-    "releasedAt":  "2026-10-25 12:44",
+    "version":  "3.0.1",
+    "releasedAt":  "2026-10-25 14:23",
     "minLauncher":  "1.0.0",
     "mandatory":  false,
     "changelog":  [
-                      "Ban 3.0: dang TikTok (dang ngay, hen gio tren TikTok), xoa metadata, hashtag, cai bo dang TikTok 1 cham"
+                      "Trang thai dang ro rang hon, cap nhat nhanh, luon co link bai"
                   ],
     "files":  [
                   {
                       "path":  "core/autotok-bundle.zip",
-                      "sha256":  "ACE85F1709B877FF4509739AF22408F224BE4C39B7579B4B5B566106BA45C31D",
-                      "size":  417497
+                      "sha256":  "D220BCEB4C0F146A82A4E28A9910F02902E63CB8B06274A78E6A24FA58B97C0E",
+                      "size":  418340
                   },
                   {
                       "path":  "core/facebook-links.ps1",
@@ -29,8 +29,8 @@
                   },
                   {
                       "path":  "core/kid-fby-gui.ps1",
-                      "sha256":  "744DE77CB81B1A5CCBBDA5D02CFEDE878A454488868D1C69D1F6881B1F247FA1",
-                      "size":  580385
+                      "sha256":  "E610CF02905EE8EB2659F5BC2EF6EE17FB8479B6D8361D3916CB42C9000C9A8A",
+                      "size":  590220
                   },
                   {
                       "path":  "core/kid-fby.ps1",
@@ -45,7 +45,7 @@
                   {
                       "path":  "core/update.json",
                       "sha256":  "F32DCCFF34D3183A8ED519F0269421D7DC8B2F095A3DB1F10F00E5BE68137F55",
-                      "size":  56
+                      "size":  60
                   },
                   {
                       "path":  "core/updater.ps1",
@@ -54,7 +54,7 @@
                   },
                   {
                       "path":  "core/version.txt",
-                      "sha256":  "C9163FF21F1F2B0390DC48BDDA47179718F772F507A7CEBCECA59CE1A7129029",
+                      "sha256":  "892BEF45A1A5205BFDDB7849303EE13093D77185B84931419C334A38BC035672",
                       "size":  5
                   },
                   {
@@ -79,8 +79,8 @@
                   },
                   {
                       "path":  "Kid-FB.Y.exe",
-                      "sha256":  "14788AEE70811DB282CEAC919DCC460C4FE8026AD9076D2C260388F3684386A2",
-                      "size":  3398144
+                      "sha256":  "0BC17CED7E5DD3830277E68DCD326E51C0F89A8F234834DED9A21B90021E7297",
+                      "size":  3408384
                   }
               ]
 }
