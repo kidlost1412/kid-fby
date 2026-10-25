@@ -16,16 +16,18 @@ PID = "7429183650274961408"
 
 def test_build_post_url_handle_bounds():
     assert history.build_post_url("demo.user_1", PID) == f"https://www.tiktok.com/@demo.user_1/video/{PID}"
-    assert history.build_post_url("kid-main", PID) is None  # '-' is not allowed in a handle: never invent one
-    assert history.build_post_url("a" * 24, PID) is not None and history.build_post_url("a" * 25, PID) is None
+    # Owner decision 25/10/2026: '-' is not allowed in a handle, so use TikTok's "@_" redirect form, never invent one
+    assert history.build_post_url("kid-main", PID) == f"https://www.tiktok.com/@_/video/{PID}"
+    assert history.build_post_url("a" * 24, PID) == f"https://www.tiktok.com/@{'a' * 24}/video/{PID}"
+    assert history.build_post_url("a" * 25, PID) == f"https://www.tiktok.com/@_/video/{PID}"
     assert history.build_post_url("demo", "123") is None  # id malformed
-    assert history.build_post_url("a", PID) is None  # handle too short
+    assert history.build_post_url("a", PID) == f"https://www.tiktok.com/@_/video/{PID}"  # handle too short
 
 
-def test_record_success_with_unusable_label_still_found_without_url():
+def test_record_success_with_unusable_label_gets_redirect_url():
     entry = UploadHistory(key="k", username="(tài khoản đã xóa)")
     history.record_success(entry, SimpleNamespace(video_id="v", post_id=PID, creation_id="c", response_json=""))
-    assert (entry.link_state, entry.post_id, entry.post_url) == ("found", PID, None)
+    assert (entry.link_state, entry.post_id, entry.post_url) == ("found", PID, f"https://www.tiktok.com/@_/video/{PID}")
 
 
 def test_sanitize_keeps_ids_and_drops_credentials():

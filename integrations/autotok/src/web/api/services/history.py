@@ -1,6 +1,7 @@
 """Durable local upload history, shared by desktop, direct upload and scheduler."""
 from __future__ import annotations
 import hashlib
+import json
 import logging
 import os
 import re
@@ -15,6 +16,7 @@ from sqlmodel import Session, select
 from api.db import now_utc
 from api.models import Account, DesktopReceipt, ScheduledUpload, UploadHistory
 from api.services import videos as library
+from api.services.tiktok_adapter import SCHEDULE_MODE_OPTION, SCHEDULE_OPTION
 
 log = logging.getLogger("api.history")
 
@@ -32,13 +34,52 @@ _POST_ID = re.compile(r"[0-9]{17,20}")
 
 
 def build_post_url(username: str, post_id: str | None) -> str | None:
-    """The only place a public post link is made. None unless both parts are well-formed. A label that
-    is not a valid TikTok handle (e.g. "kid-main") gives no URL; the post id is still stored."""
+    """The only place a public post link is made. None unless the post id is well-formed. A label that
+    is not a valid TikTok handle (e.g. "kid-main") gets "@_": TikTok redirects /@_/video/<id> to the
+    real post (checked 25/10/2026), so no handle is ever invented."""
     if not post_id or not _POST_ID.fullmatch(post_id):
         return None
-    if not _HANDLE.fullmatch(username or ""):
-        return None
-    return f"https://www.tiktok.com/@{username}/video/{post_id}"
+    handle = username if _HANDLE.fullmatch(username or "") else "_"
+    return f"https://www.tiktok.com/@{handle}/video/{post_id}"
+
+
+def post_url_of(entry) -> str | None:
+    """Stored link, or the one rows saved before the "@_" rule (post_id set, post_url NULL) now get."""
+    return entry.post_url or build_post_url(entry.username, entry.post_id)
+
+
+def _job_mode(job: ScheduledUpload) -> str:
+    try:
+        options = json.loads(job.options_json or "{}")
+    except ValueError:
+        options = {}
+    if not isinstance(options, dict):
+        options = {}
+    mode = options.get(SCHEDULE_MODE_OPTION)
+    if mode in ("now", "native"):
+        return mode
+    return "native" if options.get(SCHEDULE_OPTION) else "local"  # legacy: the job waited on this PC
+
+
+def schedule_modes(session: Session, entries) -> dict[str, str]:
+    """By entry key: "now" (post right away), "native" (TikTok holds it until tiktok_schedule_time),
+    "local" (legacy job that waited on this PC until planned_for) or "" (unknown). planned_for alone
+    cannot tell: a "now" job's planned_for is its creation time."""
+    entries = list(entries)
+    jobs: dict[str, ScheduledUpload] = {}
+    for chunk in chunks(sorted({e.schedule_id for e in entries if e.schedule_id is not None})):
+        for job in session.exec(select(ScheduledUpload).where(ScheduledUpload.id.in_(chunk))).all():
+            jobs[schedule_key(job)] = job  # keyed like the entry, so a reused integer ID never matches
+    return {entry.key: schedule_mode_of(entry, jobs.get(entry.key)) for entry in entries}
+
+
+def schedule_mode_of(entry: UploadHistory, job: ScheduledUpload | None) -> str:
+    """Mode of one entry given its own job (None when gone or not owned); no query."""
+    if job is not None and schedule_key(job) == entry.key:
+        return _job_mode(job)
+    if entry.key.startswith("request:"):  # desktop placeholder: planned_for is set only when scheduled
+        return "native" if entry.planned_for else "now"
+    return "native" if entry.tiktok_schedule_time else ""
 
 
 def record_success(entry: UploadHistory, outcome, caption: str | None = None) -> None:

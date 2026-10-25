@@ -8,7 +8,7 @@ from api.db import get_session
 from api.models import DesktopReceipt, UploadHistory
 from api.routers.desktop import expire_stale
 from api.services import links
-from api.services.history import LIGHT, chunks, entries_by_request
+from api.services.history import LIGHT, chunks, entries_by_request, post_url_of, schedule_modes
 from datetime import datetime, timezone
 
 router = APIRouter(prefix="/api/history", tags=["history"])
@@ -29,6 +29,7 @@ def _dump(entry, exclude=None):
     for key, value in data.items():
         if isinstance(value, datetime):
             data[key] = value.replace(tzinfo=timezone.utc).isoformat() if value.tzinfo is None else value.isoformat()
+    data["post_url"] = post_url_of(entry)  # rows saved before the "@_" link rule get it on read
     return data
 
 
@@ -70,14 +71,21 @@ def lookup(payload: HistoryLookup, session: Session = Depends(get_session)):
         for receipt in session.exec(select(DesktopReceipt).where(DesktopReceipt.request_id.in_(chunk))).all():
             receipts[receipt.request_id] = receipt
 
-    def read(entry):
-        return _dump(entry, exclude={"publish_response_json", "caption"})  # kept small; see GET /entry/{key}
-    result = []
+    rows = []
     for video in payload.videos:
         matched = {}
         for entry in [*by_column["sha256"].get(video.sha256, ()), *by_column["reel_id"].get(video.reel_id, ()),
                       *(by_request[r] for r in video.request_ids if r in by_request)]:
             matched[entry.key] = entry
+        rows.append((video, matched))
+    modes = schedule_modes(session, {e.key: e for _, matched in rows for e in matched.values()}.values())
+
+    def read(entry):
+        data = _dump(entry, exclude={"publish_response_json", "caption"})  # kept small; see GET /entry/{key}
+        data["schedule_mode"] = modes.get(entry.key, "")
+        return data
+    result = []
+    for video, matched in rows:
         row = {"reel_id": video.reel_id, "entries": [
             read(entry) for entry in sorted(matched.values(), key=lambda e: e.created_at, reverse=True)]}
         present = {entry.get("request_id") for entry in row["entries"]}

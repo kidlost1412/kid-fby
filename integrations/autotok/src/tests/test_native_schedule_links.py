@@ -440,10 +440,11 @@ def test_worker_idle_tick_runs_link_lookup_without_publishing(client, clock, no_
 
 def test_post_url_only_for_valid_parts():
     assert history.build_post_url("demo.user_1", POST_ID) == f"https://www.tiktok.com/@demo.user_1/video/{POST_ID}"
-    assert history.build_post_url("bad-name", POST_ID) is None
+    # Not a handle: TikTok's "@_" redirect form (owner decision 25/10/2026); the label never enters the URL.
+    assert history.build_post_url("bad-name", POST_ID) == f"https://www.tiktok.com/@_/video/{POST_ID}"
     assert history.build_post_url("demo", "123") is None
-    assert history.build_post_url("demo/../x", POST_ID) is None
-    assert history.build_post_url("demo\n", POST_ID) is None
+    assert history.build_post_url("demo/../x", POST_ID) == f"https://www.tiktok.com/@_/video/{POST_ID}"
+    assert history.build_post_url("demo\n", POST_ID) == f"https://www.tiktok.com/@_/video/{POST_ID}"
     assert history.build_post_url("demo", POST_ID + "\n") is None
     assert history.build_post_url("demo", "٧" * 19) is None  # non-ASCII digits
 

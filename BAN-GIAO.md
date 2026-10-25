@@ -243,7 +243,8 @@ Mục này thay phần hộp đăng và đồng bộ của bản 23/10 (đã b�
 
 - Uploader lấy mã bài từ các khóa rõ ràng của phản hồi publish (`item_id`, `aweme_id`, `single_post_resp_list[].item_id`, `data.item_id`...). Phản hồi đã lọc (bỏ khóa và giá trị nhạy cảm) lưu ở `publish_response_json` để sau này xem dạng thật.
 - Cột DB mới (`SCHEMA_VERSION` 3): `post_id`, `post_url`, `creation_id`, `link_state`, `link_attempts`, `link_next_at`, `tiktok_schedule_time`, `publish_response_json`, `caption`.
-- `post_url` = `https://www.tiktok.com/@<tài khoản>/video/<id>` chỉ khi nhãn tài khoản là handle hợp lệ; nếu không, chỉ hiện "Mã bài" để sao chép.
+- `post_url` = `https://www.tiktok.com/@<tài khoản>/video/<id>` khi nhãn tài khoản là handle hợp lệ; nếu không, dùng `https://www.tiktok.com/@_/video/<id>` (TikTok tự chuyển tới bài đúng, đã thử 25/10/2026). Link được dựng khi đọc nên bản ghi cũ có `post_id` cũng có link. App còn "Sao chép mã bài".
+- Trạng thái hiển thị theo `schedule_mode` (now/native): "Đang chờ đăng", "Chờ gửi lên TikTok · hẹn …", "Đang đăng…", "Đang gửi lên TikTok · hẹn …", "Đã hẹn trên TikTok · …", "Đã đăng · …". Bài đang xử lý được hỏi nhanh khoảng 5 giây/lần (`GET /api/desktop/jobs/{id}`, tối đa 10 bài/lượt); đồng bộ toàn Kho chờ 4–30 giây giữa các lượt.
 - Tra cứu dự phòng `find_post` (`autotok/posts.py`) là STUB, luôn trả None: `link_state` đi từ pending sang gave_up. "Thử lấy lại link" gọi `POST /api/history/<key>/refresh-link` (chỉ đọc, không đăng lại).
 - GUI: "Mở bài đăng" (kiểm URL trước khi mở), "Sao chép link", "Sao chép mã bài", "Thử lấy lại link".
 - Chưa kiểm: phản hồi publish thật có chứa mã bài hay không.

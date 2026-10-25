@@ -1493,7 +1493,7 @@ $script:tikTokWorker = {
                 if([int]$response.StatusCode -eq 404){$response.Dispose();$missing[$id]=$true}
                 else{
                     $job=(Read-Response $response) | ConvertFrom-Json
-                    $found[$id]=[pscustomobject]@{key=('request:'+$id);request_id=$id;username=$(if($job.username){[string]$job.username}else{[string]$r.Username});status=[string]$job.status;publish_uncertain=[bool]$job.publish_uncertain;prior_uncertain=[bool]$job.prior_uncertain;planned_for=[string]$job.planned_for;accepted_at=[string]$job.accepted_at;created_at=[string]$r.CreatedAt;time_source=[string]$job.time_source;sha256='';post_url=[string]$job.post_url;post_id=[string]$job.post_id;link_state=[string]$job.link_state;tiktok_schedule_time=[string]$job.tiktok_schedule_time}
+                    $found[$id]=[pscustomobject]@{key=('request:'+$id);request_id=$id;username=$(if($job.username){[string]$job.username}else{[string]$r.Username});status=[string]$job.status;publish_uncertain=[bool]$job.publish_uncertain;prior_uncertain=[bool]$job.prior_uncertain;planned_for=[string]$job.planned_for;accepted_at=[string]$job.accepted_at;created_at=[string]$r.CreatedAt;time_source=[string]$job.time_source;sha256='';post_url=[string]$job.post_url;post_id=[string]$job.post_id;link_state=[string]$job.link_state;tiktok_schedule_time=[string]$job.tiktok_schedule_time;schedule_mode=[string]$job.schedule_mode}
                 }
             }catch{if($CancelToken.IsCancellationRequested){throw}<# unknown outcome: the receipt stays blocking #>}
         }
@@ -1572,6 +1572,69 @@ $script:tikTokWorker = {
         $result.Failures=$failures.ToArray()
         return $result
     }
+    function Get-ActiveRequests($Meta){
+        # Entries Kho shows as waiting or posting: the only ones the fast pass asks about.
+        $list=New-Object Collections.Generic.List[object]
+        foreach($p in $Meta.PSObject.Properties){
+            if($null -eq $p.Value -or $p.Value.Source -ne 'autotok-history'){continue}
+            foreach($h in @($p.Value.History)){
+                if($h -and [string]$h.request_id -cmatch '^[a-f0-9]{32}$' -and [string]$h.status -in @('preparing','pending','queued','running')){$list.Add(@{VideoId=[string]$p.Name;RequestId=[string]$h.request_id})}
+            }
+        }
+        return $list.ToArray()
+    }
+    function Invoke-FastStatus($Data){
+        # Fast path: at most 10 GET /api/desktop/jobs/{id} per pass for active entries only. Never hashes files and
+        # never waits for the full lookup, so a first-run hash of the whole Kho does not delay it.
+        $outDir=Get-CanonicalPath ([string]$Data.out_dir)
+        $stamp=Get-FileStamp (Join-Path $outDir 'reup-status.json')
+        $active=if($stamp -eq [string]$Data.last_stamp -and $null -ne $Data.active){@($Data.active)}else{@(Get-ActiveRequests (Get-ReupMetadata -OutDir $outDir))}
+        $result=@{Changed=$false;Stamp=$stamp;Active=$active;Cursor=[string]$Data.cursor;Polled=0}
+        if(-not $active.Count){return $result}
+        $sorted=@($active | Sort-Object {[string]$_.RequestId} -CaseSensitive)
+        $after=@($sorted | Where-Object {[string]::CompareOrdinal([string]$_.RequestId,$result.Cursor) -gt 0})
+        $before=@($sorted | Where-Object {[string]::CompareOrdinal([string]$_.RequestId,$result.Cursor) -le 0})
+        $jobs=@{}
+        foreach($a in @(@($after)+@($before) | Select-Object -First 10)){
+            $CancelToken.ThrowIfCancellationRequested()
+            $id=[string]$a.RequestId;$result.Cursor=$id
+            $linked=[Threading.CancellationTokenSource]::CreateLinkedTokenSource($CancelToken);$linked.CancelAfter([TimeSpan]::FromSeconds(10))
+            try{
+                $response=$client.GetAsync($BaseUrl+'/api/desktop/jobs/'+$id,$linked.Token).GetAwaiter().GetResult()
+                if([int]$response.StatusCode -eq 404){$response.Dispose();continue}  # not on the backend yet: the full sync decides
+                $job=(Read-Response $response) | ConvertFrom-Json
+                if([string]$job.status){$jobs[$id]=@{VideoId=[string]$a.VideoId;Job=$job};$result.Polled++}
+            }catch{if($CancelToken.IsCancellationRequested){throw};break}  # backend unreachable: the full sync reports it
+            finally{$linked.Dispose()}
+        }
+        if(-not $jobs.Count){return $result}
+        $update=Update-ReupMetadata -OutDir $outDir -Change {
+            param($meta)
+            $any=$false
+            foreach($vid in @($jobs.Values | ForEach-Object {$_.VideoId} | Select-Object -Unique)){
+                $prop=$meta.PSObject.Properties[$vid]
+                if(-not $prop -or $prop.Value.Source -ne 'autotok-history'){continue}
+                $history=@(foreach($h in @($prop.Value.History)){
+                    if($null -eq $h){continue}
+                    $hit=$jobs[[string]$h.request_id]
+                    if(-not $hit -or $hit.VideoId -ne $vid){$h;continue}
+                    # Same entry (key, created_at, sha256 kept); everything the backend reports is taken from it.
+                    $e=ConvertTo-TikTokHistoryEntry $h;$j=$hit.Job
+                    $e.status=[string]$j.status;$e.publish_uncertain=[bool]$j.publish_uncertain;$e.prior_uncertain=[bool]$j.prior_uncertain
+                    if($j.username){$e.username=[string]$j.username}
+                    if($j.planned_for){$e.planned_for=[string]$j.planned_for}
+                    $e.accepted_at=[string]$j.accepted_at;$e.post_url=[string]$j.post_url;$e.post_id=[string]$j.post_id;$e.link_state=[string]$j.link_state
+                    $e.tiktok_schedule_time=[string]$j.tiktok_schedule_time;$e.schedule_mode=[string]$j.schedule_mode
+                    if($j.time_source){$e.time_source=[string]$j.time_source}
+                    $e
+                })
+                if(Set-TikTokItemHistory $meta $vid $history ''){$any=$true}
+            }
+            return $any
+        }
+        $result.Changed=[bool]$update.Changed;$result.Stamp=[string]$update.Stamp;$result.Active=@(Get-ActiveRequests $update.Metadata)
+        return $result
+    }
     try{
         $payload=if($PayloadJson -is [string]){$PayloadJson | ConvertFrom-Json}else{$PayloadJson}
         if($Action -in @('accounts','prepare')){
@@ -1596,6 +1659,7 @@ $script:tikTokWorker = {
             return @{accounts=$accounts;history=@($sync.Videos[$videoId]);file_sha=[string]$sync.Hashes[$videoId];changed=[bool]$sync.Changed;native_schedule=[bool]$health.native_schedule}
         }
         if($Action -eq 'sync'){return (Invoke-HistorySync $payload $false)}
+        if($Action -eq 'fast'){return (Invoke-FastStatus $payload)}
         if($Action -eq 'create'){
             $form=[Net.Http.MultipartFormDataContent]::new()
             try{
@@ -1901,6 +1965,7 @@ function ConvertTo-TikTokHistoryEntry {
         planned_for = [string]$Entry.planned_for; accepted_at = [string]$Entry.accepted_at; created_at = [string]$Entry.created_at
         time_source = [string]$Entry.time_source; sha256 = [string]$Entry.sha256
         post_url = [string]$Entry.post_url; post_id = [string]$Entry.post_id; link_state = [string]$Entry.link_state; tiktok_schedule_time = [string]$Entry.tiktok_schedule_time
+        schedule_mode = [string]$Entry.schedule_mode
     }
 }
 
@@ -1909,7 +1974,7 @@ function Get-TikTokHistorySignature {
     $text = New-Object System.Text.StringBuilder
     foreach ($h in @($History)) {
         if ($null -eq $h) { continue }
-        [void]$text.Append([string]$h.key).Append('|').Append([string]$h.request_id).Append('|').Append([string]$h.username).Append('|').Append([string]$h.status).Append('|').Append([bool]$h.publish_uncertain).Append('|').Append([bool]$h.prior_uncertain).Append('|').Append([string]$h.planned_for).Append('|').Append([string]$h.accepted_at).Append('|').Append([string]$h.created_at).Append('|').Append([string]$h.time_source).Append('|').Append([string]$h.sha256).Append('|').Append([string]$h.post_url).Append('|').Append([string]$h.post_id).Append('|').Append([string]$h.link_state).Append('|').Append([string]$h.tiktok_schedule_time).Append("`n")
+        [void]$text.Append([string]$h.key).Append('|').Append([string]$h.request_id).Append('|').Append([string]$h.username).Append('|').Append([string]$h.status).Append('|').Append([bool]$h.publish_uncertain).Append('|').Append([bool]$h.prior_uncertain).Append('|').Append([string]$h.planned_for).Append('|').Append([string]$h.accepted_at).Append('|').Append([string]$h.created_at).Append('|').Append([string]$h.time_source).Append('|').Append([string]$h.sha256).Append('|').Append([string]$h.post_url).Append('|').Append([string]$h.post_id).Append('|').Append([string]$h.link_state).Append('|').Append([string]$h.tiktok_schedule_time).Append('|').Append([string]$h.schedule_mode).Append("`n")
     }
     return $text.ToString()
 }
@@ -1970,7 +2035,7 @@ function Merge-TikTokVideoHistory {
             key = 'local:' + $id; request_id = $id; username = [string]$r.Username; status = (Get-TikTokReceiptState $r ([bool]$NotFound[$id]) $NowUtc)
             publish_uncertain = $false; prior_uncertain = $false; planned_for = [string]$r.ScheduledFor; accepted_at = ''
             created_at = [string]$r.CreatedAt; time_source = 'local'; sha256 = ''
-            post_url = ''; post_id = ''; link_state = ''; tiktok_schedule_time = ''
+            post_url = ''; post_id = ''; link_state = ''; tiktok_schedule_time = ''; schedule_mode = $(if ([string]$r.ScheduledFor) { 'native' } else { 'now' })
         })
     }
     return @($all | Sort-Object { Get-TikTokSortKey ([string]$_.created_at) } -Descending)
@@ -2005,16 +2070,42 @@ function Test-TikTokPriorVersion {
     return [bool]([string]$Entry.sha256 -and $FileSha256 -and -not [string]::Equals([string]$Entry.sha256, $FileSha256, [StringComparison]::OrdinalIgnoreCase))
 }
 
+function Get-TikTokEntryMode {
+    # 'native' (TikTok holds the post until its time), 'now' or 'local' (legacy job that waited on this PC).
+    # planned_for alone cannot tell: the backend sets it to the creation time of a "now" job too.
+    param($Entry)
+    $mode = [string]$Entry.schedule_mode
+    if ($mode) { return $mode }
+    if ([string]$Entry.tiktok_schedule_time) { return 'native' }
+    if (-not [string]$Entry.planned_for) { return 'now' }
+    # Backend without schedule_mode: TikTok schedules start 20 minutes ahead, so a plan within 15 minutes
+    # of creation is a "now" job's creation time.
+    $planned = Get-TikTokSortKey ([string]$Entry.planned_for); $created = Get-TikTokSortKey ([string]$Entry.created_at)
+    if ($planned -and $created -and ($planned - $created) -lt [TimeSpan]::FromMinutes(15).Ticks) { return 'now' }
+    return 'native'
+}
+
+function Get-TikTokEntryWhen {
+    # The time TikTok publishes a scheduled entry: what TikTok accepted, else what was asked.
+    param($Entry)
+    if ([string]$Entry.tiktok_schedule_time) { return [string]$Entry.tiktok_schedule_time }
+    return [string]$Entry.planned_for
+}
+
 function Get-TikTokEntryLabel {
     param($Entry, [string]$FileSha256 = '')
+    $mode = Get-TikTokEntryMode $Entry
     $label = switch ([string]$Entry.status) {
         'succeeded' {
             if (Test-TikTokHeldByTikTok $Entry) { 'Đã hẹn trên TikTok · ' + (Format-TikTokClock ([string]$Entry.tiktok_schedule_time)) + ' (có thể tắt máy)' }
-            else { $link = Get-TikTokLinkText $Entry; 'Đã đăng · ' + (Format-TikTokTime $(if ([string]$Entry.tiktok_schedule_time) { [string]$Entry.tiktok_schedule_time } else { [string]$Entry.accepted_at })) + $(if ($link) { ' · ' + $link } else { '' }) }
+            else { $link = Get-TikTokLinkText $Entry; 'Đã đăng · ' + (Format-TikTokClock $(if ([string]$Entry.tiktok_schedule_time) { [string]$Entry.tiktok_schedule_time } else { [string]$Entry.accepted_at })) + $(if ($link) { ' · ' + $link } else { '' }) }
         }
-        'pending' { if ($Entry.planned_for) { 'Đang gửi lên TikTok để hẹn · ' + (Format-TikTokClock ([string]$Entry.planned_for)) } else { 'Đã nhận, chờ đăng' } }
-        'queued' { 'Đã nhận, chờ đăng' }
-        'running' { 'Đang đăng' }
+        { $_ -in @('pending', 'queued') } {
+            if ($mode -eq 'native') { 'Chờ gửi lên TikTok · hẹn ' + (Format-TikTokClock (Get-TikTokEntryWhen $Entry)) }
+            elseif ($mode -eq 'local') { 'Chờ đăng lúc ' + (Format-TikTokClock ([string]$Entry.planned_for)) }
+            else { 'Đang chờ đăng' }
+        }
+        'running' { if ($mode -eq 'native') { 'Đang gửi lên TikTok · hẹn ' + (Format-TikTokClock (Get-TikTokEntryWhen $Entry)) } else { 'Đang đăng…' } }
         'preparing' { 'Đang chuyển video' }
         'preparation_failed' { 'Chuẩn bị video thất bại' }
         'transfer_failed' { 'Chưa chuyển được sang bộ đăng nền' }
@@ -2032,10 +2123,14 @@ function Get-TikTokEntryLabel {
 function Get-TikTokEntryShort {
     param($Entry)
     if ($Entry.publish_uncertain) { return 'Chưa rõ kết quả' }
+    $mode = Get-TikTokEntryMode $Entry
     $short = switch ([string]$Entry.status) {
-        'pending' { if ($Entry.planned_for) { "Đang gửi hẹn`n" + (Format-TikTokClock ([string]$Entry.planned_for)) } else { 'Chờ đăng…' } }
-        'queued' { 'Chờ đăng…' }
-        'running' { 'Đang đăng…' }
+        { $_ -in @('pending', 'queued') } {
+            if ($mode -eq 'native') { "Chờ gửi hẹn`n" + (Format-TikTokClock (Get-TikTokEntryWhen $Entry)) }
+            elseif ($mode -eq 'local') { "Chờ đăng lúc`n" + (Format-TikTokClock ([string]$Entry.planned_for)) }
+            else { 'Đang chờ đăng' }
+        }
+        'running' { if ($mode -eq 'native') { "Đang gửi hẹn`n" + (Format-TikTokClock (Get-TikTokEntryWhen $Entry)) } else { 'Đang đăng…' } }
         'preparing' { 'Đang chuyển…' }
         'cancelled' { 'Đã hủy lịch' }
         'transfer_failed' { 'Chưa chuyển được' }
@@ -2099,13 +2194,57 @@ function Show-TikTokFailureToasts {
     }
 }
 
+function Get-TikTokSyncDelay {
+    # Pause after a full pass: 3x its duration, at least 4 s and at most 30 s (a first-run hash of the whole Kho
+    # must not push the next pass minutes away).
+    param([double]$ElapsedSeconds)
+    return [Math]::Min(30.0, [Math]::Max(4.0, 3.0 * $ElapsedSeconds))
+}
+
+function Invoke-TikTokFastTick {
+    # Fast path (a pass starts every ~5 s): status of entries that are waiting/posting, independent of the full pass.
+    # Returns $true when it started a pass in this tick.
+    param([string]$OutDir)
+    $sync = $script:tikTokSync
+    if ($sync.Fast) {
+        if (-not $sync.Fast.Async.IsCompleted) { return $false }
+        $task = $sync.Fast; $sync.Fast = $null
+        # Start to start: a slow pass (large Kho) does not add a full 5 s wait on top of its own duration.
+        $now = [DateTime]::UtcNow
+        $sync.FastNextAt = $now.AddSeconds([Math]::Max(1.0, 5.0 - $task.Clock.Elapsed.TotalSeconds))
+        try { $result = Complete-TikTokTask $task }
+        catch { Write-FileLogLimited -Key 'tiktok-fast' -Text ('WARN TikTok fast status: ' + $_.Exception.Message) -MinSeconds 300; return $false }
+        if ($task.OutDir -ne $sync.OutDir) { return $false }
+        $sync.FastStamp = [string]$result.Stamp; $sync.FastActive = @($result.Active); $sync.FastCursor = [string]$result.Cursor
+        if ($result.Changed) { $sync.FastWroteAt = [DateTime]::UtcNow; Update-Gallery }
+        return $false
+    }
+    if (-not $OutDir -or [DateTime]::UtcNow -lt $sync.FastNextAt) { return $false }
+    # Idle (nothing active, file unchanged): no task at all.
+    $stamp = Get-FileStamp (Join-Path $OutDir 'reup-status.json')
+    if ($stamp -eq $sync.FastStamp -and -not @($sync.FastActive).Count) { $sync.FastNextAt = [DateTime]::UtcNow.AddSeconds(5); return $false }
+    $sync.Fast = Start-TikTokTask 'fast' @{ out_dir = $OutDir; last_stamp = $sync.FastStamp; active = @($sync.FastActive); cursor = $sync.FastCursor }
+    $sync.Fast.OutDir = $OutDir
+    return $true
+}
+
 function Invoke-TikTokSyncTick {
     $sync = $script:tikTokSync
+    $text = [string]$ui.TxtOut.Text
+    $outDir = ''
+    if (-not [string]::IsNullOrWhiteSpace($text)) { $outDir = Get-CanonicalPath $text; if (-not [IO.Directory]::Exists($outDir)) { $outDir = '' } }
+    if ($outDir -and -not [string]::Equals($outDir, $sync.OutDir, [StringComparison]::OrdinalIgnoreCase)) {
+        # Another Kho folder: both passes follow it now (a running pass for the old folder is discarded when it ends).
+        $sync.OutDir = $outDir; $sync.IdentityCache = $null; $sync.InputSig = ''; $sync.FileStamp = ''; $sync.ProbeCursor = ''; $sync.NextAt = [DateTime]::MinValue
+        $sync.FastStamp = ''; $sync.FastActive = @(); $sync.FastCursor = ''; $sync.FastNextAt = [DateTime]::MinValue
+    }
+    # At most one pass starts per tick: opening a runspace costs the UI thread, so two in one tick add up.
+    $startedFast = $(if ($outDir) { Invoke-TikTokFastTick $outDir } else { $false })
     if ($sync.Task) {
         if (-not $sync.Task.Async.IsCompleted) { return }
         $task = $sync.Task; $sync.Task = $null
         $elapsed = $task.Clock.Elapsed.TotalSeconds
-        $sync.NextAt = [DateTime]::UtcNow.AddSeconds([Math]::Max(4.0, 3.0 * $elapsed))
+        $sync.NextAt = [DateTime]::UtcNow.AddSeconds((Get-TikTokSyncDelay $elapsed))
         try { $result = Complete-TikTokTask $task }
         catch { Set-TikTokSyncStale ('Lỗi đồng bộ: ' + $_.Exception.Message); return }
         if ($task.OutDir -ne $sync.OutDir) { return }
@@ -2113,29 +2252,29 @@ function Invoke-TikTokSyncTick {
         $sync.InputSig = [string]$result.InputSig; $sync.FileStamp = [string]$result.FileStamp; $sync.ProbeCursor = [string]$result.ProbeCursor
         Set-TikTokSyncStale ([string]$result.Stale)
         Show-TikTokFailureToasts @($result.Failures)
-        if ($result.Changed) { Update-Gallery }
+        if ($result.Changed) {
+            # The full pass read the backend before a fast write landed: it may have written an older status.
+            # Ask the fast path again right away instead of showing it until the next full pass.
+            if ($sync.FastWroteAt -gt $task.StartedAt) { $sync.FastStamp = ''; $sync.FastNextAt = [DateTime]::MinValue }
+            Update-Gallery
+        }
         return
     }
-    if ([DateTime]::UtcNow -lt $sync.NextAt) { return }
-    $text = [string]$ui.TxtOut.Text
-    if ([string]::IsNullOrWhiteSpace($text)) { return }
-    $outDir = Get-CanonicalPath $text
-    if (-not [IO.Directory]::Exists($outDir)) { return }
-    if (-not [string]::Equals($outDir, $sync.OutDir, [StringComparison]::OrdinalIgnoreCase)) {
-        $sync.OutDir = $outDir; $sync.IdentityCache = $null; $sync.InputSig = ''; $sync.FileStamp = ''; $sync.ProbeCursor = ''
-    }
+    if (-not $outDir -or $startedFast -or [DateTime]::UtcNow -lt $sync.NextAt) { return }
     Remove-TikTokStaleCleanFiles $outDir
     $payload = Get-TikTokHistoryPayload $outDir
     $payload.identity_cache = $sync.IdentityCache; $payload.last_input_sig = $sync.InputSig; $payload.last_file_stamp = $sync.FileStamp; $payload.probe_cursor = [string]$sync.ProbeCursor
     $sync.Task = Start-TikTokTask 'sync' $payload
-    $sync.Task.OutDir = $outDir
+    $sync.Task.OutDir = $outDir; $sync.Task.StartedAt = [DateTime]::UtcNow
 }
 
 function Start-TikTokStatusSync {
     if (-not (Test-TikTokEnabled)) { return }
-    $script:tikTokSync = @{ Task = $null; OutDir = ''; IdentityCache = $null; InputSig = ''; FileStamp = ''; ProbeCursor = ''; NextAt = [DateTime]::MinValue; Notified = @{}; Stale = '' }
+    $script:tikTokSync = @{ Task = $null; OutDir = ''; IdentityCache = $null; InputSig = ''; FileStamp = ''; ProbeCursor = ''; NextAt = [DateTime]::MinValue; Notified = @{}; Stale = ''
+        Fast = $null; FastStamp = ''; FastActive = @(); FastCursor = ''; FastNextAt = [DateTime]::MinValue; FastWroteAt = [DateTime]::MinValue }
+    # 1 s ticks: an idle tick only compares times and one file stamp; the passes themselves run off the UI thread.
     $script:tikTokSyncTimer = New-Object Windows.Threading.DispatcherTimer
-    $script:tikTokSyncTimer.Interval = [TimeSpan]::FromSeconds(4)
+    $script:tikTokSyncTimer.Interval = [TimeSpan]::FromSeconds(1)
     $script:tikTokSyncTimer.Add_Tick({
         try { Invoke-TikTokSyncTick }
         catch { Set-TikTokSyncStale ('Lỗi đồng bộ: ' + $_.Exception.Message) }
@@ -2817,6 +2956,7 @@ $win.Add_Closed({
     if ($script:tikTokSyncTimer) { $script:tikTokSyncTimer.Stop() }
     if ($script:autotokInstall) { $script:autotokInstall.Timer.Stop() }
     if ($script:tikTokSync -and $script:tikTokSync.Task) { Stop-TikTokTask $script:tikTokSync.Task; $script:tikTokSync.Task = $null }
+    if ($script:tikTokSync -and $script:tikTokSync.Fast) { Stop-TikTokTask $script:tikTokSync.Fast; $script:tikTokSync.Fast = $null }
 })
 
 function Get-QueueStepState {

@@ -62,6 +62,7 @@ class DesktopJobRead(BaseModel):
     post_url: str | None = None
     link_state: str = ""
     tiktok_schedule_time: datetime | None = None
+    schedule_mode: str = ""  # "now" | "native" | "local" | "" (see history.schedule_modes)
 
     @field_validator("accepted_at", "planned_for", "tiktok_schedule_time")
     @classmethod
@@ -98,9 +99,10 @@ def _read(receipt: DesktopReceipt, session: Session) -> DesktopJobRead:
         planned_for=entry.planned_for if entry else None,
         time_source=entry.time_source if entry else None,
         post_id=entry.post_id if entry else None,
-        post_url=entry.post_url if entry else None,
+        post_url=history.post_url_of(entry) if entry else None,
         link_state=(entry.link_state or "") if entry else "",
         tiktok_schedule_time=entry.tiktok_schedule_time if entry else None,
+        schedule_mode=history.schedule_mode_of(entry, job) if entry else "",  # job already loaded: no extra query
     )
 
 

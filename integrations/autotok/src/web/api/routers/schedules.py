@@ -23,7 +23,7 @@ from api.schemas import (
     ScheduledUploadUpdate,
 )
 from api.services import videos as library
-from api.services.history import chunks, local_identity, schedule_key, track_schedule
+from api.services.history import chunks, local_identity, post_url_of, schedule_key, track_schedule
 from api.services.tiktok_adapter import SCHEDULE_MODE_OPTION, SCHEDULE_OPTION, native_schedule
 
 NATIVE_LOCKED = "Đã hẹn trên TikTok — sửa/hủy trong TikTok Studio"
@@ -66,7 +66,7 @@ def _with_prior_uncertain(session: Session, rows) -> List[ScheduledUploadRead]:
         if item.tiktok_schedule_time is not None and item.tiktok_schedule_time.tzinfo is None:
             item.tiktok_schedule_time = item.tiktok_schedule_time.replace(tzinfo=timezone.utc)
         if entry:
-            item.post_id, item.post_url, item.link_state = entry.post_id, entry.post_url, entry.link_state or ""
+            item.post_id, item.post_url, item.link_state = entry.post_id, post_url_of(entry), entry.link_state or ""
             if (row.status == "failed" or row.publish_uncertain) and entry.publish_response_json:
                 try:
                     item.tiktok_response = json.loads(entry.publish_response_json)
