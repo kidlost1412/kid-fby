@@ -1,12 +1,17 @@
 {
-    "version":  "2.1.0",
-    "releasedAt":  "2026-10-21 17:42",
+    "version":  "3.0.0",
+    "releasedAt":  "2026-10-25 12:44",
     "minLauncher":  "1.0.0",
     "mandatory":  false,
     "changelog":  [
-                      "Dong bo tieng-hinh theo khung hinh,Giao dien moi phong cach cute, video xem truoc lon,Chi xuat 1 file hoan chinh, file trung gian trong .cache,Sua nhieu loi on dinh va bao mat cap nhat"
+                      "Ban 3.0: dang TikTok (dang ngay, hen gio tren TikTok), xoa metadata, hashtag, cai bo dang TikTok 1 cham"
                   ],
     "files":  [
+                  {
+                      "path":  "core/autotok-bundle.zip",
+                      "sha256":  "ACE85F1709B877FF4509739AF22408F224BE4C39B7579B4B5B566106BA45C31D",
+                      "size":  417497
+                  },
                   {
                       "path":  "core/facebook-links.ps1",
                       "sha256":  "EFFB974E8007E348AF0B0A297D7BA2B3A3CEFA8CC764526BDEE20EB4957C43B3",
@@ -24,13 +29,13 @@
                   },
                   {
                       "path":  "core/kid-fby-gui.ps1",
-                      "sha256":  "C04BC1C6F8544C2F1058906DACA271D5A9957179B0EEB53E858E2CE9D1CA1167",
-                      "size":  440705
+                      "sha256":  "744DE77CB81B1A5CCBBDA5D02CFEDE878A454488868D1C69D1F6881B1F247FA1",
+                      "size":  580385
                   },
                   {
                       "path":  "core/kid-fby.ps1",
-                      "sha256":  "EEFFFE7A20549553D915D2A0B70D2E7FA74E6FF6A485BB75C9DD00A50741F9C2",
-                      "size":  201251
+                      "sha256":  "B301F08CF83901DCE622A3D899A1C8A5318EA078EECA6A1E35CE87DB42B574A5",
+                      "size":  205994
                   },
                   {
                       "path":  "core/kid-logo.zip",
@@ -49,7 +54,7 @@
                   },
                   {
                       "path":  "core/version.txt",
-                      "sha256":  "8248F7772687AFF0B103B36898908DEB82126337F933E49A5AC04829093C58FF",
+                      "sha256":  "C9163FF21F1F2B0390DC48BDDA47179718F772F507A7CEBCECA59CE1A7129029",
                       "size":  5
                   },
                   {
@@ -59,8 +64,8 @@
                   },
                   {
                       "path":  "core/ui/MainWindow.xaml",
-                      "sha256":  "6FF5C15A3818982B286BBDF4EBE82F2324609179C50CE0AE4C196A7EDEE01B07",
-                      "size":  114038
+                      "sha256":  "EF2D4D84413AC425C899089C2DBEF5661B5E3F8E7D31BE1281D3837C283735FB",
+                      "size":  117082
                   },
                   {
                       "path":  "core/ui/Theme.xaml",
@@ -74,8 +79,8 @@
                   },
                   {
                       "path":  "Kid-FB.Y.exe",
-                      "sha256":  "7D3A7908A0E92AD32F1A8C0B3D49A5996F891E64C793C3F94CF668146584621F",
-                      "size":  3250688
+                      "sha256":  "14788AEE70811DB282CEAC919DCC460C4FE8026AD9076D2C260388F3684386A2",
+                      "size":  3398144
                   }
               ]
 }
