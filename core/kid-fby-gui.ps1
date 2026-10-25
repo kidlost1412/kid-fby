@@ -2409,13 +2409,22 @@ function Get-TikTokHashtagsFromText {
 
 function Read-TikTokHashtags {
     # Tra ve mang muc @{tag;count;lastUsed}. Thieu file -> rong. File hong -> doi ten .corrupt-<ts> roi coi nhu rong. Khong bao gio nem loi.
-    param([string]$Path = (Get-TikTokHashtagPath))
+    # $Unreadable (tuy chon): dat $true khi file ton tai nhung khong doc duoc (khoa/IO) -> nguoi goi KHONG duoc ghi de.
+    param([string]$Path = (Get-TikTokHashtagPath), [ref]$Unreadable)
     $result = New-Object 'System.Collections.Generic.List[object]'
+    if ($null -ne $Unreadable) { $Unreadable.Value = $false }
     try {
         if (-not [System.IO.File]::Exists($Path)) { return $result.ToArray() }
-        $json = $null
-        try { $json = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) }
-        catch { Write-FileLog "WARN Không đọc được hashtag đã lưu (đang bị khóa?): $($_.Exception.Message)"; return $result.ToArray() }
+        $json = $null; $readErr = $null
+        for ($try = 1; $try -le 3; $try++) {
+            try { $json = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8); $readErr = $null; break }
+            catch { $readErr = $_.Exception.Message; if ($try -lt 3) { Start-Sleep -Milliseconds 100 } }
+        }
+        if ($null -ne $readErr) {
+            Write-FileLog "WARN Không đọc được hashtag đã lưu (đang bị khóa?), giữ nguyên file: $readErr"
+            if ($null -ne $Unreadable) { $Unreadable.Value = $true }
+            return $result.ToArray()
+        }
         try {
             if ([string]::IsNullOrWhiteSpace($json) -or -not $json.TrimStart().StartsWith('{')) { throw 'Không phải đối tượng JSON.' }
             $obj = ConvertFrom-Json -InputObject $json -ErrorAction Stop
@@ -2455,18 +2464,22 @@ function Add-TikTokHashtagsFromCaption {
     if (-not $found.Count) { return }
     $now = [DateTime]::UtcNow.ToString('o')
     $items = New-Object 'System.Collections.Generic.List[object]'; $index = @{}
-    foreach ($e in @(Read-TikTokHashtags -Path $Path)) { $index[([string]$e.tag).ToLowerInvariant()] = $e; $items.Add($e) }
+    $unreadable = $false
+    foreach ($e in @(Read-TikTokHashtags -Path $Path -Unreadable ([ref]$unreadable))) { $index[([string]$e.tag).ToLowerInvariant()] = $e; $items.Add($e) }
     foreach ($tag in $found) {
         $key = $tag.ToLowerInvariant()
         if ($index.ContainsKey($key)) { $e = $index[$key]; $e.count = [int]$e.count + 1; $e.lastUsed = $now }
         else { $e = [pscustomobject]@{ tag = $tag; count = 1; lastUsed = $now }; $index[$key] = $e; $items.Add($e) }
     }
+    if ($unreadable) { return }
     Save-TikTokHashtags -Tags $items.ToArray() -Path $Path
 }
 
 function Remove-TikTokHashtag {
     param([string]$Tag, [string]$Path = (Get-TikTokHashtagPath))
-    $left = @(Read-TikTokHashtags -Path $Path | Where-Object { ([string]$_.tag) -ine $Tag })
+    $unreadable = $false
+    $left = @(Read-TikTokHashtags -Path $Path -Unreadable ([ref]$unreadable) | Where-Object { ([string]$_.tag) -ine $Tag })
+    if ($unreadable) { return }
     Save-TikTokHashtags -Tags $left -Path $Path
 }
 
