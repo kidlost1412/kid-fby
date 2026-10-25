@@ -5,6 +5,8 @@ Stable starter for the TikTok backend installed by Kid FB.Y (kid-install.ps1 wri
 autotok-current.json, so updates never rewrite local.json.
 While kid-install.ps1 holds autotok-upgrade.lock (switching releases) it refuses to start anything; the installer
 starts releases itself.
+An unverified release that does not come up goes back to the previous release, or - when it replaced a git/custom
+setup (autotok-takeover-journal.json) - to that setup.
 #>
 $ErrorActionPreference = 'Stop'
 $integrations = $PSScriptRoot
@@ -92,6 +94,33 @@ $previous = [string]$current.previous.release
 $previousDir = Join-Path (Join-Path $integrations 'autotok-releases') $previous
 $stop = Join-Path $releaseDir 'dung.ps1'
 if (Test-Path -LiteralPath $stop -PathType Leaf) { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $stop -Force | Out-Null }
+$journalPath = Join-Path $integrations 'autotok-takeover-journal.json'
+if ([IO.File]::Exists($journalPath)) {
+    $journal = [IO.File]::ReadAllText($journalPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    if ([string]$journal.release -eq $release) {
+        # This release replaced a git/custom setup and never passed the readiness gate: put that setup back
+        # (same fixed file list as kid-install.ps1) and start it.
+        $files = [ordered]@{
+            local = (Join-Path $integrations 'tiktok\local.json'); config = (Join-Path $integrations 'autotok-config.json')
+            current = $currentPath; launcher = (Join-Path $integrations 'autotok-start.ps1'); tiktokStart = (Join-Path $integrations 'tiktok\start.ps1')
+        }
+        foreach ($k in $files.Keys) {
+            $path = $files[$k]; $b64 = [string]$journal.files.$k
+            if (-not $b64) { if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }; continue }
+            $tmp = $path + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
+            try {
+                [IO.File]::WriteAllBytes($tmp, [Convert]::FromBase64String($b64))
+                if ([IO.File]::Exists($path)) { [IO.File]::Replace($tmp, $path, [NullString]::Value) } else { [IO.File]::Move($tmp, $path) }
+            } finally { if ([IO.File]::Exists($tmp)) { [IO.File]::Delete($tmp) } }
+        }
+        [IO.File]::Delete($journalPath)
+        $starter = [string]$journal.starter
+        if (-not $starter -or -not (Test-Path -LiteralPath $starter -PathType Leaf)) { throw "Bộ đăng TikTok mới không chạy được; đã trả lại cấu hình bộ đăng cũ nhưng không thấy file khởi động của nó ($starter)." }
+        Write-Warning "Bộ đăng TikTok mới không chạy được; đã trả lại bộ đăng cũ ($starter)."
+        & $starter
+        return
+    }
+}
 if ($previous -notmatch '^[0-9a-f]{12}-[0-9]{8}-[0-9]{6}$' -or -not (Test-Path -LiteralPath (Join-Path $previousDir '.kid-release-ok') -PathType Leaf)) {
     throw 'Bản bộ đăng vừa cập nhật không chạy được và không có bản cũ. Mở Kid FB.Y > Cài đặt > Công cụ và bấm cài lại.'
 }

@@ -169,6 +169,15 @@ def update_schedule(
                            "publishing. Check the account first, then retry with confirm_uncertain=true "
                            "if it isn't there.",
                 )
+            # An earlier attempt may have posted it even if the last one failed cleanly.
+            entry = session.get(UploadHistory, schedule_key(row))
+            if entry is not None and entry.prior_uncertain and not payload.confirm_uncertain:
+                raise HTTPException(
+                    status_code=409,
+                    detail="This video may already be on TikTok: an earlier attempt ended without a "
+                           "clear result. Check the account first, then retry with confirm_uncertain=true "
+                           "if it isn't there.",
+                )
             changes.update(status="pending", result_text=None, publish_uncertain=False)
             legacy_options = _legacy_options(row)
             if legacy_options is not None:

@@ -140,6 +140,19 @@ def test_login_callback_requires_token(client, monkeypatch):
     assert AccountStore().load("carol").user_agent == "UA"
 
 
+def test_callback_built_by_api_is_the_one_the_control_server_accepts(client, monkeypatch):
+    from novnc import control_server as cs
+
+    monkeypatch.setenv("API_PUBLIC_URL", "http://127.0.0.1:8765")
+    sent = []
+    monkeypatch.setattr("api.services.novnc_client.start_browser", lambda sid, user, cb, **k: sent.append((sid, cb)) or {})
+    monkeypatch.setattr("api.services.novnc_client.stop_browser", lambda *a, **k: None)
+    sid = client.post("/api/login/browser/start", json={"username": "dave"}).json()["session_id"]
+    assert sent and sent[0][0] == sid
+    assert cs.callback_allowed(sid, sent[0][1])
+    assert not cs.callback_allowed("another-session", sent[0][1])
+
+
 def test_session_check_only_invalidates_on_rejection(client, saved_account, monkeypatch):
     from autotok.errors import NotLoggedInError, UploadError
 

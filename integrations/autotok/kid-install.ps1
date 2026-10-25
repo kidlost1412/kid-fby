@@ -18,7 +18,10 @@ The old release stays current until the new one has passed every check and answe
 after the old services were stopped puts the old release back and starts it again.
 Test switches (never set by the GUI): KID_AUTOTOK_INSTALL_FAKE=services|all replaces the service layer (start,
 stop, health, jobs, ports) - and with 'all' also Python/pip/validation - by a JSON state file
-KID_AUTOTOK_FAKE_STATE; KID_AUTOTOK_FAIL_AT=<phase> injects a failure (fake mode only).
+KID_AUTOTOK_FAKE_STATE ('dead'/'broken': services down / not coming back on start); KID_AUTOTOK_FAIL_AT=<phase>
+injects a failure, hang-<phase> waits there to be killed (fake mode only).
+Takeover of a git/custom starter keeps a durable journal (autotok-takeover-journal.json) until the new release is
+verified; rollback, the next run and autotok-start.ps1 restore the old setup from it.
 KID_AUTOTOK_PYTHON_NUPKG may point at an already downloaded python nupkg; it must match the pinned SHA256.
 #>
 param(
@@ -58,6 +61,10 @@ $LauncherPath = Join-Path $Integrations 'autotok-start.ps1'
 $LocalJsonPath = Join-Path $Integrations 'tiktok\local.json'
 $TikTokStartPath = Join-Path $Integrations 'tiktok\start.ps1'
 $LogPath = Join-Path $Integrations 'autotok-install.log'
+# Takeover of a git/custom setup: original bytes of the files below (fixed keys; paths never come from the journal),
+# written before anything is stopped and deleted once the new release passed the readiness gate.
+$JournalPath = Join-Path $Integrations 'autotok-takeover-journal.json'
+$TakeoverFiles = [ordered]@{ local = $LocalJsonPath; config = $ConfigPath; current = $CurrentPath; launcher = $LauncherPath; tiktokStart = $TikTokStartPath }
 # Not under tools\: "Gỡ thư viện" in the app deletes the whole tools folder.
 $PythonDir = Join-Path $Integrations 'autotok-python311'
 $Fake = [string]$env:KID_AUTOTOK_INSTALL_FAKE
@@ -87,6 +94,8 @@ function Stop-Install([string]$Reason, [string]$Message) {
     throw $e
 }
 function Test-FailAt([string]$Phase) {
+    # hang-<phase>: stop here so a test can kill the process at this point.
+    if ($FailAt -eq "hang-$Phase") { Write-Step 'hang' 0 $Phase; Start-Sleep -Seconds 600 }
     if ($FailAt -eq $Phase) { Stop-Install "$Phase-failed" "Lỗi giả lập ở bước $Phase (chế độ kiểm thử)." }
 }
 
@@ -114,6 +123,17 @@ function Open-ExclusiveLock([string]$Path, [string]$BusyMessage) {
     try { return New-Object IO.FileStream($Path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None, 4096, [IO.FileOptions]::DeleteOnClose) }
     catch { Stop-Install 'busy' $BusyMessage }
 }
+function Get-ProtectedDataDirs {
+    # Every data folder the backend may use (this run's choice, autotok-config.json, AUTOTOK_DATA_DIR), as full paths.
+    $dirs = @()
+    if ($script:config -and $script:config.Dir) { $dirs += [string]$script:config.Dir }
+    if ($env:AUTOTOK_DATA_DIR) { $dirs += [string]$env:AUTOTOK_DATA_DIR }
+    if ([IO.File]::Exists($ConfigPath)) { try { $dirs += [string](Read-JsonFile $ConfigPath).DataDir } catch { <# unreadable config: nothing to add #> } }
+    foreach ($d in $dirs) {
+        if ($d.Trim() -notmatch '^([A-Za-z]:\\|\\\\[^\\])') { continue }
+        try { [IO.Path]::GetFullPath($d.Trim()).TrimEnd('\') } catch { <# invalid path: cannot hold data #> }
+    }
+}
 function Remove-DirectorySafe([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return $true }
     $full = [IO.Path]::GetFullPath($Path)
@@ -121,6 +141,11 @@ function Remove-DirectorySafe([string]$Path) {
     $inReleases = $full.StartsWith([IO.Path]::GetFullPath($Releases).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)
     $isPythonWork = ([IO.Path]::GetDirectoryName($full) -ieq [IO.Path]::GetFullPath($Integrations).TrimEnd('\')) -and ([IO.Path]::GetFileName($full) -like 'autotok-python311.*')
     if (-not ($inReleases -or $isPythonWork)) { throw "Refusing to delete outside the installer folders: $full" }
+    foreach ($data in @(Get-ProtectedDataDirs)) {
+        if ($data -ieq $full.TrimEnd('\') -or $data.StartsWith($full.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            Write-Log "WARN not deleting $full : it holds the data folder $data"; return $false
+        }
+    }
     try { Remove-Item -LiteralPath $full -Recurse -Force; return $true }
     catch { Write-Log "WARN cannot delete $full : $($_.Exception.Message)"; return $false }
 }
@@ -486,13 +511,13 @@ function Test-TargetProcessesAlive($Target) {
     return [bool](@(@($records) | Where-Object { $_ -and (Test-ProcessRecordAlive $_) }).Count)
 }
 function Test-SchedulerAlive([string]$ReleaseDir) {
-    if ($Fake) { $s = Get-FakeState; return ($s.running -eq (Split-Path -Leaf $ReleaseDir) -and -not (@($s.unhealthy) -contains $s.running)) }
+    if ($Fake) { $s = Get-FakeState; return ($s.running -eq (Split-Path -Leaf $ReleaseDir) -and -not (@($s.unhealthy) -contains $s.running) -and -not (@($s.dead) -contains 'scheduler')) }
     $state = Join-Path $ReleaseDir 'runtime\processes.json'
     try { $records = Read-JsonFile $state } catch { return $false }
     return [bool](@(@($records) | Where-Object { $_ -and [string]$_.service -eq 'scheduler' -and (Test-ProcessRecordAlive $_) }).Count)
 }
 function Test-ControlHealthy {
-    if ($Fake) { return (Test-BackendHealthy) }
+    if ($Fake) { return ((Test-BackendHealthy) -and -not (@((Get-FakeState).dead) -contains 'control')) }
     try { $h = Get-LocalJson 'http://127.0.0.1:17900/health'; return [bool]$h } catch { return $false }
 }
 function Start-Backend($Target) {
@@ -502,7 +527,10 @@ function Start-Backend($Target) {
         $label = Get-TargetLabel $Target
         Add-FakeEvent "start $label"
         if ($FailAt -eq 'start' -and $Target.IsNew) { Stop-Install 'start-failed' 'Lỗi giả lập khi khởi động bản mới.' }
-        $s = Get-FakeState; $s.running = $label; Save-FakeState $s
+        # Like start.ps1: services listed in 'dead' come back, except those also listed in 'broken'.
+        $s = Get-FakeState; $s.running = $label
+        $s | Add-Member -NotePropertyName dead -NotePropertyValue @(@($s.dead) | Where-Object { $_ -and (@($s.broken) -contains $_) }) -Force
+        Save-FakeState $s
         return
     }
     if ($Target.Kind -eq 'release') {
@@ -580,21 +608,38 @@ function Write-CurrentJson([string]$Release, [string]$Sha, [string]$Version, [st
 function Get-ReleaseVersion([string]$Dir) {
     try { return [string](Read-JsonFile (Join-Path $Dir '.kid\bundle.json')).version } catch { return '' }
 }
+function Assert-DataDirAllowed([string]$Dir, [string]$Source) {
+    # The data folder (accounts, cookies, schedules) must never sit where the installer replaces or deletes folders.
+    $full = ''
+    if ($Dir -match '^([A-Za-z]:\\|\\\\[^\\])') {
+        try { $full = [IO.Path]::GetFullPath($Dir).TrimEnd('\') } catch { $full = '' }
+    }
+    if (-not $full) { Stop-Install 'datadir-invalid' "Thư mục dữ liệu bộ đăng '$Dir' (từ $Source) không phải đường dẫn đầy đủ hợp lệ. Sửa thành dạng D:\TikTokData rồi thử lại." }
+    $within = $full.StartsWith($Integrations + '\', [StringComparison]::OrdinalIgnoreCase)
+    $first = if ($within) { $full.Substring($Integrations.Length + 1).Split('\')[0] } else { '' }
+    if ($full -ieq $Integrations -or ($within -and ($first -ieq 'autotok-releases' -or $first -like 'autotok-python311*'))) {
+        Stop-Install 'datadir-invalid' "Thư mục dữ liệu bộ đăng '$Dir' (từ $Source) nằm trong thư mục cài đặt mà trình cài sẽ thay hoặc xoá. Chọn thư mục khác (ví dụ D:\TikTokData), chuyển dữ liệu sang đó rồi thử lại."
+    }
+}
 function Resolve-DataDir($StarterInfo) {
     # Existing choice wins: autotok-config.json, then AUTOTOK_DATA_DIR, then the git setup's config.json, then default.
+    # AUTOTOK_DATA_DIR also wins when the services start (Start-Backend, run_autotok_web.py): check it in every case.
+    if ($env:AUTOTOK_DATA_DIR -and $env:AUTOTOK_DATA_DIR.Trim()) { Assert-DataDirAllowed $env:AUTOTOK_DATA_DIR.Trim() 'AUTOTOK_DATA_DIR' }
     if (Test-Path -LiteralPath $ConfigPath -PathType Leaf) {
         $v = ''
         try { $v = [string](Read-JsonFile $ConfigPath).DataDir } catch { Stop-Install 'config-invalid' "autotok-config.json lỗi: $($_.Exception.Message). Sửa hoặc xoá file rồi thử lại." }
         if (-not $v.Trim()) { Stop-Install 'config-invalid' 'autotok-config.json thiếu DataDir.' }
+        Assert-DataDirAllowed $v.Trim() 'autotok-config.json'
         return @{ Dir = $v.Trim(); Created = $false }
     }
-    $dir = ''
+    $dir = ''; $source = 'AUTOTOK_DATA_DIR'
     if ($env:AUTOTOK_DATA_DIR) { $dir = $env:AUTOTOK_DATA_DIR.Trim() }
     if (-not $dir -and $StarterInfo.Kind -eq 'foreign' -and $StarterInfo.Starter) {
-        $gitConfig = Join-Path (Split-Path -Parent $StarterInfo.Starter) 'config.json'
+        $gitConfig = Join-Path (Split-Path -Parent $StarterInfo.Starter) 'config.json'; $source = $gitConfig
         if (Test-Path -LiteralPath $gitConfig -PathType Leaf) { try { $dir = [string](Read-JsonFile $gitConfig).DataDir } catch { Write-Log "WARN $gitConfig unreadable: $($_.Exception.Message)" } }
     }
-    if (-not $dir) { $dir = Join-Path $env:LOCALAPPDATA 'KidFBY\autotok-data' }
+    if (-not $dir) { $dir = Join-Path $env:LOCALAPPDATA 'KidFBY\autotok-data'; $source = 'LOCALAPPDATA' }
+    Assert-DataDirAllowed $dir.Trim() $source
     Write-FileAtomic $ConfigPath (ConvertTo-JsonBytes ([ordered]@{ DataDir = $dir.Trim() }))
     Write-Log "config: wrote $ConfigPath"
     return @{ Dir = $dir.Trim(); Created = $true }
@@ -609,6 +654,35 @@ function Install-SharedFiles([string]$ReleaseDir) {
     $starter = Get-StarterInfo
     if ($starter.Kind -ne 'ours') { Write-FileAtomic $LocalJsonPath (ConvertTo-JsonBytes ([ordered]@{ Starter = $LauncherPath })) }
 }
+function Write-TakeoverJournal($Journal, [string]$Phase) {
+    $Journal.phase = $Phase
+    Write-FileAtomic $JournalPath (ConvertTo-JsonBytes $Journal)
+    Write-Log "takeover journal: $Phase"
+}
+function Restore-Takeover($Journal, [string]$Why) {
+    # Puts the git/custom setup back exactly as before the takeover and starts it again if it was running.
+    # Returns a note for the result message. The journal is deleted only after every file was restored.
+    $rel = [string]$Journal.release
+    if ($rel -match $ReleasePattern) {
+        $newTarget = @{ Kind = 'release'; Dir = (Join-Path $Releases $rel) }
+        if (Test-TargetProcessesAlive $newTarget) { [void](Stop-Backend $newTarget -Force); [void](Wait-PortsFree 20) }
+    }
+    foreach ($k in $TakeoverFiles.Keys) {
+        $b64 = [string]$Journal.files.$k
+        $bytes = $null
+        if ($b64) { $bytes = [Convert]::FromBase64String($b64) }
+        Restore-FileBytes $TakeoverFiles[$k] $bytes
+    }
+    # Files are back: from here the git/custom setup is in charge again, also if its own starter fails below.
+    [IO.File]::Delete($JournalPath)
+    Write-Log "takeover restored ($Why): starter=$($Journal.starter)"
+    $note = ' Đã trả lại bộ đăng cũ.'
+    if ([bool]$Journal.wasRunning -and [string]$Journal.starter) {
+        if (-not (Test-BackendHealthy)) { Start-Backend @{ Kind = 'foreign'; Starter = [string]$Journal.starter } }
+        $note = if (Wait-Healthy $ReadyTimeoutSec) { ' Đã trả lại bộ đăng cũ, bộ đăng cũ đang chạy.' } else { ' Đã trả lại bộ đăng cũ nhưng nó chưa trả lời /health; mở lại Kid FB.Y.' }
+    }
+    return $note
+}
 function Remove-OldReleases([string[]]$Keep) {
     foreach ($d in @(Get-ChildItem -LiteralPath $Releases -Directory -Force -ErrorAction SilentlyContinue)) {
         if ($Keep -contains $d.Name) { continue }
@@ -622,7 +696,7 @@ function Remove-OldReleases([string[]]$Keep) {
 $installLock = $null; $upgradeLock = $null
 $newDir = $null; $staging = $null; $committed = $false
 $switched = $false; $prevStopped = $false; $newStarted = $false
-$saved = @{}; $prev = $null; $config = $null
+$saved = @{}; $prev = $null; $config = $null; $journal = $null; $journalWritten = $false
 $resultLine = ''
 try { :main do {
     New-Item -ItemType Directory -Path $Releases -Force | Out-Null
@@ -633,6 +707,23 @@ try { :main do {
     if (-not $Fake -and -not (Find-Chrome)) { Stop-Install 'chrome-missing' 'Chưa có Google Chrome. Cài Chrome từ https://www.google.com/chrome/ rồi bấm lại.' }
     if (-not (Test-Path -LiteralPath $Bundle -PathType Leaf)) { Stop-Install 'bundle-missing' 'Bản Kid FB.Y này chưa có gói bộ đăng TikTok (core\autotok-bundle.zip). Bấm Cập nhật trong app.' }
     if (($Releases.Length + 1 + 28 + 125) -gt 259) { Stop-Install 'path-too-long' "Thư mục Kid FB.Y quá sâu ($Root). Chuyển sang thư mục ngắn hơn (ví dụ D:\KidFBY) rồi cài lại." }
+
+    if ([IO.File]::Exists($JournalPath)) {
+        # An earlier takeover of a git/custom setup was interrupted.
+        try { $journal = Read-JsonFile $JournalPath } catch { Stop-Install 'journal-invalid' "File integrations\autotok-takeover-journal.json bị hỏng ($($_.Exception.Message)); không tự trả lại được bộ đăng cũ. Gửi file này và autotok-install.log cho người hỗ trợ." }
+        $jCurrent = Get-CurrentRelease
+        if ($jCurrent -and $jCurrent.Release -eq [string]$journal.release -and $jCurrent.Verified) {
+            [IO.File]::Delete($JournalPath); $journal = $null
+            Write-Log 'takeover journal: release already verified, journal removed'
+        } elseif (-not ($jCurrent -and $jCurrent.Release -eq [string]$journal.release)) {
+            # Stopped before the switch finished: nothing new to verify, put the old setup back.
+            $upgradeLock = Open-ExclusiveLock (Join-Path $Integrations 'autotok-upgrade.lock') 'Đang có một lần chuyển bản bộ đăng khác.'
+            Write-Step 'recover' 6 'Lần thay bộ đăng trước bị ngắt giữa chừng, đang trả lại bộ đăng cũ…'
+            $note = Restore-Takeover $journal 'interrupted'
+            Stop-Install 'recovered' ("Lần thay bộ đăng TikTok trước bị ngắt giữa chừng." + $note + ' Bấm cài lại để thử lần nữa.')
+        }
+        # Otherwise the new release is current but unverified: the recover step below verifies it or restores the old setup.
+    }
 
     $starterInfo = Get-StarterInfo
     if ($starterInfo.Kind -eq 'foreign' -and -not $TakeOverStarter) {
@@ -659,6 +750,7 @@ try { :main do {
     $info = Read-Bundle $Bundle
     Test-ManifestMatch $info
     Write-Log "bundle sha=$($info.Sha) version=$($info.Version) files=$($info.Files.Count) expanded=$($info.Expanded)"
+    $configOriginal = Read-FileBytesOrNull $ConfigPath
     $config = Resolve-DataDir $starterInfo
     $dataDir = $config.Dir
 
@@ -682,8 +774,13 @@ try { :main do {
             Write-CurrentJson $current.Release $current.Sha $current.Version $current.Previous 'release' $true
             $current.Verified = $true
             Write-Log "recover: $($current.Release) verified"
+            if ($journal) { [IO.File]::Delete($JournalPath); $journal = $null; Write-Log 'takeover journal: committed by recover' }
         } else {
             [void](Stop-Backend $target -Force); [void](Wait-PortsFree 20)
+            if ($journal -and [string]$journal.release -eq $current.Release) {
+                $note = Restore-Takeover $journal 'not-ready'
+                Stop-Install 'recovered' ("Bộ đăng cài lần trước (thay bộ đăng cũ) không chạy được." + $note + ' Bấm cài lại để thử lần nữa.')
+            }
             $oldDir = Join-Path $Releases $current.Previous
             if ($current.Previous -match $ReleasePattern -and (Test-Path -LiteralPath (Join-Path $oldDir '.kid-release-ok') -PathType Leaf)) {
                 $oldSha = ([IO.File]::ReadAllText((Join-Path $oldDir '.kid-release-ok'))).Trim()
@@ -705,12 +802,16 @@ try { :main do {
         # Same bundle already installed and healthy on disk: repair the shared files, make sure it runs.
         Write-Step 'switch' 90 'Bộ đăng TikTok đã là bản mới nhất, đang kiểm tra…'
         Install-SharedFiles $current.Dir
-        if (-not (Test-BackendHealthy)) {
-            if (-not (Test-PortsFree)) { Stop-Install 'port-busy' 'Cổng 8765/17900 đang bị chương trình khác dùng.' }
+        $target = @{ Kind = 'release'; Dir = $current.Dir; DataDir = $dataDir }
+        if (-not ((Test-BackendHealthy) -and (Test-ControlHealthy) -and (Test-SchedulerAlive $current.Dir))) {
+            # API, control server or scheduler missing: start.ps1 starts only the services that are not running.
+            if (-not (Test-TargetProcessesAlive $target) -and -not (Test-PortsFree)) { Stop-Install 'port-busy' 'Cổng 8765/17900 đang bị chương trình khác dùng.' }
             Write-Step 'start' 92 'Đang khởi động bộ đăng…'
-            Start-Backend @{ Kind = 'release'; Dir = $current.Dir; DataDir = $dataDir }
-            Wait-Ready $current.Dir
+            Start-Backend $target
         }
+        # Same gate as after an upgrade (health + native scheduling, control server, scheduler), also when all looked up.
+        try { Wait-Ready $current.Dir }
+        catch { Stop-Install 'not-ready' "Bộ đăng TikTok $($info.Version) đã cài nhưng chưa chạy đủ (/health, cổng 17900 hoặc bộ hẹn giờ) sau $ReadyTimeoutSec giây. Nhật ký dịch vụ: $($current.Dir)\runtime\" }
         $committed = $true
         $resultLine = "@@AUTOTOK_RESULT ok already-current Bộ đăng TikTok $($info.Version) đã sẵn sàng."
         break main
@@ -739,6 +840,18 @@ try { :main do {
     $upgradeLock = Open-ExclusiveLock (Join-Path $Integrations 'autotok-upgrade.lock') 'Đang có một lần chuyển bản bộ đăng khác.'
     $prevRunning = Test-BackendHealthy
     $prev.WasRunning = $prevRunning
+    if ($prev.Kind -eq 'foreign') {
+        # Durable copy of the git/custom setup before it is stopped: rollback, the next run and autotok-start.ps1 use it.
+        $files = [ordered]@{}
+        foreach ($k in $TakeoverFiles.Keys) {
+            if ($k -eq 'config') { $b = $configOriginal } else { $b = Read-FileBytesOrNull $TakeoverFiles[$k] }
+            $files[$k] = if ($null -eq $b) { $null } else { [Convert]::ToBase64String([byte[]]$b) }
+        }
+        $journal = [ordered]@{ format = 1; phase = ''; release = $releaseName; starter = [string]$prev.Starter; wasRunning = [bool]$prevRunning; createdAt = (Get-Date).ToString('o'); files = $files }
+        Write-TakeoverJournal $journal 'prepared'
+        $journalWritten = $true
+        Test-FailAt 'journal'
+    }
     if ($prevRunning -or ($prev.Kind -ne 'none' -and (-not (Test-PortsFree) -or (Test-TargetProcessesAlive $prev)))) {
         Write-Step 'drain' 85 'Đợi các video đang gửi lên TikTok xong…'
         $deadline = (Get-Date).AddSeconds($DrainTimeoutSec)
@@ -755,6 +868,7 @@ try { :main do {
         }
         if (-not (Wait-PortsFree 20)) { Stop-Install 'port-busy' 'Bản cũ đã dừng nhưng cổng 8765/17900 vẫn bị chiếm.' }
     }
+    if ($journalWritten) { Write-TakeoverJournal $journal 'stopped'; Test-FailAt 'stopped' }
 
     Write-Step 'switch' 90 'Đang chuyển sang bản mới…'
     foreach ($p in @($CurrentPath, $LocalJsonPath, $LauncherPath, $TikTokStartPath)) { $saved[$p] = Read-FileBytesOrNull $p }
@@ -762,6 +876,7 @@ try { :main do {
     Install-SharedFiles $newDir
     $previousName = if ($prev.Kind -eq 'release') { $prev.Release } else { '' }
     Write-CurrentJson $releaseName $info.Sha $info.Version $previousName $prev.Kind $false
+    if ($journalWritten) { Write-TakeoverJournal $journal 'switched' }
     Test-FailAt 'switch'
 
     Write-Step 'start' 92 'Đang khởi động bản mới…'
@@ -773,6 +888,7 @@ try { :main do {
     Write-CurrentJson $releaseName $info.Sha $info.Version $previousName $prev.Kind $true
     $committed = $true
     Write-Log "COMMIT release=$releaseName previous=$previousName"
+    if ($journalWritten) { try { [IO.File]::Delete($JournalPath) } catch { Write-Log "WARN takeover journal not removed (next run removes it): $($_.Exception.Message)" } }
 
     Write-Step 'cleanup' 98 'Đang dọn bản cũ…'
     Remove-OldReleases @($releaseName, $previousName)
@@ -783,7 +899,18 @@ try { :main do {
     $message = $_.Exception.Message
     Write-Log "FAIL reason=$reason message=$message at=$($_.InvocationInfo.ScriptLineNumber)"
     $rollbackNote = ''
-    if (-not $committed -and ($switched -or $prevStopped -or $newStarted)) {
+    if (-not $committed -and $journalWritten) {
+        # Takeover of a git/custom setup: restore it from the durable journal (also used if this process dies here).
+        Write-Step 'rollback' 96 'Có lỗi, đang trả lại bộ đăng cũ…'
+        try {
+            if ($newStarted -and $newDir) { [void](Stop-Backend @{ Kind = 'release'; Dir = $newDir } -Force); [void](Wait-PortsFree 20) }
+            $rollbackNote = Restore-Takeover (Read-JsonFile $JournalPath) 'rollback'
+            Write-Log "ROLLBACK done:$rollbackNote"
+        } catch {
+            $rollbackNote = " Trả lại bộ đăng cũ gặp lỗi: $($_.Exception.Message)" + $(if ([IO.File]::Exists($JournalPath)) { ' Lần cài sau sẽ thử lại.' } else { '' })
+            Write-Log "ROLLBACK error: $($_.Exception.Message)"
+        }
+    } elseif (-not $committed -and ($switched -or $prevStopped -or $newStarted)) {
         Write-Step 'rollback' 96 'Có lỗi, đang quay lại bản cũ…'
         try {
             if ($newStarted -and $newDir) { [void](Stop-Backend @{ Kind = 'release'; Dir = $newDir } -Force); [void](Wait-PortsFree 20) }

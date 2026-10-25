@@ -9,6 +9,8 @@ silently break the scheduler.
 from __future__ import annotations
 
 import os
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Iterator
 
@@ -65,13 +67,62 @@ def override_engine(new_engine: Engine) -> None:
     engine = new_engine
 
 
-def init_db() -> None:
-    """Create tables if they don't exist. Idempotent."""
+# How long a process waits for another one to finish initialising the same database.
+INIT_LOCK_TIMEOUT = 120.0
+
+
+@contextmanager
+def _init_lock(eng: Engine):
+    """Hold an OS file lock next to the database while it is created/migrated.
+
+    On a fresh file, SQLite's switch to WAL (first connection of each process) fails at once
+    with "database is locked" when another process does the same, without waiting for
+    busy_timeout; create_all and _migrate race too. The API and the scheduler start together,
+    so initialisation is serialised across processes here. Released by the OS if a process dies."""
+    path = eng.url.database
+    if not path or path == ":memory:" or path.startswith("file:"):
+        yield
+        return
+    with open(f"{path}.init-lock", "a+b") as fh:
+        if os.name == "nt":
+            import msvcrt
+
+            deadline = time.monotonic() + INIT_LOCK_TIMEOUT
+            while True:
+                fh.seek(0)
+                try:
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"database initialisation lock still held after {INIT_LOCK_TIMEOUT:.0f}s: "
+                                           f"{path}.init-lock") from None
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def init_db(eng: Engine | None = None) -> None:
+    """Create tables if they don't exist and migrate (the module engine unless ``eng`` is given).
+    Idempotent, and safe when several processes call it on the same database at once (see _init_lock)."""
     # Import models so SQLModel.metadata sees them.
     from api import models  # noqa: F401
 
-    SQLModel.metadata.create_all(engine)
-    _migrate(engine)
+    eng = eng or engine
+    with _init_lock(eng):
+        SQLModel.metadata.create_all(eng)
+        _migrate(eng)
 
 
 # Stored in SQLite's PRAGMA user_version once every step of _migrate has finished.

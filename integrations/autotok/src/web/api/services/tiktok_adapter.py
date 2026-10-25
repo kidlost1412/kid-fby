@@ -9,12 +9,14 @@ Tests patch ``upload_from_options``.
 from __future__ import annotations
 
 import logging
+import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from autotok import Client
 from autotok.errors import AutotokError, PublishUncertainError
+from autotok.browser_publish import redact_url
 from autotok.uploader import sanitize_response
 from autotok.proxy import parse_proxy
 
@@ -86,12 +88,13 @@ def upload_from_options(username: str, video_path: str, title: str, options: dic
             ai_label=bool(int(options.get("ai_label", 0))),
         )
     except AutotokError as exc:
-        return UploadOutcome(ok=False, message=str(exc), retryable=exc.retryable,
+        return UploadOutcome(ok=False, message=redact_url(exc), retryable=exc.retryable,
                              uncertain=isinstance(exc, PublishUncertainError),
                              response_json=error_response_json(exc))
     except Exception as exc:  # a bug: never retry automatically, it may have posted
-        log.exception("unexpected upload failure")
-        return UploadOutcome(ok=False, message=f"unexpected error: {exc}", retryable=False, uncertain=True)
+        # Traceback text may quote a signed URL: log it redacted, never raw.
+        log.error("unexpected upload failure\n%s", redact_url(traceback.format_exc()))
+        return UploadOutcome(ok=False, message=f"unexpected error: {redact_url(exc)}", retryable=False, uncertain=True)
     return UploadOutcome(ok=True, message="scheduled on TikTok" if result.scheduled_for else "published",
                          video_id=result.video_id, post_id=result.post_id, creation_id=result.creation_id,
                          tiktok_schedule_time=result.scheduled_for,

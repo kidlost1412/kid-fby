@@ -51,8 +51,9 @@ def record_success(entry: UploadHistory, outcome, caption: str | None = None) ->
         entry.caption = caption
     scheduled = getattr(outcome, "tiktok_schedule_time", None)
     if scheduled is not None:
-        entry.tiktok_schedule_time = scheduled
-        entry.planned_for = scheduled  # TikTok publishes then, not when it accepted the request
+        entry.tiktok_schedule_time = scheduled  # the time TikTok really holds the post until
+        if entry.planned_for is None:  # never overwrite the time the owner asked for
+            entry.planned_for = scheduled
     post_id = getattr(outcome, "post_id", None)
     url = build_post_url(entry.username, post_id)
     entry.link_attempts = 0

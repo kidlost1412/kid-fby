@@ -26,7 +26,9 @@ POST_URL = "https://www.tiktok.com/tiktok/web/project/post/v1/"
 AID = 1988
 _COOKIE_KEYS = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite")
 _SAMESITE = {"strict": "Strict", "lax": "Lax", "none": "None"}
-_SECRET_PARAMS = re.compile(r"((?:msToken|X-Bogus|X-Gnarly|_signature|verifyFp)=)[^&]*", re.I)
+# Signed-request parameters; "%3D" covers a URL nested (encoded) inside another one. The value also stops at
+# whitespace/quotes, so redacting a whole error message keeps the text after the URL.
+_SECRET_PARAMS = re.compile(r"((?:msToken|X-Bogus|X-Gnarly|_signature|verifyFp)(?:=|%3D))[^&\s'\"<>]*", re.I)
 
 # True once TikTok's SDK has hooked XMLHttpRequest (it signs requests sent through it).
 _SDK_READY = (
@@ -56,7 +58,9 @@ class BrowserStartError(Exception):
 
 
 def redact_url(url: str) -> str:
-    return _SECRET_PARAMS.sub(r"\1<redacted>", url)
+    """Hide signing tokens in a URL or in any text that may hold one (exception messages, response
+    bodies). The one helper to apply before such text is logged, stored or returned."""
+    return _SECRET_PARAMS.sub(r"\1<redacted>", str(url))
 
 
 def post_url(tz_name: str) -> str:

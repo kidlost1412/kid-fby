@@ -17,11 +17,15 @@ flag that the worker checks while it waits.
 from __future__ import annotations
 
 import logging
+import os
+import re
 import threading
 from typing import Optional
+from urllib.parse import urlsplit
 
 import httpx
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from autotok.errors import AutotokError
@@ -32,6 +36,56 @@ app = FastAPI(title="noVNC control server")
 
 _POLL_TIMEOUT_SECONDS = 600  # 10-min human login window
 _ACTIVE = ("starting", "active", "completing")
+
+# Same rules as the API (api.main / api.security), kept local so this container needs no api package.
+# "novnc" is the compose service name the API container uses to reach this server.
+CSRF_HEADER = "X-Requested-With"
+CSRF_VALUE = "autotok"
+_SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
+_DEFAULT_ALLOWED_HOSTS = ("localhost", "127.0.0.1", "::1", "novnc")
+_TOKEN = re.compile(r"token=[0-9a-f]{64}")
+
+
+def _allowed_hosts() -> set[str]:
+    extra = os.getenv("AUTOTOK_ALLOWED_HOSTS", "")
+    return set(_DEFAULT_ALLOWED_HOSTS) | {h.strip().lower() for h in extra.split(",") if h.strip()}
+
+
+def _hostname(host_header: str) -> str:
+    value = host_header.strip().lower()
+    if value.startswith("["):  # [::1]:17900
+        host, _, rest = value[1:].partition("]")
+        return host if re.fullmatch(r"(:\d+)?", rest) else value
+    return value.rsplit(":", 1)[0] if value.count(":") == 1 else value
+
+
+@app.middleware("http")
+async def _require_known_host_and_csrf(request: Request, call_next):
+    # A web page (DNS rebinding, or any page posting to 127.0.0.1) must not start a login browser
+    # or cancel one: unknown Host names and state changes without the custom header are refused.
+    if _hostname(request.headers.get("host", "")) not in _allowed_hosts():
+        return JSONResponse({"detail": "unknown Host header"}, status_code=403)
+    if request.method not in _SAFE_METHODS and request.headers.get(CSRF_HEADER) != CSRF_VALUE:
+        return JSONResponse({"detail": f"missing header {CSRF_HEADER}: {CSRF_VALUE}"}, status_code=403)
+    return await call_next(request)
+
+
+def expected_callback(session_id: str) -> str:
+    """The only callback this server posts cookies to: the API's completion endpoint for this
+    session. API_PUBLIC_URL is set by the host (same default as api.routers.login)."""
+    base = os.getenv("API_PUBLIC_URL", "http://api:8000").rstrip("/")
+    return f"{base}/api/login/browser/{session_id}/complete"
+
+
+def callback_allowed(session_id: str, callback_url: str) -> bool:
+    """True only for <API_PUBLIC_URL>/api/login/browser/<session_id>/complete?token=<64 hex>."""
+    try:
+        parts = urlsplit(callback_url)
+        expected = urlsplit(expected_callback(session_id))
+    except ValueError:
+        return False
+    return ((parts.scheme, parts.netloc, parts.path) == (expected.scheme, expected.netloc, expected.path)
+            and not parts.fragment and bool(_TOKEN.fullmatch(parts.query)))
 
 
 class _BrowserState:
@@ -95,6 +149,9 @@ def _launch_and_watch(sid: str, callback_url: str, proxy: Optional[str], cancel:
 
 @app.post("/browser/start", status_code=status.HTTP_202_ACCEPTED)
 def browser_start(req: StartRequest):
+    if not callback_allowed(req.session_id, req.callback_url):
+        # Cookies, user agent and proxy credentials go to this URL: never to anything else.
+        raise HTTPException(status_code=400, detail="callback_url is not this API's login completion endpoint")
     with _state.lock:
         if _state.status in _ACTIVE:
             raise HTTPException(

@@ -161,3 +161,23 @@ def test_patch_after_confirmed_retry_reports_prior_uncertain(client):
     body = r.json()
     assert body['publish_uncertain'] is False and body['prior_uncertain'] is True
     assert client.get(f'/api/schedules/{sid}').json()['prior_uncertain'] is True
+
+def test_retry_after_clean_failure_still_needs_confirm_when_an_earlier_attempt_was_uncertain(client):
+    sid = submit(client)['schedule_id']
+    with Session(db.engine) as s:
+        row = s.get(ScheduledUpload, sid)
+        row.status = 'failed';row.publish_uncertain = False;s.add(row)
+        entry = track_schedule(s, row);entry.prior_uncertain = True;s.add(entry);s.commit()
+    refused = client.patch(f'/api/schedules/{sid}', json={'status': 'pending'})
+    assert refused.status_code == 409 and 'earlier attempt' in refused.json()['detail']
+    assert client.get(f'/api/schedules/{sid}').json()['status'] == 'failed'
+    ok = client.patch(f'/api/schedules/{sid}', json={'status': 'pending', 'confirm_uncertain': True})
+    assert ok.status_code == 200 and ok.json()['status'] == 'pending'
+
+
+def test_retry_of_a_clean_failure_needs_no_confirm(client):
+    sid = submit(client)['schedule_id']
+    with Session(db.engine) as s:
+        row = s.get(ScheduledUpload, sid)
+        row.status = 'failed';s.add(row);track_schedule(s, row);s.commit()
+    assert client.patch(f'/api/schedules/{sid}', json={'status': 'pending'}).status_code == 200

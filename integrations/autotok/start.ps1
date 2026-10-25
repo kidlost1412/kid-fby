@@ -83,6 +83,14 @@ foreach ($taskService in $taskMissing) {
     }
 }
 
+# Create/migrate the database once, before the services: API and scheduler would otherwise both do it
+# on a fresh file at the same moment. Output goes to a log file (stderr must not reach this console).
+$taskInitLog = Join-Path $taskRuntime 'init-db.log'
+$taskInit = Start-Process -FilePath $taskPython -ArgumentList @('-X', 'utf8', ('"' + $taskHost + '"'), '--init-db') `
+    -WorkingDirectory $taskRoot -WindowStyle Hidden -PassThru -Wait `
+    -RedirectStandardOutput $taskInitLog -RedirectStandardError (Join-Path $taskRuntime 'init-db.stderr.log')
+if ($taskInit.ExitCode -ne 0) { throw "Database initialisation failed (exit $($taskInit.ExitCode)); see $(Join-Path $taskRuntime 'init-db.stderr.log')." }
+
 # Uploader probes video size/duration with ffprobe; point it at Kid FB.Y's bundled copy when present.
 $taskFfprobe = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'tools' | Join-Path -ChildPath 'ffmpeg' | Join-Path -ChildPath 'ffprobe.exe'
 if (-not $env:KID_FBY_FFPROBE -and (Test-Path -LiteralPath $taskFfprobe -PathType Leaf)) { $env:KID_FBY_FFPROBE = $taskFfprobe }

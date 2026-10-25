@@ -99,10 +99,21 @@ h1{font-size:24px;color:#0f172a}li{margin:12px 0}.tag{display:inline-block;color
     # Avoid logging callback query tokens or file names from API requests.
     uvicorn.run(app, host='127.0.0.1', port=8765, access_log=False)
 
+def init_database():
+    """One-shot: create/migrate the dashboard database before the services start (start.ps1),
+    so the API and the scheduler never migrate a fresh file at the same moment."""
+    DATA.mkdir(parents=True, exist_ok=True)
+    from api.db import init_db
+    init_db()
+
 def serve_control():
     import uvicorn
     from novnc.control_server import app
     uvicorn.run(app, host='127.0.0.1', port=17900, access_log=False)
+
+if __name__ == '__main__' and '--init-db' in sys.argv[1:]:
+    init_database()
+    sys.exit(0)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

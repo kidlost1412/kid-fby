@@ -33,7 +33,7 @@ from .errors import (
     UploadError,
     ValidationError,
 )
-from .browser_publish import BrowserStartError, publish_in_browser
+from .browser_publish import BrowserStartError, publish_in_browser, redact_url
 from .proxy import Proxy, parse_proxy, proxied_session
 from .signer import Signer
 
@@ -80,6 +80,9 @@ MIN_SCHEDULE = timedelta(minutes=15)
 MAX_SCHEDULE = timedelta(days=30)
 # TikTok gives some accounts 30 days to schedule and others only 10, depending on account and region.
 SHORT_SCHEDULE_WINDOW = timedelta(days=10)
+# A slow upload may push a schedule that fell under MIN_SCHEDULE back by at most this much; more fails.
+MAX_SCHEDULE_SHIFT = timedelta(minutes=10)
+SCHEDULE_EXPIRED_TEXT = "Tải video quá lâu, giờ hẹn không còn hợp lệ — hãy chọn giờ mới"
 CHUNK_SIZE = 5 * 1024 * 1024
 DEFAULT_DATACENTER = "useast2a"
 AID = 1988
@@ -208,7 +211,7 @@ def sanitize_response(response, limit: int = MAX_RESPONSE_JSON) -> str:
             return "[removed]"
         return obj
     try:
-        text = json.dumps(clean(response), ensure_ascii=False, default=str)
+        text = redact_url(json.dumps(clean(response), ensure_ascii=False, default=str))
     except (TypeError, ValueError):
         return ""
     return text if len(text) <= limit else text[:limit - 14] + "...(truncated)"
@@ -339,7 +342,7 @@ class Client:
         try:
             r = session.request(method, url, timeout=timeout or self.timeout, **kwargs)
         except requests.RequestException as exc:
-            raise UploadError(f"{what}: network error: {exc}", step=what) from exc
+            raise UploadError(f"{what}: network error: {redact_url(exc)}", step=what) from exc
         if expect_ok and r.status_code != 200:
             raise UploadError(f"{what}: HTTP {r.status_code}", status=r.status_code, body=r.text[:MAX_ERROR_BODY],
                               response=_parsed(r), step=what)
@@ -416,6 +419,9 @@ class Client:
                 ts = int(publish_at.timestamp())
                 earliest = int(time.time() + MIN_SCHEDULE.total_seconds())
                 if ts < earliest:
+                    if earliest - ts > MAX_SCHEDULE_SHIFT.total_seconds():
+                        # Nothing was published yet: a definite failure, the owner picks a new time.
+                        raise ValidationError(SCHEDULE_EXPIRED_TEXT)
                     log.warning("The upload took long enough that the scheduled time is now less than "
                                 "15 minutes away; publishing 15 minutes from now instead.")
                     ts = earliest
@@ -619,7 +625,7 @@ class Client:
             r = session.post(url, params=params, data=json.dumps(payload), headers=headers, timeout=self.timeout)
         except requests.RequestException as exc:
             raise PublishUncertainError(
-                f"publish request failed ({exc}); the video may or may not have been posted. "
+                f"publish request failed ({redact_url(exc)}); the video may or may not have been posted. "
                 "Check the account on TikTok before retrying."
             ) from exc
         return _check_publish(r.status_code, r.text)
@@ -629,11 +635,11 @@ class Client:
             result = publish_in_browser(json.dumps(payload), local_tz_name(), cookies=self.account.cookies,
                                         user_agent=self.user_agent, proxy=self.proxy, timeout=self.timeout)
         except BrowserStartError as exc:
-            log.warning("Scheduling browser could not start: %s", exc)
-            raise PublishError("không mở được trình duyệt để hẹn giờ", status_msg=str(exc)[:300]) from exc
+            log.warning("Scheduling browser could not start: %s", redact_url(exc))
+            raise PublishError("không mở được trình duyệt để hẹn giờ", status_msg=redact_url(exc)[:300]) from exc
         except Exception as exc:
             raise PublishUncertainError(
-                f"publish request from the browser failed ({exc}); the video may or may not have been "
+                f"publish request from the browser failed ({redact_url(exc)}); the video may or may not have been "
                 "posted. Check the account on TikTok before retrying."
             ) from exc
         status = result.get("status") if isinstance(result, dict) else None

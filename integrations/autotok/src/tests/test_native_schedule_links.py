@@ -233,7 +233,8 @@ def test_time_tiktok_actually_got_is_recorded(client, fake_client):
     job = client.get(f"/api/desktop/jobs/{body['request_id']}").json()
     actual = when + timedelta(minutes=3)
     assert datetime.fromisoformat(job["tiktok_schedule_time"]) == actual
-    assert datetime.fromisoformat(job["planned_for"]) == actual
+    # Owner decision (2026-10): planned_for keeps the requested time; the actual time is tiktok_schedule_time.
+    assert datetime.fromisoformat(job["planned_for"]) == when
 
 
 def test_immediate_job_with_post_id_gets_link(client, fake_client):

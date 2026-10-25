@@ -13,6 +13,8 @@ import httpx
 _CONTROL_BASE = os.getenv("NOVNC_CONTROL_URL", "http://novnc:7900")
 _VNC_EXTERNAL_BASE = os.getenv("NOVNC_PUBLIC_URL", "/novnc/vnc.html")
 _TIMEOUT = 10.0
+# The control server refuses state changes without it (same CSRF rule as this API).
+_HEADERS = {"X-Requested-With": "autotok"}
 
 
 def build_vnc_url(session_id: str) -> str:
@@ -31,6 +33,7 @@ def start_browser(session_id: str, username: str, callback_url: str, proxy: str 
             f"{_CONTROL_BASE}/browser/start",
             json={"session_id": session_id, "username": username,
                   "callback_url": callback_url, "proxy": proxy},
+            headers=_HEADERS,
         )
         r.raise_for_status()
         return r.json()
@@ -51,6 +54,6 @@ def stop_browser(session_id: str) -> None:
     """Best-effort cleanup; don't raise on 404."""
     try:
         with httpx.Client(timeout=_TIMEOUT) as client:
-            client.delete(f"{_CONTROL_BASE}/browser/{session_id}")
+            client.delete(f"{_CONTROL_BASE}/browser/{session_id}", headers=_HEADERS)
     except httpx.HTTPError:
         pass

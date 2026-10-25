@@ -18,6 +18,7 @@ import json
 import logging
 import threading
 import time
+import traceback
 from datetime import timedelta
 from typing import Optional
 
@@ -28,6 +29,7 @@ import api.db as _api_db
 from api.db import now_utc
 from api.models import Account, ScheduledUpload, UploadHistory
 from api.services import tiktok_adapter, youtube
+from autotok.browser_publish import redact_url
 from api.services import videos as library
 from api.services import links
 from api.services.history import record_failure, record_success, schedule_key, track_schedule
@@ -214,7 +216,7 @@ def run_one(row: ScheduledUpload) -> UploadOutcome:
         try:
             video_path = youtube.download(row.source_ref)
         except Exception as e:
-            return UploadOutcome(ok=False, message=f"youtube download failed: {e}", retryable=True)
+            return UploadOutcome(ok=False, message=f"youtube download failed: {redact_url(e)}", retryable=True)
     else:
         try:
             video_path = str(library.resolve(row.source_ref))
@@ -319,8 +321,8 @@ def tick() -> bool:
     try:
         outcome = run_one(claimed)
     except Exception as e:  # pragma: no cover - run_one is defensive already
-        log.exception("job %s crashed", claimed.id)
-        outcome = UploadOutcome(ok=False, message=f"scheduler error: {e}")
+        log.error("job %s crashed\n%s", claimed.id, redact_url(traceback.format_exc()))
+        outcome = UploadOutcome(ok=False, message=f"scheduler error: {redact_url(e)}")
     finally:
         hb.stop()
     finalize(claimed.id, outcome, attempts=claimed.attempts, key=schedule_key(claimed))

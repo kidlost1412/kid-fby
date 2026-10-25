@@ -80,13 +80,18 @@ export default function SchedulesPage() {
   });
 
   // A job cut off while publishing may already be live: retrying could post it twice.
+  // An earlier uncertain attempt (prior_uncertain) needs the same check: the server refuses without it.
   const retry = (s: Schedule) => {
+    const risky = s.publish_uncertain || !!s.prior_uncertain;
     const message = s.publish_uncertain
       ? "Video này có thể đã được đăng lên TikTok: lần đăng trước bị gián đoạn.\n\n" +
         "Hãy kiểm tra tài khoản trước. Bạn vẫn muốn đăng lại video này?"
-      : "Thử đăng lại video này?";
+      : s.prior_uncertain
+        ? "Video này từng có lần đăng chưa rõ kết quả, có thể đã có trên TikTok.\n\n" +
+          "Hãy kiểm tra tài khoản trước. Bạn vẫn muốn đăng lại video này?"
+        : "Thử đăng lại video này?";
     if (!window.confirm(message)) return;
-    retryMut.mutate({ id: s.id, confirmUncertain: s.publish_uncertain });
+    retryMut.mutate({ id: s.id, confirmUncertain: risky });
   };
   const cancel = (s: Schedule) => {
     if (window.confirm("Hủy lịch đăng này? Video sẽ không được đăng vào giờ đã hẹn.")) cancelMut.mutate(s.id);
@@ -180,7 +185,7 @@ export default function SchedulesPage() {
                     )}
                     {s.status === "failed" && (
                       <button className={actionBtn + " border-brand-200 text-brand-600"} onClick={() => retry(s)}>
-                        <RotateCw size={14} /> {s.publish_uncertain ? "Kiểm tra rồi thử lại" : "Thử lại"}
+                        <RotateCw size={14} /> {s.publish_uncertain || s.prior_uncertain ? "Kiểm tra rồi thử lại" : "Thử lại"}
                       </button>
                     )}
                     {s.status !== "running" && (
