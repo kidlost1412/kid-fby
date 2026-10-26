@@ -163,7 +163,7 @@ function Get-TestTree {
 function Get-TestJournalFiles { return @(if ([IO.Directory]::Exists((Join-Path $script:root 'data\kho-moves'))) { Get-ChildItem -LiteralPath (Join-Path $script:root 'data\kho-moves') -Force -File }) }
 
 # Unique ids per call, so a leftover file of one test can never satisfy another.
-$script:seq = 1000000000100
+$script:seq = [long](1000000000000 + ([long]([DateTime]::UtcNow.Ticks / 10000) % 800000000000))   # unique per run (the Recycle Bin keeps names between runs)
 function NextId { $script:seq++; return [string]$script:seq }
 function Item { param($Root, [string]$Id) return [pscustomobject]@{ Id = $Id; Path = (Join-Path $Root "$Id-3-hoan-chinh.mp4") } }
 function Sha { param([string]$Path) return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash }
