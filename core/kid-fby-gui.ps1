@@ -587,7 +587,7 @@ $script:uiNames = @(
     'BtnSelectLogo','BtnSelectGif','BtnReedit',
     'ViewQueue','TxtQueueHeader','QueueList','QueueEmpty','TxtStepTitle','StepList',
     'ViewLibrary','TxtGalleryCount','TabLibVideos','TabLibRejected','TxtRejectedTabLabel','PanelLibFilters','TxtGallerySearch','TxtGallerySearchHint',
-    'CmbDateFilter','CmbFilterSpecificDate','CmbKho','BtnKhoManage','PanelStatusTabs','TabStAll','TabStPending','TabStHeld','TabStPosted','BtnMoveSelected','TxtMoveSelected','PanelDownloadKho','CmbDownloadKho','BtnRefreshGallery','PanelLibVideos','GalleryList',
+    'CmbDateFilter','CmbFilterSpecificDate','CmbKho','BtnKhoManage','PanelStatusTabs','TabStAll','TabStPending','TabStHeld','TabStPosted','BtnMoveSelected','TxtMoveSelected','BtnSpreadSelected','PanelDownloadKho','CmbDownloadKho','BtnRefreshGallery','PanelLibVideos','GalleryList',
     'GalleryState','TxtGalleryStateGlyph','TxtGalleryStateTitle','TxtGalleryStateText','PanelLibRejected','TxtRejectedDashboard','RejectedList',
     'ImgGalleryMascot','BadgeGalleryGlyph','BtnGalleryRetry','PanelSelBar','TxtSelCount','BtnClearSelection','PanelKhoEmptyActions','BtnKhoEmptyImport','BtnKhoEmptyManage',
     'ViewSettings','SetTabTools','SetTabGeneral','SetTabLogs','SetTabUpdate','SetTabAbout','ViewTools','BtnCheck','BtnInstallAllTools',
@@ -3085,8 +3085,9 @@ function Remove-TikTokStaleCleanFiles {
 }
 
 function Start-TikTokJobProcess {
-    param([string]$JobFile)
-    [void](Start-Process powershell.exe -ArgumentList @('-NoProfile','-STA','-ExecutionPolicy','Bypass','-File',('"'+$scriptPath+'"'),'-TikTokJobFile',('"'+$JobFile+'"')) -WindowStyle Hidden -PassThru)
+    param([string]$JobFile, [switch]$PassThru)
+    $process = (Start-Process powershell.exe -ArgumentList @('-NoProfile','-STA','-ExecutionPolicy','Bypass','-File',('"'+$scriptPath+'"'),'-TikTokJobFile',('"'+$JobFile+'"')) -WindowStyle Hidden -PassThru)
+    if ($PassThru) { return $process }
 }
 
 function Set-TikTokReceiptFailed {
@@ -3097,7 +3098,8 @@ function Set-TikTokReceiptFailed {
 
 function Start-TikTokBackgroundJob {
     # Throws only when no background process was started, so the caller may let the user submit again.
-    param($Record,$Payload)
+    # -PassThru: returns the child process (the serial "Rải lịch" runner starts the next job only after it exits).
+    param($Record,$Payload,[switch]$PassThru)
     $jobFile=Join-Path (Join-Path $Record.OutDir '.cache\tiktok-posts') ($Record.RequestId+'.job')
     Save-TikTokReceipt $Record
     try{
@@ -3109,12 +3111,13 @@ function Start-TikTokBackgroundJob {
         Set-TikTokReceiptFailed $Record 'Không tạo được tệp tác vụ nền.'
         throw
     }
-    try{ Start-TikTokJobProcess $jobFile }
+    try{ $process=Start-TikTokJobProcess $jobFile -PassThru }
     catch{
         try{[IO.File]::Delete($jobFile)}catch{Write-FileLog "WARN TikTok job file cleanup: $($_.Exception.Message)"}
         Set-TikTokReceiptFailed $Record 'Không khởi chạy được tác vụ nền.'
         throw
     }
+    if($PassThru){return $process}
 }
 
 function Restart-TikTokTransfer {
@@ -3464,6 +3467,120 @@ function Get-NextFreeTikTokSlot {
     return $null
 }
 
+# ------------------------------------------------------------- Rải lịch: nhiều video -> nhiều giờ hẹn (T4) ----
+function Get-TikTokSpreadPlan {
+    # Giờ hẹn (giờ máy) cho $Count video của MỘT tài khoản, tăng dần: từ hôm nay đến hết $Days ngày (1..10), mỗi ngày đi qua các giờ yêu thích ('HH:mm', thiếu thì 08:00/12:00/19:00/21:00).
+    # Bỏ giờ < +20 phút hoặc > +10 ngày (Bounds), giờ cách bất kỳ giờ bận/đã xếp < $MinSpacingMinutes phút, và ngày đã đủ $DailyCap bài (tính cả bài đang bận). Hết chỗ thì trả ít hơn $Count.
+    param([int]$Count, [string[]]$Favorites = @(), [DateTime[]]$Busy = @(), [DateTime]$Now = [DateTime]::Now, [int]$Days = 7, [int]$DailyCap = 3, [int]$MinSpacingMinutes = 120, $Bounds = $null)
+    $plan = New-Object 'System.Collections.Generic.List[DateTime]'
+    if ($Count -le 0) { return $plan.ToArray() }
+    if ($null -eq $Bounds) { $Bounds = Get-TikTokScheduleBounds $Now }
+    $Days = [Math]::Max(1, [Math]::Min(10, $Days))
+    $times = @(@($Favorites) | Where-Object { $_ -match '^([01]\d|2[0-3]):[0-5]\d$' } | Sort-Object -Unique)
+    if (-not $times.Count) { $times = @(Get-TikTokTimeChips $null) }
+    $taken = New-Object 'System.Collections.Generic.List[DateTime]'
+    foreach ($b in @($Busy)) { $taken.Add($b) }
+    for ($d = 0; $d -lt $Days -and $plan.Count -lt $Count; $d++) {
+        $day = $Now.Date.AddDays($d)
+        $used = 0
+        foreach ($b in $taken) { if ($b.Date -eq $day) { $used++ } }
+        foreach ($t in $times) {
+            if ($plan.Count -ge $Count -or $used -ge $DailyCap) { break }
+            $slot = $day.AddHours([int]$t.Substring(0, 2)).AddMinutes([int]$t.Substring(3, 2))
+            if ($slot -lt $Bounds.Min -or $slot -gt $Bounds.Max) { continue }
+            $clash = $false
+            foreach ($b in $taken) { if ([Math]::Abs(($slot - $b).TotalMinutes) -lt $MinSpacingMinutes) { $clash = $true; break } }
+            if ($clash) { continue }
+            $plan.Add($slot); $taken.Add($slot); $used++
+        }
+    }
+    return $plan.ToArray()
+}
+
+function Get-TikTokSpreadWarn {
+    # Lịch sử đã lưu của 1 video (mọi tài khoản): 'active' (có lệnh đang chờ/chạy - luôn bỏ qua), 'posted' (đã đăng xác nhận hoặc đã hẹn thành công - mặc định bỏ qua), '' (trống).
+    param([object[]]$History, [bool]$Posted = $false)
+    $h = @(@($History) | Where-Object { $_ })
+    if (@($h | Where-Object { [string]$_.status -in @('pending', 'queued', 'running', 'preparing') }).Count) { return 'active' }
+    if (@($h | Where-Object { [string]$_.status -eq 'succeeded' -and $_.publish_uncertain -ne $true }).Count) { return 'posted' }
+    if ($Posted) { return 'posted' }
+    return ''
+}
+
+function Set-TikTokSpreadTimes {
+    # Gán giờ cho các dòng đang tick (không phải 'active'), theo thứ tự dòng; dòng còn lại When=$null. Trả về số dòng tick nhưng không còn chỗ.
+    param([object[]]$Rows, [string[]]$Favorites = @(), [DateTime[]]$Busy = @(), [DateTime]$Now = [DateTime]::Now, [int]$Days = 7, [int]$DailyCap = 3, [int]$MinSpacingMinutes = 120)
+    foreach ($r in @($Rows)) { $r.When = $null }
+    $eligible = @(@($Rows) | Where-Object { $_.Include -and $_.Warn -ne 'active' })
+    $plan = @(Get-TikTokSpreadPlan -Count $eligible.Count -Favorites $Favorites -Busy $Busy -Now $Now -Days $Days -DailyCap $DailyCap -MinSpacingMinutes $MinSpacingMinutes)
+    for ($i = 0; $i -lt $plan.Count; $i++) { $eligible[$i].When = $plan[$i] }
+    return ($eligible.Count - $plan.Count)
+}
+
+function Get-TikTokAutoScheduleItems {
+    # "Tự hẹn lịch" của kho tài khoản: video Chờ đăng của kho, KHÔNG có mục lịch sử nào, cũ nhất trước.
+    param([object[]]$Items, [string]$KhoId, $Metadata)
+    $out = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($it in @($Items)) {
+        if (-not $it -or [string]$it.Kho -cne $KhoId -or (Get-GalleryBucket $it) -ne 'pending') { continue }
+        $p = if ($Metadata) { $Metadata.PSObject.Properties[[string]$it.Id] } else { $null }
+        if ($p -and @(@($p.Value.History) | Where-Object { $_ }).Count) { continue }
+        $out.Add($it)
+    }
+    return @($out | Sort-Object { [IO.File]::GetLastWriteTimeUtc([string]$_.Path) }, { [string]$_.Id })
+}
+
+function New-TikTokSpreadJob {
+    # Cùng hình dạng record/payload với hộp thoại đăng 1 video (để biên lai, đồng bộ, lịch sử, tự gán kho chạy như cũ).
+    param([string]$Path, [string]$Account, [string]$Caption, [DateTime]$When)
+    $source = [IO.Path]::GetFullPath($Path); $outDir = [IO.Path]::GetDirectoryName($source); $videoId = Get-ReelId $source
+    $scheduled = $When.ToUniversalTime().ToString('o')
+    $options = @{ allow_comment = 1; allow_duet = 0; allow_stitch = 0; visibility_type = 0; ai_label = 0 }
+    $payload = @{ username = $Account; title = $Caption; scheduled_for = $scheduled; options_json = ($options | ConvertTo-Json -Compress); reel_id = $videoId }
+    $now = [DateTime]::UtcNow.ToString('o')
+    $record = [pscustomobject]@{ RequestId = [Guid]::NewGuid().ToString('N'); SourcePath = $source; OutDir = $outDir; VideoId = $videoId; Username = $Account; ScheduledFor = $scheduled; Status = 'submitted'; CreatedAt = $now; LaunchedAt = $now; Message = '' }
+    return @{ Record = $record; Payload = $payload }
+}
+
+function New-TikTokSpreadRun {
+    # Rows: các dòng đã tick và có When (Id, Path, When, ...). Busy: giờ bận của tài khoản trước khi gửi.
+    param([object[]]$Rows, [string]$Account, [string]$Caption, [string[]]$Favorites = @(), [DateTime[]]$Busy = @(), [int]$Days = 7, [int]$DailyCap = 3, [int]$MinSpacingMinutes = 120)
+    foreach ($r in @($Rows)) { $r | Add-Member -NotePropertyName State -NotePropertyValue 'planned' -Force; $r | Add-Member -NotePropertyName Message -NotePropertyValue '' -Force; $r | Add-Member -NotePropertyName Shifted -NotePropertyValue $false -Force }
+    return @{ Rows = @($Rows); Account = $Account; Caption = $Caption; Favorites = @($Favorites); Busy = @($Busy); Days = $Days; DailyCap = $DailyCap; MinSpacing = $MinSpacingMinutes
+             Index = 0; Current = $null; Stopped = $false; Finished = $false; Sent = 0; Failed = 0; Skipped = 0; Shifted = 0 }
+}
+
+function Step-TikTokSpreadRun {
+    # Một bước của bộ gửi TUẦN TỰ (gọi từ timer): chỉ bắt đầu việc kế tiếp khi tiến trình con trước đã thoát.
+    # Mỗi giờ được kiểm lại ngay trước khi chạy; nếu đã quá gần (< +20 phút) thì đổi sang giờ trống kế tiếp, không bao giờ đăng ngay.
+    # Trả về 'waiting' | 'launched' | 'skipped' | 'failed' | 'finished'.
+    param($Run, [scriptblock]$Launcher, [scriptblock]$AfterLaunch = $null, [DateTime]$Now = [DateTime]::Now)
+    if ($Run.Finished) { return 'finished' }
+    if ($Run.Current) { if (-not $Run.Current.HasExited) { return 'waiting' }; $Run.Current = $null }
+    if ($Run.Stopped -or $Run.Index -ge $Run.Rows.Count) { $Run.Finished = $true; return 'finished' }
+    $row = $Run.Rows[$Run.Index]; $Run.Index++
+    if (Get-TikTokScheduleError $row.When $Now) {
+        $busy = @($Run.Busy) + @($Run.Rows | Where-Object { $_ -ne $row -and $_.State -in @('planned', 'sent') -and $_.When } | ForEach-Object { $_.When })
+        $next = @(Get-TikTokSpreadPlan -Count 1 -Favorites $Run.Favorites -Busy $busy -Now $Now -Days $Run.Days -DailyCap $Run.DailyCap -MinSpacingMinutes $Run.MinSpacing)
+        if (-not $next.Count) {
+            $row.State = 'skipped'; $row.Message = 'Giờ hẹn đã quá gần và không còn giờ trống.'; $Run.Skipped++
+            Write-FileLog ('WARN Rải lịch: bỏ qua Reel #' + $row.Id + ' vì ' + $row.Message)
+            return 'skipped'
+        }
+        $row.When = $next[0]; $row.Shifted = $true; $Run.Shifted++
+    }
+    $job = New-TikTokSpreadJob -Path $row.Path -Account $Run.Account -Caption $Run.Caption -When $row.When
+    try { $proc = & $Launcher $job.Record $job.Payload }
+    catch {
+        $row.State = 'failed'; $row.Message = [string]$_.Exception.Message; $Run.Failed++
+        Write-FileLog ('WARN Rải lịch: không giao được Reel #' + $row.Id + ': ' + $row.Message)
+        return 'failed'
+    }
+    $row.State = 'sent'; $Run.Sent++; $Run.Current = $proc
+    if ($AfterLaunch) { try { & $AfterLaunch $row $job } catch { Write-FileLog ('WARN Rải lịch sau khi giao Reel #' + $row.Id + ': ' + $_.Exception.Message) } }
+    return 'launched'
+}
+
 function Show-TikTokPublishDialog {
     param([string]$FilePath)
     if([string]::IsNullOrWhiteSpace($FilePath) -or -not (Test-Path -LiteralPath $FilePath -PathType Leaf) -or [IO.Path]::GetFileName($FilePath) -notmatch '^\d+-3-hoan-chinh\.mp4$'){Show-Toast 'Chọn video hoàn chỉnh trong Kho trước khi đăng.' -Kind warning;return}
@@ -3780,6 +3897,249 @@ function Show-TikTokPublishDialog {
     $dlg.Add_Closed({$timer.Stop();if($state.Task){Stop-TikTokTask $state.Task;$state.Task=$null}}.GetNewClosure())
     & $calendar.Render
     & $refresh
+    $timer.Start()
+    [void]$dlg.ShowDialog()
+}
+
+function Show-TikTokSpreadDialog {
+    # Rải lịch: nhiều video -> một tài khoản -> xem trước giờ hẹn -> "Hẹn N video" gửi TUẦN TỰ (mỗi lần một tiến trình con).
+    # Đóng hộp thoại giữa chừng = dừng; video chưa gửi thì không gửi (không lưu hàng đợi qua lần mở sau).
+    param([object[]]$Items, [string]$Account = '', $Owner = $null)
+    $items = @($Items | Where-Object { $_ -and $_.Path })
+    if (-not (Test-TikTokEnabled)) { Show-Toast 'Chưa kết nối bộ đăng TikTok.' -Kind warning; return }
+    if ($script:stopping) { Show-Toast 'Đợi tác vụ hiện tại dừng hẳn trước khi đăng video.' -Kind warning; return }
+    if (-not $items.Count) { Show-Toast 'Chọn video trong Kho trước khi rải lịch.' -Kind warning; return }
+    $outDir = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath([string]$items[0].Path))
+    $markup = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Rải lịch đăng TikTok" Width="760" Height="820" MinWidth="600" MinHeight="460" WindowStartupLocation="CenterOwner" ShowInTaskbar="False" Background="{DynamicResource Surface0}" Foreground="{DynamicResource TextPrimary}" FontFamily="{DynamicResource FontUi}" FontSize="15" Language="vi-VN">
+ <Grid Margin="24"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+ <StackPanel><TextBlock Text="Rải lịch đăng TikTok" Style="{DynamicResource TextHeading}" FontSize="25"/><TextBlock x:Name="Sub" Margin="0,5,0,14" TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}"/></StackPanel>
+ <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"><StackPanel Margin="0,0,10,0">
+  <TextBlock Text="Chọn tài khoản đăng" FontWeight="ExtraBold"/>
+  <WrapPanel x:Name="Accounts" Margin="0,8,0,12"/>
+  <WrapPanel Margin="0,0,0,8">
+   <StackPanel Margin="0,0,18,8"><TextBlock Text="Rải trong (ngày, 1–10)" FontWeight="SemiBold"/><TextBox x:Name="Days" Text="7" Width="90" MinHeight="44" MaxLength="2" TextAlignment="Center" VerticalContentAlignment="Center" Margin="0,6,0,0" AutomationProperties.Name="Số ngày"/></StackPanel>
+   <StackPanel Margin="0,0,18,8"><TextBlock Text="Tối đa bài mỗi ngày" FontWeight="SemiBold"/><TextBox x:Name="Cap" Text="3" Width="90" MinHeight="44" MaxLength="2" TextAlignment="Center" VerticalContentAlignment="Center" Margin="0,6,0,0" AutomationProperties.Name="Tối đa bài mỗi ngày"/></StackPanel>
+   <StackPanel Margin="0,0,0,8"><TextBlock Text="Cách nhau ít nhất (giờ)" FontWeight="SemiBold"/><TextBox x:Name="Spacing" Text="2" Width="90" MinHeight="44" MaxLength="2" TextAlignment="Center" VerticalContentAlignment="Center" Margin="0,6,0,0" AutomationProperties.Name="Khoảng cách giữa hai bài (giờ)"/></StackPanel>
+  </WrapPanel>
+  <TextBlock x:Name="Hours" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource TextMuted}" Margin="0,0,0,12"/>
+  <TextBlock Text="Mô tả video / caption (dùng cho mọi video)" FontWeight="SemiBold"/>
+  <TextBox x:Name="Caption" AcceptsReturn="True" TextWrapping="Wrap" MaxLength="2200" Height="92" VerticalScrollBarVisibility="Auto" Margin="0,6,0,14"/>
+  <TextBlock Text="Xem trước giờ hẹn" FontWeight="ExtraBold"/>
+  <Border Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource InkFaint}" BorderThickness="1" CornerRadius="16" Padding="10" Margin="0,8,0,8"><StackPanel x:Name="Rows"/></Border>
+  <TextBlock x:Name="Summary" TextWrapping="Wrap" FontWeight="SemiBold"/>
+ </StackPanel></ScrollViewer>
+ <DockPanel Grid.Row="2" Margin="0,14,0,0">
+  <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right"><Button x:Name="Close" Content="Đóng" Margin="12,0,0,0" IsCancel="True"/><Button x:Name="Stop" Content="Dừng" Visibility="Collapsed" Margin="12,0,0,0"/><Button x:Name="Confirm" Content="Hẹn video" Style="{DynamicResource BtnPrimary}" IsEnabled="False" Margin="12,0,0,0"/></WrapPanel>
+  <TextBlock x:Name="Status" Text="Đang kiểm tra tài khoản…" TextWrapping="Wrap" VerticalAlignment="Center" FontWeight="SemiBold"/>
+ </DockPanel>
+ </Grid>
+</Window>
+'@
+    $dlg = [Windows.Markup.XamlReader]::Parse($markup); [void]$dlg.Resources.MergedDictionaries.Add((Get-DialogTheme))
+    $ownerWin = if ($Owner) { $Owner } else { $win }
+    if ($ownerWin -and $ownerWin.IsVisible) { $dlg.Owner = $ownerWin }
+    $dlg.MaxHeight = [Math]::Max(460, [Windows.SystemParameters]::WorkArea.Height - 40)
+    $c = @{}; foreach ($name in @('Sub', 'Accounts', 'Days', 'Cap', 'Spacing', 'Hours', 'Caption', 'Rows', 'Summary', 'Close', 'Stop', 'Confirm', 'Status')) { $c[$name] = $dlg.FindName($name) }
+    $state = @{ Task = $null; Ready = $false; Native = $false; Account = ''; Prefs = (Read-TikTokPrefs); Libraries = @(); Meta = $script:galleryMeta; Rows = @(); Unplaced = 0; Chips = @(); Busy = @(); Run = $null
+                Dirty = $false; Programmatic = $false; Rendering = $false; Replan = $null; Done = $false }
+    try { $state.Libraries = @((Get-KhoRegistry).libraries) } catch { Write-FileLog ('WARN Rải lịch kho: ' + $_.Exception.Message) }
+    $c.Sub.Text = $items.Count.ToString() + ' video đã chọn. Mỗi video được gửi lên TikTok lần lượt và hẹn đúng giờ trong bảng dưới; TikTok giữ bài và tự đăng.'
+
+    $rows = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($it in $items) {
+        $hist = @(); $meta = $state.Meta
+        if ($meta) { $p = $meta.PSObject.Properties[[string]$it.Id]; if ($p) { $hist = @(@($p.Value.History) | Where-Object { $_ }) } }
+        $warn = Get-TikTokSpreadWarn -History $hist -Posted ([bool]$it.Posted)
+        if (-not $warn -and (Test-TikTokTransferActive ([string]$it.Path))) { $warn = 'active' }
+        $other = $null
+        if ($warn -eq 'posted') {
+            $ok = @($hist | Where-Object { [string]$_.status -eq 'succeeded' -and $_.publish_uncertain -ne $true -and [string]$_.username } | Select-Object -First 1)
+            if ($ok.Count) { $other = '@' + [string]$ok[0].username }
+        }
+        $rows.Add([pscustomobject]@{ Id = [string]$it.Id; Path = [string]$it.Path; Kho = [string]$it.Kho; Warn = $warn; Include = ($warn -eq ''); When = $null; Other = $other; History = $hist })
+    }
+    $state.Rows = $rows.ToArray()
+
+    $readInt = {
+        param($box, [int]$min, [int]$max)
+        $n = 0
+        if (-not [int]::TryParse(([string]$box.Text).Trim(), [ref]$n) -or $n -lt $min -or $n -gt $max) { return $null }
+        return $n
+    }
+    $updateConfirm = {
+        $n = @($state.Rows | Where-Object { $_.When }).Count
+        $c.Confirm.Content = 'Hẹn ' + $n + ' video'
+        $running = [bool]$state.Run -and -not $state.Run.Finished
+        $c.Confirm.IsEnabled = ($state.Ready -and $state.Native -and $state.Account -and $n -gt 0 -and -not $running -and -not $state.Done -and -not (Test-AutotokUpgradeActive))
+    }.GetNewClosure()
+    $render = {
+        $state.Rendering = $true
+        try {
+            $c.Rows.Children.Clear()
+            foreach ($r in $state.Rows) {
+                $g = New-Object Windows.Controls.Grid
+                foreach ($w in @(44, 190, 150, -1)) { $col = New-Object Windows.Controls.ColumnDefinition; $col.Width = $(if ($w -gt 0) { [Windows.GridLength]::new($w) } else { [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star) }); [void]$g.ColumnDefinitions.Add($col) }
+                $g.Margin = [Windows.Thickness]::new(0, 2, 0, 2)
+                $cb = New-Object Windows.Controls.CheckBox; $cb.IsChecked = [bool]$r.Include; $cb.IsEnabled = ($r.Warn -ne 'active' -and -not $state.Run); $cb.MinHeight = 32; $cb.VerticalAlignment = 'Center'; $cb.Tag = $r
+                [Windows.Automation.AutomationProperties]::SetName($cb, 'Hẹn Reel #' + $r.Id)
+                $cb.Add_Click({
+                    param($s, $e)
+                    if ($state.Rendering) { return }
+                    $s.Tag.Include = [bool]$s.IsChecked
+                    & $state.Replan
+                }.GetNewClosure())
+                [Windows.Controls.Grid]::SetColumn($cb, 0); [void]$g.Children.Add($cb)
+                $t1 = New-Object Windows.Controls.TextBlock; $t1.Text = 'Reel #' + $r.Id; $t1.VerticalAlignment = 'Center'; $t1.FontWeight = 'SemiBold'
+                [Windows.Controls.Grid]::SetColumn($t1, 1); [void]$g.Children.Add($t1)
+                $t2 = New-Object Windows.Controls.TextBlock; $t2.VerticalAlignment = 'Center'; $t2.FontWeight = 'ExtraBold'
+                $t2.Text = $(if ($r.When) { ([DateTime]$r.When).ToString('dd/MM HH:mm') } else { '—' })
+                if ($r.PSObject.Properties['State']) { $t2.Text = $t2.Text + $(switch ([string]$r.State) { 'sent' { '  ✓' } 'failed' { '  ✗' } 'skipped' { '  –' } default { '' } }) }
+                [Windows.Controls.Grid]::SetColumn($t2, 2); [void]$g.Children.Add($t2)
+                $t3 = New-Object Windows.Controls.TextBlock; $t3.VerticalAlignment = 'Center'; $t3.TextWrapping = 'Wrap'; $t3.FontSize = 13; $t3.Foreground = $dlg.FindResource('TextMuted')
+                $note = ''
+                if ($r.Warn -eq 'active') { $note = 'Đang có lệnh đăng chờ/chạy — bỏ qua.' }
+                elseif ($r.Warn -eq 'posted') { $note = 'Đã đăng' + $(if ($r.Other) { ' ở ' + $r.Other } else { '' }) + $(if ($r.Include) { ' — vẫn hẹn lại.' } else { ' — tick để vẫn hẹn.' }) }
+                elseif ($r.Include -and -not $r.When) { $note = 'Không đủ chỗ trống trong số ngày đã chọn.' }
+                if ($r.PSObject.Properties['Message'] -and $r.Message) { $note = $r.Message }
+                elseif ($r.PSObject.Properties['Shifted'] -and $r.Shifted) { $note = 'Giờ cũ đã quá gần, dời sang giờ trống kế tiếp.' }
+                $t3.Text = $note
+                [Windows.Controls.Grid]::SetColumn($t3, 3); [void]$g.Children.Add($t3)
+                [void]$c.Rows.Children.Add($g)
+            }
+        } finally { $state.Rendering = $false }
+        $placed = @($state.Rows | Where-Object { $_.When }).Count
+        $c.Summary.Text = $(if ($state.Run) { $c.Summary.Text } elseif (-not $state.Account) { '' } else { $placed.ToString() + '/' + $items.Count + ' video có giờ hẹn' + $(if ($state.Unplaced -gt 0) { ' · ' + $state.Unplaced + ' video không đủ chỗ trống (tăng số ngày hoặc giảm khoảng cách)' } else { '' }) + '.' })
+        & $updateConfirm
+    }.GetNewClosure()
+    $state.Replan = {
+        if ($state.Run) { return }
+        $days = & $readInt $c.Days 1 10; $cap = & $readInt $c.Cap 1 20; $gap = & $readInt $c.Spacing 1 12
+        if ($null -eq $days -or $null -eq $cap -or $null -eq $gap) { $c.Status.Text = 'Số ngày từ 1–10, bài mỗi ngày từ 1–20, khoảng cách từ 1–12 giờ.'; $c.Confirm.IsEnabled = $false; return }
+        if (-not $state.Account) { & $render; return }
+        try {
+            $key = $state.Account.ToLowerInvariant()
+            $times = $(if ($state.Prefs.times.ContainsKey($key)) { $state.Prefs.times[$key] } else { $null })
+            $state.Chips = @(Get-TikTokTimeChips $times)
+            $state.Busy = @(Get-TikTokBusyTimes -Metadata $state.Meta -Account $state.Account)
+            $state.Unplaced = Set-TikTokSpreadTimes -Rows $state.Rows -Favorites $state.Chips -Busy $state.Busy -Days $days -DailyCap $cap -MinSpacingMinutes ($gap * 60)
+            $c.Hours.Text = 'Giờ yêu thích dùng để xếp: ' + ($state.Chips -join ', ') + ' (theo giờ bạn hay dùng cho @' + $state.Account + ').'
+            $c.Status.Text = ''
+        } catch { Write-FileLog ('WARN Rải lịch xếp giờ: ' + $_.Exception.Message); $c.Status.Text = 'Không xếp được giờ: ' + $_.Exception.Message }
+        & $render
+    }.GetNewClosure()
+    foreach ($box in @($c.Days, $c.Cap, $c.Spacing)) { $box.Add_TextChanged({ if (-not $state.Rendering -and $state.Ready) { & $state.Replan } }.GetNewClosure()) }
+    $c.Caption.Add_TextChanged({ if (-not $state.Programmatic) { $state.Dirty = $true }; & $updateConfirm }.GetNewClosure())
+
+    $setCaption = {
+        if ($state.Dirty) { return }
+        $template = Get-TikTokCaptionTemplate -Account $state.Account -VideoKhoId '' -Libraries $state.Libraries
+        if (-not $template) { foreach ($r in $state.Rows) { $template = Get-TikTokCaptionTemplate -Account '' -VideoKhoId $r.Kho -Libraries $state.Libraries; if ($template) { break } } }
+        if ($template -ne $c.Caption.Text) { $state.Programmatic = $true; try { $c.Caption.Text = $template } finally { $state.Programmatic = $false } }
+    }.GetNewClosure()
+    $accountChecked = {
+        param($s, $e)
+        $state.Account = [string]$s.Tag
+        & $setCaption
+        & $state.Replan
+    }.GetNewClosure()
+
+    $c.Close.Add_Click({ $dlg.Close() }.GetNewClosure())
+    $c.Stop.Add_Click({ if ($state.Run) { $state.Run.Stopped = $true }; $c.Stop.IsEnabled = $false }.GetNewClosure())
+    $launcher = { param($record, $payload) Start-TikTokBackgroundJob $record $payload -PassThru }
+    $afterLaunch = {
+        param($row, $job)
+        $acct = [string]$state.Run.Account
+        try { Add-TikTokHashtagsFromCaption ([string]$state.Run.Caption) -Account $acct } catch { Write-FileLog ('WARN Rải lịch hashtag: ' + $_.Exception.Message) }
+        try { Register-TikTokPrefsSubmit -Username $acct -Time ([DateTime]$row.When).ToString('HH:mm') } catch { Write-FileLog ('WARN Rải lịch prefs: ' + $_.Exception.Message) }
+        try { [void](Add-TikTokLocalReceiptHistory $outDir ([string]$row.Id) @($row.History) $job.Record) } catch { Write-FileLog ('WARN Rải lịch lịch sử cục bộ: ' + $_.Exception.Message) }
+        try { Update-GalleryItemsFromMeta -Ids @([string]$row.Id) } catch { Write-FileLog ('WARN Rải lịch làm mới kho: ' + $_.Exception.Message) }
+    }.GetNewClosure()
+    $finish = {
+        $run = $state.Run; $state.Done = $true; $c.Stop.Visibility = 'Collapsed'
+        $left = @($run.Rows | Where-Object { $_.State -eq 'planned' }).Count
+        $text = 'Đã gửi ' + $run.Sent + '/' + $run.Rows.Count + ' video' + $(if ($run.Shifted) { ' · ' + $run.Shifted + ' video dời giờ' } else { '' }) + $(if ($run.Skipped) { ' · ' + $run.Skipped + ' bỏ qua' } else { '' }) + $(if ($run.Failed) { ' · ' + $run.Failed + ' lỗi' } else { '' }) + $(if ($left) { ' · ' + $left + ' chưa gửi (đã dừng)' } else { '' }) + '.'
+        $c.Summary.Text = $text; $c.Status.Text = $text
+        Show-Toast $text -Kind $(if ($run.Failed -or $run.Skipped -or $left) { 'warning' } else { 'success' })
+        & $render
+    }.GetNewClosure()
+    $tick = {
+        if ($state.Task -and $state.Task.Async.IsCompleted) {
+            $task = $state.Task; $state.Task = $null
+            try {
+                $result = Complete-TikTokTask $task
+                $state.Native = [bool]$result.native_schedule
+                if ($result.changed) { try { Update-Gallery } catch { Write-FileLog ('WARN Rải lịch làm mới kho: ' + $_.Exception.Message) } }
+                try { $fresh = Get-ReupMetadata -OutDir $outDir; if ($fresh) { $state.Meta = $fresh } } catch { Write-FileLog ('WARN Rải lịch đọc siêu dữ liệu: ' + $_.Exception.Message) }
+                foreach ($r in $state.Rows) {
+                    $p = $(if ($state.Meta) { $state.Meta.PSObject.Properties[$r.Id] } else { $null })
+                    if ($p) { $r.History = @(@($p.Value.History) | Where-Object { $_ }); $w = Get-TikTokSpreadWarn -History $r.History -Posted ([bool]$p.Value.Posted); if ($w -eq 'active' -and $r.Warn -ne 'active') { $r.Warn = 'active'; $r.Include = $false } }
+                }
+                $c.Accounts.Children.Clear(); $group = 'SpreadAccount' + [Guid]::NewGuid().ToString('N')
+                $accounts = @($result.accounts | Where-Object has_valid_session)
+                foreach ($a in $accounts) {
+                    $b = New-Object Windows.Controls.RadioButton; $b.Style = $dlg.FindResource('SegButton'); $b.GroupName = $group; $b.Content = '@' + $a.username; $b.Tag = [string]$a.username
+                    $b.MinHeight = 48; $b.Padding = [Windows.Thickness]::new(16, 0, 16, 0); $b.Margin = [Windows.Thickness]::new(0, 0, 8, 8)
+                    $b.Add_Checked($accountChecked); [void]$c.Accounts.Children.Add($b)
+                }
+                $state.Ready = $true
+                if ($c.Accounts.Children.Count) {
+                    $want = @(); if ($Account) { $want += $Account }
+                    $khos = @($state.Rows | ForEach-Object { $_.Kho } | Select-Object -Unique)
+                    if ($khos.Count -eq 1 -and ([string]$khos[0]).StartsWith('acct:')) { $want += ([string]$khos[0]).Substring(5) }
+                    if ($state.Prefs.lastAccount) { $want += $state.Prefs.lastAccount }
+                    $pre = $null
+                    foreach ($w in $want) { $pre = @($c.Accounts.Children | Where-Object { $_.Tag -ieq $w })[0]; if ($pre) { break } }
+                    if (-not $pre) { $pre = $c.Accounts.Children[0] }
+                    $pre.IsChecked = $true
+                    $c.Status.Text = $(if ($state.Native) { '' } else { 'Bộ đăng nền chưa hỗ trợ hẹn giờ trên TikTok. Cập nhật bộ đăng nền rồi khởi động lại.' })
+                } else { $c.Status.Text = 'Chưa có tài khoản sẵn sàng. Mở Tài khoản / Lịch đăng để đăng nhập.' }
+                & $state.Replan
+            } catch { $c.Status.Text = $_.Exception.Message; Write-FileLog ('WARN Rải lịch chuẩn bị: ' + $_.Exception.Message); $state.Ready = $false }
+        }
+        if ($state.Run -and -not $state.Run.Finished) {
+            if (Test-AutotokUpgradeActive) { $c.Status.Text = 'Đang chờ bộ đăng nền cập nhật xong…'; return }
+            $r = Step-TikTokSpreadRun -Run $state.Run -Launcher $launcher -AfterLaunch $afterLaunch
+            if ($r -eq 'finished') { & $finish; return }
+            if ($r -ne 'waiting') {
+                $n = $state.Run.Rows.Count
+                $c.Status.Text = 'Đang gửi ' + ($state.Run.Sent + $state.Run.Failed + $state.Run.Skipped) + '/' + $n + '…'
+                $c.Summary.Text = $c.Status.Text
+                & $render
+            }
+        }
+    }.GetNewClosure()
+    $c.Confirm.Add_Click({
+        try {
+            if (-not $c.Confirm.IsEnabled -or $state.Run) { return }
+            if (Test-AutotokUpgradeActive) { throw 'Bộ đăng nền đang cập nhật. Đợi xong rồi thử lại.' }
+            $cap = ([string]$c.Caption.Text).Trim(); if (-not $cap) { throw 'Vui lòng nhập caption.' }
+            if (-not $state.Native) { throw 'Bộ đăng nền chưa hỗ trợ hẹn giờ trên TikTok. Cập nhật bộ đăng nền rồi khởi động lại.' }
+            $days = & $readInt $c.Days 1 10; $capDay = & $readInt $c.Cap 1 20; $gap = & $readInt $c.Spacing 1 12
+            $planned = @($state.Rows | Where-Object { $_.When })
+            if (-not $planned.Count) { throw 'Không có video nào có giờ hẹn.' }
+            $state.Run = New-TikTokSpreadRun -Rows $planned -Account $state.Account -Caption $cap -Favorites $state.Chips -Busy $state.Busy -Days $days -DailyCap $capDay -MinSpacingMinutes ($gap * 60)
+            foreach ($ctl in @($c.Days, $c.Cap, $c.Spacing, $c.Caption)) { $ctl.IsEnabled = $false }
+            foreach ($rb in $c.Accounts.Children) { $rb.IsEnabled = $false }
+            $c.Stop.Visibility = 'Visible'; $c.Stop.IsEnabled = $true; $c.Confirm.IsEnabled = $false
+            $c.Status.Text = 'Đang gửi 0/' + $planned.Count + '…'; $c.Summary.Text = $c.Status.Text
+            & $render
+        } catch { $c.Status.Text = $_.Exception.Message; $state.Run = $null; & $updateConfirm }
+    }.GetNewClosure())
+    $timer = New-Object Windows.Threading.DispatcherTimer; $timer.Interval = [TimeSpan]::FromMilliseconds(300)
+    $timer.Add_Tick($tick)
+    $dlg.Add_Closed({
+        $timer.Stop()
+        if ($state.Task) { Stop-TikTokTask $state.Task; $state.Task = $null }
+        if ($state.Run -and -not $state.Run.Finished) {
+            $state.Run.Stopped = $true
+            $left = @($state.Run.Rows | Where-Object { $_.State -eq 'planned' }).Count
+            Show-Toast ('Đã dừng rải lịch: đã gửi ' + $state.Run.Sent + ', còn ' + $left + ' video chưa gửi.') -Kind warning
+        }
+    }.GetNewClosure())
+    $c.Status.Text = 'Đang kiểm tra tài khoản…'
+    & $render
+    try { $state.Task = Start-TikTokTask 'prepare' (Get-TikTokHistoryPayload $outDir) } catch { $c.Status.Text = $_.Exception.Message; Write-FileLog ('WARN Rải lịch: ' + $_.Exception.Message) }
     $timer.Start()
     [void]$dlg.ShowDialog()
 }
@@ -5895,6 +6255,7 @@ function Update-MoveSelectedButton {
     # Thanh chọn nhiều là lớp phủ ở đáy lưới: hiện/ẩn không làm lưới nhảy.
     $ui.PanelSelBar.Visibility = $(if ($n -ge 2) { 'Visible' } else { 'Collapsed' })
     if ($n -ge 2) { $ui.TxtSelCount.Text = "Đã chọn $n video"; $ui.TxtMoveSelected.Text = "Chuyển $n video sang kho…" }
+    if ($ui.BtnSpreadSelected) { $ui.BtnSpreadSelected.Visibility = $(if (Test-TikTokEnabled) { 'Visible' } else { 'Collapsed' }) }
 }
 
 function Clear-GallerySelection {
@@ -6393,7 +6754,10 @@ function Show-KhoManagerDialog {
      <TextBox x:Name="LowBox" Width="68" MinHeight="44" Padding="4,8" VerticalContentAlignment="Center" MaxLength="3" TextAlignment="Center" Margin="10,0,10,0" AutomationProperties.Name="Ngưỡng sắp hết"/>
      <TextBlock Text="video chờ đăng" VerticalAlignment="Center"/>
     </StackPanel>
-    <Button x:Name="BtnSaveOpts" Content="Lưu mẫu và ngưỡng" Style="{DynamicResource BtnMint}" HorizontalAlignment="Left" Margin="0,12,0,0"/>
+    <WrapPanel Margin="0,12,0,0">
+     <Button x:Name="BtnSaveOpts" Content="Lưu mẫu và ngưỡng" Style="{DynamicResource BtnMint}" Margin="0,0,8,0"/>
+     <Button x:Name="BtnAutoSchedule" Content="Tự hẹn lịch…" Visibility="Collapsed" ToolTip="Xếp các video Chờ đăng chưa từng đăng của kho này vào giờ yêu thích trong vài ngày tới (xem trước, bấm xác nhận mới gửi)" AutomationProperties.Name="Tự hẹn lịch cho kho tài khoản"/>
+    </WrapPanel>
    </StackPanel></Border>
    <TextBlock Text="Thêm kho mới" FontWeight="ExtraBold"/>
    <DockPanel Margin="0,8,0,16">
@@ -6430,7 +6794,7 @@ function Show-KhoManagerDialog {
     if ($win -and $win.IsVisible) { $dlg.Owner = $win }
     $dlg.MaxHeight = [Math]::Max(460, [Windows.SystemParameters]::WorkArea.Height - 40)
     $c = @{}
-    foreach ($name in @('WarnBox', 'Warn', 'KhoChips', 'DetailTitle', 'BtnDelete', 'BtnRename', 'NameBox', 'CaptionBox', 'TagsBox', 'LowBox', 'BtnSaveOpts', 'AddBox', 'BtnAdd',
+    foreach ($name in @('WarnBox', 'Warn', 'KhoChips', 'DetailTitle', 'BtnDelete', 'BtnRename', 'NameBox', 'CaptionBox', 'TagsBox', 'LowBox', 'BtnSaveOpts', 'BtnAutoSchedule', 'AddBox', 'BtnAdd',
                         'AcctPanel', 'BtnAddAcct', 'BtnLoadAcct', 'CmbAcct', 'AcctStatus', 'BtnImport', 'BtnImportStop', 'ImportBar', 'ImportText', 'Close', 'Status')) { $c[$name] = $dlg.FindName($name) }
     $state = @{ Selected = $(if ($Kho -and $script:khoKnown.ContainsKey($Kho)) { $Kho } else { 'default' }); Rendering = $false; Job = $null; AcctTask = $null; Fill = $null; Render = $null; Writable = (Test-KhoRegistryWritable); TikTok = (Test-TikTokEnabled) }
 
@@ -6456,6 +6820,8 @@ function Show-KhoManagerDialog {
         foreach ($ctl in @($c.CaptionBox, $c.TagsBox, $c.LowBox, $c.BtnSaveOpts, $c.AddBox, $c.BtnAdd)) { $ctl.IsEnabled = $w }
         $c.BtnAddAcct.IsEnabled = ($w -and $c.CmbAcct.Items.Count -gt 0)
         $c.BtnImport.IsEnabled = (-not $importing)
+        $c.BtnAutoSchedule.Visibility = $(if ($state.TikTok -and ([string]$lib.id).StartsWith('acct:')) { 'Visible' } else { 'Collapsed' })
+        $c.BtnAutoSchedule.IsEnabled = (-not $importing)
     }.GetNewClosure()
 
     $chipChecked = {
@@ -6537,6 +6903,17 @@ function Show-KhoManagerDialog {
             Set-KhoOptions -Id $state.Selected -Caption ([string]$c.CaptionBox.Text) -Hashtags @(ConvertTo-KhoHashtagList $c.TagsBox.Text) -LowStock $low
             & $state.Fill
             $c.Status.Text = 'Đã lưu mẫu caption, hashtag và ngưỡng.'
+        } catch { & $fail $_ }
+    }.GetNewClosure())
+
+    $c.BtnAutoSchedule.Add_Click({
+        try {
+            $lib = @((Get-KhoRegistry).libraries | Where-Object { $_.id -ceq $state.Selected })
+            if (-not $lib.Count -or -not ([string]$lib[0].id).StartsWith('acct:')) { return }
+            $cand = @(Get-TikTokAutoScheduleItems -Items @($script:galleryAll) -KhoId ([string]$lib[0].id) -Metadata $script:galleryMeta)
+            if (-not $cand.Count) { $c.Status.Text = 'Kho này không có video Chờ đăng nào chưa từng đăng.'; return }
+            Show-TikTokSpreadDialog -Items $cand -Account ([string]$lib[0].account) -Owner $dlg
+            & $state.Render
         } catch { & $fail $_ }
     }.GetNewClosure())
 
@@ -7765,6 +8142,10 @@ $ui.BtnClearSelection.Add_Click({ Clear-GallerySelection })
 $ui.BtnMoveSelected.Add_Click({
     $picked = @($ui.GalleryList.SelectedItems)
     if ($picked.Count) { Show-KhoMoveMenu -Target $ui.BtnMoveSelected -Items $picked -Placement ([Windows.Controls.Primitives.PlacementMode]::Top) }
+})
+$ui.BtnSpreadSelected.Add_Click({
+    $picked = @($ui.GalleryList.SelectedItems)
+    if ($picked.Count) { Show-TikTokSpreadDialog -Items $picked }
 })
 $ui.CmbDownloadKho.Add_SelectionChanged({
     if ($script:updatingCombo) { return }

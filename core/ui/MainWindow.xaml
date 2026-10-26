@@ -759,6 +759,9 @@
                 <Button x:Name="BtnMoveSelected" Style="{DynamicResource BtnMint}" Margin="0,0,8,0" ToolTip="Chuyển các video đang chọn sang kho khác" AutomationProperties.Name="Chuyển video đã chọn sang kho khác">
                   <TextBlock x:Name="TxtMoveSelected" Text="Chuyển sang kho…" VerticalAlignment="Center"/>
                 </Button>
+                <Button x:Name="BtnSpreadSelected" Style="{DynamicResource BtnMint}" Margin="0,0,8,0" Visibility="Collapsed" ToolTip="Xếp các video đang chọn vào nhiều giờ hẹn trên TikTok" AutomationProperties.Name="Rải lịch đăng các video đã chọn">
+                  <TextBlock Text="Rải lịch…" VerticalAlignment="Center"/>
+                </Button>
                 <Button x:Name="BtnClearSelection" Style="{DynamicResource BtnGhost}" ToolTip="Bỏ chọn tất cả (Esc)" AutomationProperties.Name="Bỏ chọn">
                   <TextBlock Text="Bỏ chọn" VerticalAlignment="Center"/>
                 </Button>
