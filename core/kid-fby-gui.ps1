@@ -3836,15 +3836,33 @@ function Invoke-TikTokSyncTick {
 function Get-GalleryMetaByRoot {
     # Fresh read of reup-status.json of every kho folder (canonical folder -> metadata). A folder that cannot be read is left out
     # and logged: callers treat it as "nothing known", never as empty history. -Skip: folders that are not read at all.
-    param($Skip = $null)
+    # -Unreadable: optional List[string] that receives every folder whose history could not be read (completeness info for scheduling).
+    param($Skip = $null, $Unreadable = $null)
     $map = @{}
     foreach ($r in @(Get-KhoRoots)) {
         if ($Skip -and $Skip.Contains([string]$r)) { continue }
         if (-not [IO.Directory]::Exists($r)) { continue }
         try { $map[$r] = Get-ReupMetadata -OutDir $r }
-        catch { Write-FileLog "WARN Không đọc được lịch sử của kho '$r': $($_.Exception.Message)" }
+        catch { Write-FileLog "WARN Không đọc được lịch sử của kho '$r': $($_.Exception.Message)"; if ($null -ne $Unreadable) { $Unreadable.Add([string]$r) } }
     }
     return $map
+}
+
+function Get-KhoHistoryGapText {
+    # '' when every folder was read, otherwise the visible message that blocks automatic slot choice (a hidden booking may exist there).
+    param([string[]]$Unreadable)
+    $roots = @($Unreadable | Where-Object { $_ })
+    if (-not $roots.Count) { return '' }
+    $names = @($roots | ForEach-Object { $root = $_; $lib = @(Get-KhoList | Where-Object { Test-SamePath ([string]$_.path) $root }) | Select-Object -First 1; $(if ($lib) { [string]$lib.name } else { $root }) })
+    return "Chưa đọc được lịch sử kho '$($names -join "', '")'; thử lại."
+}
+
+function Get-GalleryMetaChecked {
+    # @{ Map; Gap }: the per-folder history map plus the gap message ('' = complete).
+    $unreadable = New-Object 'System.Collections.Generic.List[string]'
+    try { $map = Get-GalleryMetaByRoot -Unreadable $unreadable }
+    catch { Write-FileLog ('WARN Đọc lịch sử các kho: ' + $_.Exception.Message); return @{ Map = @{}; Gap = 'Chưa đọc được lịch sử các kho; thử lại.' } }
+    return @{ Map = $map; Gap = (Get-KhoHistoryGapText $unreadable.ToArray()) }
 }
 
 function Invoke-KhoAutoMoveNow {
@@ -4963,7 +4981,9 @@ function Show-TikTokPublishDialog {
     $c.NextFree.Add_Click({
         if(-not $state.SelectedAccount){$c.ScheduleHint.Text='Chọn tài khoản trước.';return}
         try{
-            $busy=@(Get-TikTokAccountBusyTimes -Account $state.SelectedAccount -ExtraEntries @($state.Entries))
+            $metaRead=Get-GalleryMetaChecked
+            if($metaRead.Gap){$c.ScheduleHint.Text=$metaRead.Gap+' Chưa chọn giờ tự động; bạn vẫn có thể nhập giờ bằng tay (chưa kiểm tra trùng lịch).';return}
+            $busy=@(Get-TikTokAccountBusyTimes -Account $state.SelectedAccount -ExtraEntries @($state.Entries) -MetaByRoot $metaRead.Map)
             $slot=Get-NextFreeTikTokSlot -Favorites @($state.Chips) -Busy $busy
         }catch{Write-FileLog ('WARN TikTok next free slot: '+$_.Exception.Message);$c.Status.Text='Không đọc được lịch để tìm giờ trống: '+$_.Exception.Message;return}
         if($null -eq $slot){$c.ScheduleHint.Text='Các giờ yêu thích trong 10 ngày tới đều đã có bài hẹn. Chọn giờ khác bằng tay.';return}
@@ -5283,7 +5303,7 @@ function Show-TikTokSpreadDialog {
     try { $state.Libraries = @((Get-KhoRegistry).libraries) } catch { Write-FileLog ('WARN Rải lịch kho: ' + $_.Exception.Message) }
     $c.Sub.Text = $items.Count.ToString() + ' video đã chọn. Mỗi video được gửi lên TikTok lần lượt và hẹn đúng giờ trong bảng dưới; TikTok giữ bài và tự đăng.'
 
-    try { $state.MetaByRoot = Get-GalleryMetaByRoot } catch { Write-FileLog ('WARN Rải lịch đọc lịch sử các kho: ' + $_.Exception.Message); $state.MetaByRoot = @{} }
+    $metaRead = Get-GalleryMetaChecked; $state.MetaByRoot = $metaRead.Map; $state.HistoryGap = $metaRead.Gap
     $rows = New-Object 'System.Collections.Generic.List[object]'
     foreach ($it in $items) {
         $hist = @(); $itemRoot = Get-CanonicalPath ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath([string]$it.Path)))
@@ -5396,6 +5416,13 @@ function Show-TikTokSpreadDialog {
             & $render; return
         }
         $days = $set.Days; $cap = $set.Cap; $gap = $set.Gap
+        if ($state.HistoryGap) { $metaRead = Get-GalleryMetaChecked; $state.MetaByRoot = $metaRead.Map; $state.HistoryGap = $metaRead.Gap }   # retry on every re-plan
+        if ($state.HistoryGap) {
+            # An unreadable kho history may hide a booking of this account: no automatic slots. Rows with a hand-typed time keep it.
+            foreach ($r in $state.Rows) { if (-not $r.TimeEdited) { $r.When = $null } }
+            $c.Status.Text = $state.HistoryGap + ' Chưa xếp giờ tự động; bạn vẫn có thể nhập giờ bằng tay (chưa kiểm tra trùng lịch).'
+            & $render; return
+        }
         if (-not $state.Account) { & $render; return }
         try {
             $key = $state.Account.ToLowerInvariant()
@@ -5445,7 +5472,7 @@ function Show-TikTokSpreadDialog {
                 $result = Complete-TikTokTask $task
                 $state.Native = [bool]$result.native_schedule
                 if ($result.changed) { try { Update-Gallery } catch { Write-FileLog ('WARN Rải lịch làm mới kho: ' + $_.Exception.Message) } }
-                try { $state.MetaByRoot = Get-GalleryMetaByRoot } catch { Write-FileLog ('WARN Rải lịch đọc siêu dữ liệu: ' + $_.Exception.Message) }
+                $metaRead = Get-GalleryMetaChecked; $state.MetaByRoot = $metaRead.Map; $state.HistoryGap = $metaRead.Gap
                 foreach ($r in $state.Rows) { Update-TikTokSpreadRowFromMeta -Row $r -Meta $state.MetaByRoot[[string]$r.Root] }
                 if (-not $state.AccountsLoaded) {
                     $state.AccountsLoaded = $true
@@ -8538,7 +8565,9 @@ function Show-KhoManagerDialog {
         try {
             $lib = Get-KhoById $state.Selected
             if (-not $lib -or -not [string]$lib.account) { return }
-            $cand = @(Get-TikTokAutoScheduleItems -Items @($script:galleryAll) -KhoId ([string]$lib.id) -MetaByRoot (Get-GalleryMetaByRoot))
+            $metaRead = Get-GalleryMetaChecked
+            if ($metaRead.Gap) { $c.Status.Text = $metaRead.Gap; return }
+            $cand = @(Get-TikTokAutoScheduleItems -Items @($script:galleryAll) -KhoId ([string]$lib.id) -MetaByRoot $metaRead.Map)
             if (-not $cand.Count) { $c.Status.Text = 'Kho này không có video Chờ đăng nào chưa từng đăng.'; return }
             Show-TikTokSpreadDialog -Items $cand -Account ([string]$lib.account) -Owner $dlg
             & $state.Render

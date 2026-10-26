@@ -132,6 +132,21 @@ Test-Case '3: video-delete, cleanup and kho-delete confirmations hold khoExclusi
     $script:khoExclusive = 0
     Assert-True ($r.Busy -like '*hộp thoại*') "busy: '$($r.Busy)'"; Assert-True ([IO.File]::Exists($path)) 'video did not move'
 }
+# ---------------------------------------------------------------- 4
+Test-Case '4: an unreadable kho history is reported (completeness info + visible message); a complete read has no gap' {
+    $w = New-TestWorld @('B')
+    $a = NextId; [void](New-TestVideo $w.A.path $a -Entry (New-TestPostedEntry (& $hex $a)))
+    $ok = Get-GalleryMetaChecked
+    Assert-Equal $ok.Gap '' 'complete read'
+    [IO.File]::WriteAllText((Join-Path $w.B.path 'reup-status.json'), '{ broken', [Text.UTF8Encoding]::new($false))
+    $bad = Get-GalleryMetaChecked
+    Assert-True ($bad.Map.ContainsKey([string]$w.A.path)) 'readable kho still in the map'
+    Assert-True (-not $bad.Map.ContainsKey([string]$w.B.path)) 'unreadable kho is NOT presented as empty'
+    Assert-True ($bad.Gap -like "Chưa đọc được lịch sử kho 'B'*thử lại*") "message: '$($bad.Gap)'"
+    $u = New-Object 'System.Collections.Generic.List[string]'
+    [void](Get-GalleryMetaByRoot -Unreadable $u)
+    Assert-Equal $u.Count 1; Assert-Equal $u[0] $w.B.path
+}
 # ---- END ----
 $server.Stop()
 Complete-Tests
