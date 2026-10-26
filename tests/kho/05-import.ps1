@@ -37,7 +37,7 @@ Test-Case 'basic import: copies new ids byte-identically with companions, skips 
     Write-TestMetadata $out @{ '333' = [ordered]@{ Posted = $false; Date = ''; Kho = 'acct:keep' } }
     $target333 = Get-Sha (Join-Path $out '333-3-hoan-chinh.mp4'); $meta333 = ConvertTo-Json (Read-TestJson (Join-Path $out 'reup-status.json')).'333' -Compress
     $snap = Get-TreeSnapshot $src
-    $r = Import-KhoFolder -SourceDir $src -KhoId $guid -OutDir $out
+    $r = Import-KhoFolder -SourceDir $src -OutDir $out
     Assert-Equal $r.Added 2 'added'; Assert-Equal $r.Skipped 1 'skipped'; Assert-Equal $r.Failed 0 'failed'
     Assert-Equal ($r.AddedIds -join ',') '111,222'; Assert-Equal ($r.SkippedIds -join ',') '333'
     Assert-Equal (Get-Sha (Join-Path $out '111-3-hoan-chinh.mp4')) (Get-Sha (Join-Path $src '111-3-hoan-chinh.mp4')) '111 bytes'
@@ -52,10 +52,10 @@ Test-Case 'basic import: copies new ids byte-identically with companions, skips 
     Assert-Equal @(Get-ChildItem -LiteralPath $out -Recurse -Force -Filter '*.part').Count 0 'no .part leftovers'
     Assert-Equal (Get-TreeSnapshot $src) $snap 'source folder untouched (content and mtime)'
     $m = Read-TestJson (Join-Path $out 'reup-status.json')
-    Assert-Equal $m.'111'.Kho $guid 'imported entry gets the chosen kho (source Kho/KhoManual dropped)'
+    Assert-True ($null -eq $m.'111'.PSObject.Properties['Kho']) 'source Kho label dropped (a kho is a folder now)'
     Assert-True ($null -eq $m.'111'.PSObject.Properties['KhoManual']) 'source KhoManual not carried over'
     Assert-Equal @($m.'111'.History).Count 2 'history copied'; Assert-Equal $m.'111'.Source 'autotok-history'; Assert-Equal $m.'111'.Posted $true
-    Assert-Equal $m.'222'.Kho $guid; Assert-Equal $m.'222'.Date '19/10 08:00' 'manual mark copied'
+    Assert-Equal $m.'222'.Date '19/10 08:00' 'manual mark copied'
 }
 
 Test-Case 'no overwrite: a pre-existing -3 file with different content is never replaced, even on repeated imports' {
@@ -63,7 +63,7 @@ Test-Case 'no overwrite: a pre-existing -3 file with different content is never 
     New-Bytes (Join-Path $out '111-3-hoan-chinh.mp4') 10 5
     $h = Get-Sha (Join-Path $out '111-3-hoan-chinh.mp4')
     foreach ($i in 1..2) {
-        $r = Import-KhoFolder -SourceDir $src -KhoId $guid -OutDir $out
+        $r = Import-KhoFolder -SourceDir $src -OutDir $out
         Assert-True ($r.SkippedIds -contains '111') "run $i skips 111"
         Assert-Equal (Get-Sha (Join-Path $out '111-3-hoan-chinh.mp4')) $h "run $i bytes"
     }
@@ -74,19 +74,19 @@ Test-Case 'no overwrite: a pre-existing -3 file with different content is never 
 Test-Case 'metadata failure: files stay, nothing is reported added, the retry finishes the job and a third run changes nothing' {
     $src = New-SourceFolder; $out = New-TestDir
     [IO.File]::WriteAllText((Join-Path $out 'reup-status.json'), '{ broken')   # makes the metadata step fail
-    $r1 = Import-KhoFolder -SourceDir $src -KhoId $guid -OutDir $out
+    $r1 = Import-KhoFolder -SourceDir $src -OutDir $out
     Assert-Equal $r1.Added 0 'run 1 added'; Assert-Equal $r1.Failed 3 'run 1 failed (111, 222, 333)'
     Assert-True (@($r1.Errors | Where-Object { $_ -like '*Chạy lại*' }).Count -eq 1) 'tells the owner to run again'
     Assert-True ([IO.File]::Exists((Join-Path $out '111-3-hoan-chinh.mp4'))) 'file stayed'
     Assert-Equal ([IO.File]::ReadAllText((Join-Path $out 'reup-status.json'))) '{ broken' 'corrupt metadata untouched'
     [IO.File]::Delete((Join-Path $out 'reup-status.json'))                           # the owner fixed the cause
-    $r2 = Import-KhoFolder -SourceDir $src -KhoId $guid -OutDir $out
+    $r2 = Import-KhoFolder -SourceDir $src -OutDir $out
     Assert-Equal $r2.Added 0 'run 2: files were copied by run 1, so none is newly added'; Assert-Equal $r2.Skipped 3 'identical files already present count as already present'; Assert-Equal $r2.Failed 0
     $m = Read-TestJson (Join-Path $out 'reup-status.json')
-    Assert-Equal $m.'111'.Kho $guid; Assert-Equal @($m.'111'.History).Count 2
+    Assert-Equal @($m.'111'.History).Count 2
     $hash = Get-Sha (Join-Path $out 'reup-status.json'); $stamp = (Get-Item (Join-Path $out 'reup-status.json')).LastWriteTimeUtc
     Start-Sleep -Milliseconds 50
-    $r3 = Import-KhoFolder -SourceDir $src -KhoId $guid -OutDir $out
+    $r3 = Import-KhoFolder -SourceDir $src -OutDir $out
     Assert-Equal $r3.Failed 0 'run 3'
     Assert-Equal (Get-Sha (Join-Path $out 'reup-status.json')) $hash 'run 3 rewrites nothing'
     Assert-Equal (Get-Item (Join-Path $out 'reup-status.json')).LastWriteTimeUtc $stamp 'run 3 mtime'
@@ -105,7 +105,7 @@ Test-Case 'history union by key (our entry wins), ManualPosted kept, KhoManual /
         '222' = [ordered]@{ Posted = $false; Date = ''; Kho = 'acct:keep' }
         '333' = [ordered]@{ Posted = $false; Date = '' }
     }
-    $r = Import-KhoFolder -SourceDir $src -KhoId $guid -OutDir $out
+    $r = Import-KhoFolder -SourceDir $src -OutDir $out
     Assert-Equal $r.Added 0 'identical copies are not newly added'; Assert-Equal $r.Skipped 3 'they count as already present'; Assert-Equal $r.Failed 0
     $m = Read-TestJson (Join-Path $out 'reup-status.json')
     $keys = @($m.'111'.History | ForEach-Object { $_.key })
@@ -116,58 +116,27 @@ Test-Case 'history union by key (our entry wins), ManualPosted kept, KhoManual /
     Assert-Equal $m.'111'.KhoManual $true; Assert-Equal $m.'111'.Kho 'default' 'manual choice kept'
     Assert-Equal $m.'222'.Kho 'acct:keep' 'account kho kept'
     Assert-Equal $m.'222'.Date '' 'target manual state not replaced by the source entry'
-    Assert-Equal $m.'333'.Kho $guid 'plain entry gets the kho'
+    Assert-True ($null -eq $m.'333'.PSObject.Properties['Kho']) 'no Kho label added'
 }
 
-Test-Case 'importing into the default kho records history but no Kho field' {
-    $src = New-SourceFolder; $out = New-TestDir
-    $r = Import-KhoFolder -SourceDir $src -KhoId 'default' -OutDir $out
-    Assert-Equal $r.Added 3
-    $m = Read-TestJson (Join-Path $out 'reup-status.json')
-    Assert-True ($null -eq $m.'111'.PSObject.Properties['Kho']) 'no Kho'
-    Assert-Equal @($m.'111'.History).Count 2
-}
 
-Test-Case 'F4 importing an IDENTICAL video into the default kho clears a custom Kho; acct:* and KhoManual are never changed' {
-    $src = New-SourceFolder; $out = New-TestDir
-    foreach ($id in '111', '222', '333') { Copy-Item -LiteralPath (Join-Path $src "$id-3-hoan-chinh.mp4") -Destination (Join-Path $out "$id-3-hoan-chinh.mp4") -Force }   # all identical, already present
-    New-Bytes (Join-Path $src '555-3-hoan-chinh.mp4') 3000 11; Copy-Item -LiteralPath (Join-Path $src '555-3-hoan-chinh.mp4') -Destination (Join-Path $out '555-3-hoan-chinh.mp4') -Force
-    Write-TestMetadata $out @{
-        '111' = [ordered]@{ Posted = $false; Date = ''; Kho = $guid }                                  # custom kho -> cleared
-        '222' = [ordered]@{ Posted = $false; Date = ''; Kho = 'acct:keep' }                            # account kho -> kept
-        '333' = [ordered]@{ Posted = $false; Date = ''; Kho = $guid; KhoManual = $true }               # owner's manual choice -> kept
-        '555' = [ordered]@{ Posted = $false; Date = ''; Kho = $guid }                                  # also cleared
-    }
-    $r = Import-KhoFolder -SourceDir $src -KhoId 'default' -OutDir $out
-    Assert-Equal $r.Failed 0; Assert-Equal $r.Added 0 'all four were already present'
-    $m = Read-TestJson (Join-Path $out 'reup-status.json')
-    Assert-True ($null -eq $m.'111'.PSObject.Properties['Kho']) '111 custom Kho removed'
-    Assert-True ($null -eq $m.'555'.PSObject.Properties['Kho']) '555 custom Kho removed'
-    Assert-Equal $m.'222'.Kho 'acct:keep' 'account kho kept'
-    Assert-Equal $m.'333'.Kho $guid 'KhoManual entry kept'; Assert-Equal $m.'333'.KhoManual $true
-    # importing into default again changes nothing (idempotent)
-    $hash = Get-Sha (Join-Path $out 'reup-status.json')
-    [void](Import-KhoFolder -SourceDir $src -KhoId 'default' -OutDir $out)
-    Assert-Equal (Get-Sha (Join-Path $out 'reup-status.json')) $hash 'second run rewrites nothing'
-}
 
 Test-Case 'unreadable source reup-status.json: files and kho still imported, a warning explains the missing history' {
     $src = New-SourceFolder; $out = New-TestDir
     [IO.File]::WriteAllText((Join-Path $src 'reup-status.json'), '{ broken')
-    $r = Import-KhoFolder -SourceDir $src -KhoId $guid -OutDir $out
+    $r = Import-KhoFolder -SourceDir $src -OutDir $out
     Assert-Equal $r.Added 3; Assert-True (@($r.Warnings | Where-Object { $_ -like '*reup-status.json của thư mục nguồn*' }).Count -eq 1) 'warning'
-    $m = Read-TestJson (Join-Path $out 'reup-status.json')
-    Assert-Equal $m.'111'.Kho $guid; Assert-True ($null -eq $m.'111'.PSObject.Properties['History']) 'no history copied'
+    Assert-True (-not [IO.File]::Exists((Join-Path $out 'reup-status.json')) -or $null -eq (Read-TestJson (Join-Path $out 'reup-status.json')).'111'.History) 'no history copied'
     Assert-Equal ([IO.File]::ReadAllText((Join-Path $src 'reup-status.json'))) '{ broken' 'source untouched'
 }
 
 Test-Case 'progress callback gets Done/Total/Id; a throwing callback is reported once and does not stop the import' {
     $src = New-SourceFolder; $out = New-TestDir
     $seen = New-Object System.Collections.Generic.List[string]
-    $r = Import-KhoFolder -SourceDir $src -KhoId $guid -OutDir $out -Progress { param($p) $seen.Add("$($p.Done)/$($p.Total):$($p.Id)") }
+    $r = Import-KhoFolder -SourceDir $src -OutDir $out -Progress { param($p) $seen.Add("$($p.Done)/$($p.Total):$($p.Id)") }
     Assert-Equal ($seen -join ' ') '1/3:111 2/3:222 3/3:333'
     $out2 = New-TestDir
-    $r2 = Import-KhoFolder -SourceDir $src -KhoId $guid -OutDir $out2 -Progress { param($p) throw 'ui gone' }
+    $r2 = Import-KhoFolder -SourceDir $src -OutDir $out2 -Progress { param($p) throw 'ui gone' }
     Assert-Equal $r2.Added 3
     Assert-Equal @($r2.Warnings | Where-Object { $_ -like '*báo tiến độ lỗi*ui gone*' }).Count 1
 }
@@ -176,24 +145,23 @@ Test-Case 'cancel: before the start nothing is copied; during the run the files 
     $src = New-SourceFolder
     $out = New-TestDir
     $cts = [Threading.CancellationTokenSource]::new(); $cts.Cancel()
-    $r = Import-KhoFolder -SourceDir $src -KhoId $guid -OutDir $out -CancelToken $cts.Token
+    $r = Import-KhoFolder -SourceDir $src -OutDir $out -CancelToken $cts.Token
     Assert-True $r.Cancelled 'cancelled'; Assert-Equal $r.Added 0
     Assert-Equal @(Get-ChildItem -LiteralPath $out -Force -Recurse -File).Count 0 'nothing copied'
     $out2 = New-TestDir
     $cts2 = [Threading.CancellationTokenSource]::new()
-    $r2 = Import-KhoFolder -SourceDir $src -KhoId $guid -OutDir $out2 -CancelToken $cts2.Token -Progress { param($p) if ($p.Done -eq 2) { $cts2.Cancel() } }
+    $r2 = Import-KhoFolder -SourceDir $src -OutDir $out2 -CancelToken $cts2.Token -Progress { param($p) if ($p.Done -eq 2) { $cts2.Cancel() } }
     Assert-True $r2.Cancelled 'cancelled mid-way'
     Assert-Equal $r2.Added 1 'only 111 was complete'; Assert-Equal ($r2.AddedIds -join ',') '111'
     Assert-True (-not [IO.File]::Exists((Join-Path $out2 '222-3-hoan-chinh.mp4'))) '222 not copied'
     Assert-Equal @(Get-ChildItem -LiteralPath $out2 -Force -Recurse -Filter '*.part').Count 0 'no .part leftovers'
-    Assert-Equal (Read-TestJson (Join-Path $out2 'reup-status.json')).'111'.Kho $guid
+    Assert-True ($null -ne (Read-TestJson (Join-Path $out2 'reup-status.json')).'111') 'entry of the copied video recorded'
 }
 
 Test-Case 'argument errors: same folder, bad kho id, missing source' {
     $src = New-SourceFolder
-    Assert-Throws { Import-KhoFolder -SourceDir $src -KhoId $guid -OutDir ($src + '\') } '*trùng thư mục xuất*'
-    Assert-Throws { Import-KhoFolder -SourceDir $src -KhoId 'nope' -OutDir (New-TestDir) } '*Mã kho không hợp lệ*'
-    Assert-Throws { Import-KhoFolder -SourceDir (Join-Path $src 'missing') -KhoId $guid -OutDir (New-TestDir) } '*Không thấy thư mục nguồn*'
+    Assert-Throws { Import-KhoFolder -SourceDir $src -OutDir ($src + '\') } '*trùng thư mục kho*'
+    Assert-Throws { Import-KhoFolder -SourceDir (Join-Path $src 'missing') -OutDir (New-TestDir) } '*Không thấy thư mục nguồn*'
 }
 
 Test-Case 'names with spaces, brackets and Vietnamese in the folder paths' {
@@ -201,7 +169,7 @@ Test-Case 'names with spaces, brackets and Vietnamese in the folder paths' {
     $src = Join-Path $base 'nguồn [1] kho'; $out = Join-Path $base 'xuất [2] đích'
     [void][IO.Directory]::CreateDirectory($src)
     New-Bytes (Join-Path $src '123-3-hoan-chinh.mp4') 2048 11
-    $r = Import-KhoFolder -SourceDir $src -KhoId $guid -OutDir $out
+    $r = Import-KhoFolder -SourceDir $src -OutDir $out
     Assert-Equal $r.Added 1
     Assert-Equal (Get-Sha -Path ([IO.Path]::Combine($out, '123-3-hoan-chinh.mp4'))) (Get-Sha -Path ([IO.Path]::Combine($src, '123-3-hoan-chinh.mp4')))
 }
@@ -216,10 +184,10 @@ Test-Case 'runs in a background runspace built only from $script:khoImportFuncti
     try {
         $queue = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
         [void]$ps.AddScript({
-            param($S, $K, $O, $Q)
+            param($S, $O, $Q)
             $callback = { param($p) $Q.Enqueue("$($p.Done)/$($p.Total):$($p.Id)") }.GetNewClosure()
-            Import-KhoFolder -SourceDir $S -KhoId $K -OutDir $O -Progress $callback
-        }).AddArgument($src).AddArgument($guid).AddArgument($out).AddArgument($queue)
+            Import-KhoFolder -SourceDir $S -OutDir $O -Progress $callback
+        }).AddArgument($src).AddArgument($out).AddArgument($queue)
         $handle = $ps.BeginInvoke()
         Assert-True ($handle.AsyncWaitHandle.WaitOne(60000)) 'finished in time'
         $result = $ps.EndInvoke($handle)
@@ -228,7 +196,7 @@ Test-Case 'runs in a background runspace built only from $script:khoImportFuncti
         Assert-Equal @($result[0].Warnings).Count 0 'no warnings'
         Assert-Equal (($queue.ToArray()) -join ' ') '1/3:111 2/3:222 3/3:333' 'progress arrived from the other runspace'
     } finally { $ps.Dispose() }
-    Assert-Equal (Read-TestJson (Join-Path $out 'reup-status.json')).'111'.Kho $guid
+    Assert-True ($null -ne (Read-TestJson (Join-Path $out 'reup-status.json')).'111') 'entry recorded by the background run'
 }
 
 Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue

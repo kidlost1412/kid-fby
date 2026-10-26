@@ -16,6 +16,7 @@ public class KhoFakeBackend
     public ConcurrentDictionary<string, string> Rows = new ConcurrentDictionary<string, string>();   // reel_id -> JSON array of history entries
     public ConcurrentDictionary<string, string> Jobs = new ConcurrentDictionary<string, string>();   // request_id -> job JSON
     public int LookupCalls, JobCalls, HealthCalls;
+    public string MoveOnLookupFrom, MoveOnLookupTo;   // test hook: this file is renamed while a lookup request is served (deterministic interleaving)
     public string Url;
 
     public KhoFakeBackend(int port)
@@ -47,6 +48,7 @@ public class KhoFakeBackend
         if (path == "/api/history/lookup")
         {
             Interlocked.Increment(ref LookupCalls);
+            if (MoveOnLookupFrom != null && File.Exists(MoveOnLookupFrom)) { File.Move(MoveOnLookupFrom, MoveOnLookupTo); }
             string body;
             using (var r = new StreamReader(c.Request.InputStream, Encoding.UTF8)) body = r.ReadToEnd();
             var sb = new StringBuilder("[");
