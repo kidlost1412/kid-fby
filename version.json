@@ -1,21 +1,21 @@
 {
-    "version":  "3.0.1",
-    "releasedAt":  "2026-10-25 14:23",
+    "version":  "3.1.0",
+    "releasedAt":  "2026-10-26 20:45",
     "minLauncher":  "1.0.0",
     "mandatory":  false,
     "changelog":  [
-                      "Trang thai dang ro rang hon, cap nhat nhanh, luon co link bai"
+                      "Kho la thu muc that theo tai khoan: tao, chuyen, xoa vao Thung rac, tu chuyen sau khi dang,Rai lich chay ngam, khung gio tung tai khoan, sua gio va caption tung bai,Keo chuot chon nhieu video, kho nhan moi file video, nut Hen lai,Bo dang TikTok 2.1.1: dang ngay qua trinh duyet (sua loi ma 5)"
                   ],
     "files":  [
                   {
                       "path":  "core/autotok-bundle.zip",
-                      "sha256":  "D220BCEB4C0F146A82A4E28A9910F02902E63CB8B06274A78E6A24FA58B97C0E",
-                      "size":  418340
+                      "sha256":  "ACED068367D2811B916EC49CBDD32C74F0033021D31EBF94A4E4A646112EFE87",
+                      "size":  418467
                   },
                   {
                       "path":  "core/facebook-links.ps1",
-                      "sha256":  "EFFB974E8007E348AF0B0A297D7BA2B3A3CEFA8CC764526BDEE20EB4957C43B3",
-                      "size":  22122
+                      "sha256":  "E5AF206D49914ABD751A5AA73D12750277A4A72289811FA56CD143C351F205B1",
+                      "size":  22363
                   },
                   {
                       "path":  "core/fix-ket-noi.ps1",
@@ -29,8 +29,8 @@
                   },
                   {
                       "path":  "core/kid-fby-gui.ps1",
-                      "sha256":  "E610CF02905EE8EB2659F5BC2EF6EE17FB8479B6D8361D3916CB42C9000C9A8A",
-                      "size":  590220
+                      "sha256":  "2AB8C6AF6444020479400F2771F2E8F40F5D9C0501D0CFE329E9F5585D17C5DF",
+                      "size":  852863
                   },
                   {
                       "path":  "core/kid-fby.ps1",
@@ -54,7 +54,7 @@
                   },
                   {
                       "path":  "core/version.txt",
-                      "sha256":  "892BEF45A1A5205BFDDB7849303EE13093D77185B84931419C334A38BC035672",
+                      "sha256":  "84E4509524FD99960BADBAC55254AFCEA330D7A10EABD6A5F1DCB45FC38C3F40",
                       "size":  5
                   },
                   {
@@ -64,13 +64,13 @@
                   },
                   {
                       "path":  "core/ui/MainWindow.xaml",
-                      "sha256":  "EF2D4D84413AC425C899089C2DBEF5661B5E3F8E7D31BE1281D3837C283735FB",
-                      "size":  117082
+                      "sha256":  "148B882CE1612C5C78B71D2D8AA06020B9D3319B8325D7A5FB42606F397171F8",
+                      "size":  124960
                   },
                   {
                       "path":  "core/ui/Theme.xaml",
-                      "sha256":  "05A1577F821F6CAACA7258D01601C4C39DB6262691FE497BCD4ED0B9F4099191",
-                      "size":  109821
+                      "sha256":  "992A70D8B477CA485ED246E2ABDB27A78843EFEFA9A614DC7C422F389356A963",
+                      "size":  109906
                   },
                   {
                       "path":  "core/ui/fonts/OFL.txt",
@@ -79,8 +79,8 @@
                   },
                   {
                       "path":  "Kid-FB.Y.exe",
-                      "sha256":  "0BC17CED7E5DD3830277E68DCD326E51C0F89A8F234834DED9A21B90021E7297",
-                      "size":  3408384
+                      "sha256":  "5B93303419FC1339525E36CD12EAEC7DA028E66835D975729079D51E2DC018D7",
+                      "size":  3679232
                   }
               ]
 }
