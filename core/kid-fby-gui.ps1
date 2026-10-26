@@ -601,7 +601,7 @@ $script:uiNames = @(
     'BoxGifOverlay','BorderGifOverlay','ImgVideoGif','GripGifResize','GripGifResizeNW','GripGifResizeNE','GripGifResizeSW',
     'GripGifResizeN','GripGifResizeS','GripGifResizeW','GripGifResizeE',
     'BadgePreviewMode','TxtPreviewMode','TxtNoVid','PreviewSample','TxtLogoMotionHint','PhoneShell','ImgNoVid','TxtNoVidTitle','TxtNoVidText',
-    'SpreadBar','TxtSpreadStatus','SpreadProgress','BtnSpreadStop','ActionBar','BtnStart','TxtStartGlyph','TxtStartLabel','TxtProgress','TxtStat','TxtCurrentItem','Bar',
+    'BandLayer','BandRect','SpreadBar','TxtSpreadStatus','SpreadProgress','BtnSpreadStop','ActionBar','BtnStart','TxtStartGlyph','TxtStartLabel','TxtProgress','TxtStat','TxtCurrentItem','Bar',
     'TxtCountSaved','TxtCountRejected','TxtCountSkipped','TxtCountFailed','PillSaved','PillRejected','PillSkipped','PillFailed','NotificationHost')
 $ui = @{}
 foreach ($n in $script:uiNames) {
@@ -7240,6 +7240,133 @@ function Update-GalleryHeldExpired {
     if ($changed) { Apply-GalleryFilter }
 }
 
+# ------------------------------------------------------------- chọn bằng khung kéo (D11) ----
+function Get-RubberBandHits {
+    # Hàm thuần: chỉ số các ô của KidWrapPanel giao với khung kéo. Hình học giống panel: ô ItemWidth x ItemHeight, $Columns ô mỗi hàng, lề trái (ViewportWidth - Columns*ItemWidth)/2,
+    # hàng r nằm ở y = r*ItemHeight trong "không gian nội dung" (đã cộng độ cuộn). Điểm neo (AnchorX/AnchorY) ở không gian nội dung; con trỏ (PointX/PointY) ở tọa độ khung nhìn nên cộng ScrollOffset hiện tại.
+    # Chạm cạnh không tính. Không tạo container nào: chỉ tính số học, nên cuộn ảo hóa không ảnh hưởng.
+    param([double]$AnchorX, [double]$AnchorY, [double]$PointX, [double]$PointY, [double]$ScrollOffset, [double]$ItemWidth, [double]$ItemHeight, [int]$Columns, [double]$ViewportWidth, [int]$Count)
+    if ($Count -le 0 -or $Columns -le 0 -or $ItemWidth -le 0 -or $ItemHeight -le 0) { return @() }
+    $x1 = [Math]::Min($AnchorX, $PointX); $x2 = [Math]::Max($AnchorX, $PointX)
+    $py = $PointY + $ScrollOffset
+    $y1 = [Math]::Min($AnchorY, $py); $y2 = [Math]::Max($AnchorY, $py)
+    if ($x2 -le $x1 -or $y2 -le $y1) { return @() }
+    $left = [Math]::Max(0.0, ($ViewportWidth - $Columns * $ItemWidth) / 2.0)
+    $rowFirst = [Math]::Max(0, [int][Math]::Floor($y1 / $ItemHeight))
+    $rowLast = [int][Math]::Ceiling($y2 / $ItemHeight) - 1
+    $hits = New-Object 'System.Collections.Generic.List[int]'
+    for ($r = $rowFirst; $r -le $rowLast; $r++) {
+        for ($col = 0; $col -lt $Columns; $col++) {
+            $cl = $left + $col * $ItemWidth
+            if ($x2 -le $cl -or $x1 -ge $cl + $ItemWidth) { continue }
+            $idx = $r * $Columns + $col
+            if ($idx -lt $Count) { $hits.Add($idx) }
+        }
+    }
+    return $hits.ToArray()
+}
+
+function Find-GalleryVisualChild {
+    param($Root, [Type]$Type)
+    $q = New-Object System.Collections.Generic.Queue[object]; $q.Enqueue($Root)
+    while ($q.Count) {
+        $n = $q.Dequeue()
+        if ($Type.IsInstanceOfType($n)) { return $n }
+        if ($n -is [Windows.Media.Visual]) { for ($i = 0; $i -lt [Windows.Media.VisualTreeHelper]::GetChildrenCount($n); $i++) { $q.Enqueue([Windows.Media.VisualTreeHelper]::GetChild($n, $i)) } }
+    }
+    return $null
+}
+
+$script:band = $null
+$script:tBand = $null
+
+function Update-GalleryBand {
+    # Vẽ khung và áp dụng lựa chọn theo vị trí con trỏ hiện tại (gọi khi chuột di chuyển và mỗi nhịp tự cuộn).
+    $b = $script:band
+    if (-not $b -or -not $b.Active) { return }
+    $panel = $b.Panel
+    $pos = [Windows.Input.Mouse]::GetPosition($panel)
+    $vw = [double]$panel.ViewportWidth; $vh = [double]$panel.ViewportHeight
+    $px = [Math]::Max(0.0, [Math]::Min($vw, $pos.X)); $py = [Math]::Max(0.0, [Math]::Min($vh, $pos.Y))
+    $scroll = [double]$panel.VerticalOffset
+    $hits = @(Get-RubberBandHits -AnchorX $b.AX -AnchorY $b.AY -PointX $px -PointY $py -ScrollOffset $scroll -ItemWidth $panel.ItemWidth -ItemHeight $panel.ItemHeight -Columns $panel.Columns -ViewportWidth $vw -Count $ui.GalleryList.Items.Count)
+    # Khung vẽ trên lớp phủ (tọa độ khung nhìn); neo trôi theo độ cuộn.
+    $ay = $b.AY - $scroll
+    $tl = $panel.TranslatePoint([Windows.Point]::new([Math]::Min($b.AX, $px), [Math]::Min($ay, $py)), $ui.BandLayer)
+    [Windows.Controls.Canvas]::SetLeft($ui.BandRect, $tl.X); [Windows.Controls.Canvas]::SetTop($ui.BandRect, $tl.Y)
+    $ui.BandRect.Width = [Math]::Abs($px - $b.AX); $ui.BandRect.Height = [Math]::Abs($py - $ay)
+    $ui.BandRect.Visibility = 'Visible'
+    $sig = ($hits -join ',')
+    if ($sig -ceq $b.Sig) { return }
+    $b.Sig = $sig
+    $want = New-Object 'System.Collections.Generic.List[object]'
+    if ($b.Ctrl) { foreach ($s in $b.Base) { $want.Add($s) } }
+    foreach ($i in $hits) { $item = $ui.GalleryList.Items[$i]; if ($want -notcontains $item) { $want.Add($item) } }
+    $script:gallerySyncing = $true
+    try {
+        $ui.GalleryList.SelectedItems.Clear()
+        foreach ($item in $want) { [void]$ui.GalleryList.SelectedItems.Add($item) }
+    } finally { $script:gallerySyncing = $false }
+    Update-MoveSelectedButton
+}
+
+function Start-GalleryBand {
+    # Nhấn chuột trái ở chỗ TRỐNG của lưới (không phải thẻ, nút, thanh cuộn): ghi neo; khung chỉ bật khi kéo quá vài pixel, nên nhấp thường không đổi gì.
+    param($Source, $EventArgs)
+    $n = $Source
+    while ($n -and $n -ne $ui.GalleryList) {
+        if ($n -is [Windows.Controls.ListViewItem] -or $n -is [Windows.Controls.Primitives.ScrollBar] -or $n -is [Windows.Controls.Primitives.ButtonBase]) { return }
+        $n = $(if ($n -is [Windows.Media.Visual]) { [Windows.Media.VisualTreeHelper]::GetParent($n) } else { $null })
+    }
+    $panel = Find-GalleryVisualChild $ui.GalleryList ([KidWrapPanel])
+    if (-not $panel -or $ui.GalleryList.Items.Count -eq 0) { return }
+    $pos = $EventArgs.GetPosition($panel)
+    $ctrl = [bool]([Windows.Input.Keyboard]::Modifiers -band [Windows.Input.ModifierKeys]::Control)
+    $script:band = @{ Panel = $panel; AX = $pos.X; AY = $pos.Y + [double]$panel.VerticalOffset; StartX = $pos.X; StartY = $pos.Y; Ctrl = $ctrl; Base = @($ui.GalleryList.SelectedItems); Active = $false; Sig = $null }
+}
+
+function Move-GalleryBand {
+    param($EventArgs)
+    $b = $script:band
+    if (-not $b) { return }
+    if ($EventArgs.LeftButton -ne [Windows.Input.MouseButtonState]::Pressed) { Stop-GalleryBand; return }
+    if (-not $b.Active) {
+        $pos = $EventArgs.GetPosition($b.Panel)
+        if ([Math]::Abs($pos.X - $b.StartX) -lt 5 -and [Math]::Abs($pos.Y - $b.StartY) -lt 5) { return }
+        $b.Active = $true
+        [void]$ui.GalleryList.CaptureMouse()
+        if (-not $script:tBand) {
+            $script:tBand = New-Object Windows.Threading.DispatcherTimer
+            $script:tBand.Interval = [TimeSpan]::FromMilliseconds(50)
+            $script:tBand.Add_Tick({ try { Step-GalleryBandScroll } catch { Write-FileLog "WARN Khung kéo: $($_.Exception.Message)" } })
+        }
+        $script:tBand.Start()
+    }
+    Update-GalleryBand
+}
+
+function Step-GalleryBandScroll {
+    # Tự cuộn khi con trỏ gần mép trên/dưới (hoặc ra ngoài) trong lúc kéo.
+    $b = $script:band
+    if (-not $b -or -not $b.Active) { if ($script:tBand) { $script:tBand.Stop() }; return }
+    $pos = [Windows.Input.Mouse]::GetPosition($b.Panel)
+    $vh = [double]$b.Panel.ViewportHeight
+    $edge = 32.0
+    $step = 0.0
+    if ($pos.Y -lt $edge) { $step = -[Math]::Min(48.0, 8.0 + ($edge - $pos.Y) / 2.0) }
+    elseif ($pos.Y -gt $vh - $edge) { $step = [Math]::Min(48.0, 8.0 + ($pos.Y - ($vh - $edge)) / 2.0) }
+    if ($step -ne 0.0) { $b.Panel.SetVerticalOffset([double]$b.Panel.VerticalOffset + $step) }
+    Update-GalleryBand
+}
+
+function Stop-GalleryBand {
+    $b = $script:band
+    $script:band = $null
+    if ($script:tBand) { $script:tBand.Stop() }
+    if ($b -and $b.Active) { try { $ui.GalleryList.ReleaseMouseCapture() } catch { Write-FileLog "WARN Khung kéo thả chuột: $($_.Exception.Message)" } }
+    if ($ui.BandRect) { $ui.BandRect.Visibility = 'Collapsed' }
+}
+
 function Get-GalleryMoveTargets {
     # The whole multi-selection when the card is part of it, otherwise just the card.
     param($Item)
@@ -9233,6 +9360,11 @@ $ui.GalleryList.Add_MouseDoubleClick({
     }
 })
 # Nguoi dung chon mot the: nap vao khung xem truoc o 0:00, khong tu phat. Khong bao gio tu chon khi vao Kho.
+# D11: kéo một khung trên vùng trống để chọn nhiều thẻ (Ctrl giữ lựa chọn cũ).
+$ui.GalleryList.Add_PreviewMouseLeftButtonDown({ param($s, $e) try { Start-GalleryBand $e.OriginalSource $e } catch { Write-FileLog "WARN Khung kéo (nhấn): $($_.Exception.Message)" } })
+$ui.GalleryList.Add_PreviewMouseMove({ param($s, $e) try { Move-GalleryBand $e } catch { Write-FileLog "WARN Khung kéo (di chuyển): $($_.Exception.Message)"; Stop-GalleryBand } })
+$ui.GalleryList.Add_PreviewMouseLeftButtonUp({ param($s, $e) try { $wasActive = [bool]($script:band -and $script:band.Active); Stop-GalleryBand; if ($wasActive) { $e.Handled = $true } } catch { Write-FileLog "WARN Khung kéo (nhả): $($_.Exception.Message)" } })
+$ui.GalleryList.Add_LostMouseCapture({ param($s, $e) if ($script:band -and $script:band.Active -and -not $ui.GalleryList.IsMouseCaptured) { Stop-GalleryBand } })
 $ui.GalleryList.Add_SelectionChanged({
     Update-MoveSelectedButton
     if ($script:gallerySyncing) { return }

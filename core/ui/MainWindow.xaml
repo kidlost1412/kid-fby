@@ -741,6 +741,8 @@
                 </DataTemplate>
               </ListView.ItemTemplate>
             </ListView>
+            <!-- khung kéo chọn nhiều thẻ (D11): lớp phủ không nhận chuột -->
+            <Canvas x:Name="BandLayer" IsHitTestVisible="False" ClipToBounds="True"><Border x:Name="BandRect" Visibility="Collapsed" Background="{DynamicResource Sky}" Opacity="0.35" BorderBrush="{DynamicResource Ink}" BorderThickness="2" CornerRadius="6"/></Canvas>
             <!-- thanh chọn nhiều: lớp phủ ở đáy lưới (không đẩy lưới), hiện khi chọn từ 2 video -->
             <Border x:Name="PanelSelBar" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,14" Padding="14,6" CornerRadius="26"
                     Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Ink}" BorderThickness="2">
