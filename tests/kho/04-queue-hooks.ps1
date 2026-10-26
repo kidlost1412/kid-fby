@@ -103,7 +103,7 @@ Test-Case 'normal queue then redo: the redo does not touch the kho; a re-downloa
     Assert-True ($null -eq $script:queueKhoId) 'record again clears the target'
     Invoke-Outcome @{ Kind = 'saved'; Video = $script:lastOut }
     $e = (Read-TestJson (Join-Path $out 'reup-status.json')).'333'
-    Assert-Equal $e.Kho $other.id 'manual kho kept'; Assert-Equal $e.KhoManual $true
+    Assert-Equal $e.Kho $other.id 'manual kho kept'
     # a later normal queue run of the same id (re-download) still does not override
     $script:queueKhoId = $first
     Invoke-Outcome @{ Kind = 'saved'; Video = $script:lastOut }

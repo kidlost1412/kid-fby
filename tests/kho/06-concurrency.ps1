@@ -31,13 +31,13 @@ Test-Case 'no lost field: every own entry of both processes is complete' {
     $meta = Get-ReupMetadata -OutDir $out
     for ($i = 1; $i -le $iterations; $i++) {
         $a = $meta.([string](1000000 + $i)); $b = $meta.([string](2000000 + $i))
-        if ($null -eq $a -or $a.Kho -ne $guid -or $a.KhoManual -ne $true) { throw "Kho entry $i incomplete: $(ConvertTo-Json $a -Compress)" }
+        if ($null -eq $a -or $a.Kho -ne $guid -or $null -ne $a.PSObject.Properties['KhoManual']) { throw "Kho entry $i incomplete: $(ConvertTo-Json $a -Compress)" }
         if ($null -eq $b -or @($b.History).Count -ne 1 -or $b.Kho -ne 'acct:anna' -or $b.Posted -ne $true) { throw "History entry $i incomplete: $(ConvertTo-Json $b -Compress -Depth 5)" }
     }
 }
 Test-Case 'shared entry keeps both writers'' fields (KhoManual/Kho from one, all history from the other, unknown field)' {
     $e = (Get-ReupMetadata -OutDir $out).'9'
-    Assert-Equal $e.KhoManual $true; Assert-Equal $e.Kho $guid
+    Assert-Equal $e.Kho $guid; Assert-True ($null -eq $e.PSObject.Properties['KhoManual']) 'unposted: no KhoManual'
     Assert-Equal @($e.History).Count $iterations 'history keys'
     Assert-Equal @($e.History | ForEach-Object { $_.key } | Sort-Object -Unique).Count $iterations 'distinct keys'
     Assert-Equal $e.Extra 'keep me'

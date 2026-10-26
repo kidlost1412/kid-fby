@@ -233,5 +233,43 @@ Test-Case 'A2 interleaving 2: the full sync confirms first, then a stale fast-pa
     Assert-Equal $final.History[0].status 'succeeded'; Assert-Equal $final.Kho 'acct:anna'
 }
 
+
+Test-Case 'manual moves: unposted -> custom kho, later confirmed -> account kho (auto-assign still works)' {
+    $out = New-TestDir; $guid = 'c-0123456789abcdef0123456789abcdef'
+    $pending = @((New-TestHistoryEntry -Request 'r1' -User 'anna' -Status 'pending' -Accepted ''))
+    Write-TestMetadata $out @{ '1' = (New-HistItem $pending); '2' = [ordered]@{ Posted = $false; Date = '' } }
+    [void](Set-VideoKho -VideoIds @('1', '2') -KhoId $guid -Manual -OutDir $out)
+    $m = Read-TestJson (Join-Path $out 'reup-status.json')
+    Assert-Equal $m.'1'.Kho $guid; Assert-True ($null -eq $m.'1'.PSObject.Properties['KhoManual']) 'no KhoManual before posting'
+    $m.'1'.History[0].status = 'succeeded'; $m.'1'.History[0].accepted_at = '2026-10-20T10:00:00Z'
+    Assert-True (Invoke-KhoAutoAssign $m) 'changed'
+    Assert-Equal $m.'1'.Kho 'acct:anna'
+}
+
+Test-Case 'manual moves: posted video pulled to a custom kho or default keeps KhoManual and stays; unposted -> default has no fields' {
+    $out = New-TestDir; $guid = 'c-0123456789abcdef0123456789abcdef'
+    $done = @((New-TestHistoryEntry -Request 'r1' -User 'anna'))
+    Write-TestMetadata $out @{ '1' = (New-HistItem $done @{ Kho = 'acct:anna' }); '2' = (New-HistItem $done @{ Kho = 'acct:anna' }); '3' = [ordered]@{ Posted = $false; Date = ''; Kho = $guid; KhoManual = $true } }
+    [void](Set-VideoKho -VideoIds @('1') -KhoId $guid -Manual -OutDir $out)
+    [void](Set-VideoKho -VideoIds @('2') -KhoId 'default' -Manual -OutDir $out)
+    [void](Set-VideoKho -VideoIds @('3') -KhoId 'default' -Manual -OutDir $out)
+    $m = Read-TestJson (Join-Path $out 'reup-status.json')
+    Assert-Equal $m.'1'.Kho $guid; Assert-Equal $m.'1'.KhoManual $true
+    Assert-True ($null -eq $m.'2'.PSObject.Properties['Kho']); Assert-Equal $m.'2'.KhoManual $true
+    Assert-True ($null -eq $m.'3'.PSObject.Properties['Kho'] -and $null -eq $m.'3'.PSObject.Properties['KhoManual']) 'unposted default: clean'
+    Assert-True (-not (Invoke-KhoAutoAssign $m)) 'posted ones stay where the owner put them'
+}
+
+Test-Case 'manual move to an account kho, later confirmed on another account: stays; KhoManual removed' {
+    $out = New-TestDir
+    $done = @((New-TestHistoryEntry -Request 'r1' -User 'anna'))
+    Write-TestMetadata $out @{ '1' = (New-HistItem $done @{ KhoManual = $true }); '2' = (New-HistItem @((New-TestHistoryEntry -Request 'r2' -User 'bob' -Status 'pending' -Accepted ''))) }
+    [void](Set-VideoKho -VideoIds @('1', '2') -KhoId 'acct:carl' -Manual -OutDir $out)
+    $m = Read-TestJson (Join-Path $out 'reup-status.json')
+    foreach ($id in '1', '2') { Assert-Equal $m.$id.Kho 'acct:carl'; Assert-True ($null -eq $m.$id.PSObject.Properties['KhoManual']) "$id no KhoManual" }
+    $m.'2'.History[0].status = 'succeeded'; $m.'2'.History[0].accepted_at = '2026-10-20T10:00:00Z'
+    Assert-True (-not (Invoke-KhoAutoAssign $m)) 'account kho never changes by itself'
+    Assert-Equal $m.'2'.Kho 'acct:carl'
+}
 Remove-Item -LiteralPath $tmp -Recurse -Force
 Complete-Tests

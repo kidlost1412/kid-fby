@@ -39,7 +39,7 @@ Test-Case 'a batch is one Update-ReupMetadata call' {
     [void](Set-VideoKho -VideoIds @('1', '2', '3', '4', '5') -KhoId $guid -Manual -OutDir $out)
     Assert-Equal $script:updateCalls 1 'calls'
     $meta = & $statusOf $out
-    foreach ($id in 1..5) { Assert-Equal $meta."$id".Kho $guid; Assert-Equal $meta."$id".KhoManual $true }
+    foreach ($id in 1..5) { Assert-Equal $meta."$id".Kho $guid; Assert-True ($null -eq $meta."$id".PSObject.Properties['KhoManual']) 'unposted: no KhoManual'  }
 }
 
 Test-Case 'History, ManualPosted and unknown fields are untouched; no-op does not rewrite the file' {
@@ -60,15 +60,15 @@ Test-Case 'History, ManualPosted and unknown fields are untouched; no-op does no
     Assert-Equal (Get-Item (Join-Path $out 'reup-status.json')).LastWriteTimeUtc $stamp 'mtime'
 }
 
-Test-Case 'manual move to the default kho is a tombstone (Kho=default + KhoManual) that auto-assign respects' {
+Test-Case 'manual move of a POSTED video to the default kho: no Kho field, KhoManual tombstone that auto-assign respects' {
     $out = New-OutDir
     $hist = @((New-TestHistoryEntry -Request 'r1' -User 'anna'))
     Write-TestMetadata $out @{ '5' = [ordered]@{ Posted = $true; Date = ''; Source = 'autotok-history'; History = $hist; ManualPosted = $false; ManualDate = ''; Kho = 'acct:anna' } }
     [void](Set-VideoKho -VideoIds @('5') -KhoId 'default' -Manual -OutDir $out)
     $meta = & $statusOf $out
-    Assert-Equal $meta.'5'.Kho 'default'; Assert-Equal $meta.'5'.KhoManual $true
-    Assert-True (-not (Invoke-KhoAutoAssign $meta)) 'auto-assign must leave a manual default alone'
-    Assert-Equal $meta.'5'.Kho 'default'
+    Assert-True ($null -eq $meta.'5'.PSObject.Properties['Kho']) 'no Kho field'; Assert-Equal $meta.'5'.KhoManual $true
+    Assert-True (-not (Invoke-KhoAutoAssign $meta)) 'auto-assign must leave it alone'
+    Assert-True ($null -eq $meta.'5'.PSObject.Properties['Kho'])
 }
 
 Test-Case '-OnlyIfUnassigned never overrides an existing Kho or a manual choice' {

@@ -1369,21 +1369,32 @@ function Get-KhoList {
 }
 
 function Set-MetaKho {
-    # Sets Kho (and KhoManual when $Manual) on one entry of an open metadata object. A missing entry is created in the
-    # minimal shape older versions accept. Returns $true when something changed.
+    # Sets the kho of one entry of an open metadata object; a missing entry is created in the minimal shape older versions accept.
+    # Not $Manual (download target, import): sets Kho only. $Manual (owner moved it): default kho = no Kho field; account kho
+    # = Kho only; default/custom kho = KhoManual only when the video already has a confirmed post (the owner pulled a posted
+    # video out of its account kho), otherwise future confirmations still auto-assign. Returns $true when something changed.
     param($Metadata, [string]$VideoId, [string]$KhoId, [bool]$Manual)
     $prop = $Metadata.PSObject.Properties[$VideoId]
     $item = if ($prop) { $prop.Value } else { $null }
+    $wantKho = $KhoId
+    if ($Manual -and $KhoId -eq 'default') { $wantKho = '' }
     if ($null -eq $item) {
+        if (-not $wantKho) { return $false }
         $item = [pscustomobject]@{ Posted = $false; Date = '' }
         $Metadata | Add-Member -MemberType NoteProperty -Name $VideoId -Force -Value $item
     }
     $changed = $false
-    if ([string]$item.Kho -cne $KhoId) { Set-ReupField $item 'Kho' $KhoId; $changed = $true }
-    if ($Manual -and $item.KhoManual -ne $true) { Set-ReupField $item 'KhoManual' $true; $changed = $true }
+    if ($wantKho) {
+        if ([string]$item.Kho -cne $wantKho) { Set-ReupField $item 'Kho' $wantKho; $changed = $true }
+    } elseif ($item.PSObject.Properties['Kho']) { [void]$item.PSObject.Properties.Remove('Kho'); $changed = $true }
+    if (-not $Manual) { return $changed }
+    $posted = @(@($item.History) | Where-Object { $_ -and [string]$_.status -eq 'succeeded' -and $_.publish_uncertain -ne $true }).Count -gt 0
+    $wantManual = $posted -and -not $KhoId.StartsWith('acct:')
+    if ($wantManual) {
+        if ($item.KhoManual -ne $true) { Set-ReupField $item 'KhoManual' $true; $changed = $true }
+    } elseif ($item.PSObject.Properties['KhoManual']) { [void]$item.PSObject.Properties.Remove('KhoManual'); $changed = $true }
     return $changed
 }
-
 function Set-VideoKho {
     # One Update-ReupMetadata call for the whole batch. -Manual: the owner chose it (KhoManual = true, auto-assign leaves it).
     # -OnlyIfUnassigned: skip entries that already have a Kho or a manual choice (download target never overrides).
