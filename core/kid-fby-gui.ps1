@@ -6138,9 +6138,12 @@ function Get-DialogChoice {
 function Show-ConfirmDialog {
     # Tra ve $true chi khi nguoi dung bam nut xac nhan. Ham cu dung MessageBox trang -> thay bang hop thoai theo theme.
     param([string]$Title, [string]$Message, [string]$ConfirmText = 'Đồng ý', [string]$CancelText = 'Hủy',
-          [switch]$Danger, [switch]$OkOnly, [string]$Kind = 'warning')
+          [switch]$Danger, [switch]$OkOnly, [string]$Kind = 'warning', [switch]$Exclusive)
+    # -Exclusive: a destructive confirmation holds khoExclusive while it is shown, so no auto-move / move / cleanup can change the
+    # files it is about (callers also revalidate the target after the answer).
     Write-FileLog "DIALOG $Title"
     if ($null -ne $script:confirmDialogAutoAnswer) { return [bool]$script:confirmDialogAutoAnswer }
+    if ($Exclusive) { $script:khoExclusive++ }
     try {
         $dlg = New-ConfirmDialog -Title $Title -Message $Message -ConfirmText $ConfirmText -CancelText $CancelText -Danger:$Danger -OkOnly:$OkOnly -Kind $Kind
         if ($win -and $win.IsVisible) { $dlg.Owner = $win }
@@ -6151,7 +6154,7 @@ function Show-ConfirmDialog {
         Write-FileLog "ERR  Show-ConfirmDialog: $($_.Exception.Message)"
         $mb = Show-KidMessageBox -Message $Message -Title $Title -Buttons $(if ($OkOnly) { 'OK' } else { 'YesNo' }) -Icon 'Warning' -Default $(if ($OkOnly) { 'OK' } else { 'No' })
         return ($mb -eq 'Yes' -or ($OkOnly -and $mb -eq 'OK'))
-    } finally { $script:lastConfirmDialog = $null }
+    } finally { $script:lastConfirmDialog = $null; if ($Exclusive) { $script:khoExclusive-- } }
 }
 
 function Show-ChoiceDialog {
@@ -6689,8 +6692,8 @@ function Confirm-GalleryDelete {
     # Hop thoai theo theme; nut mac dinh la Huy: Enter/Esc khong xoa nham.
     $n = [Math]::Max(1, @(Get-ReelMediaFiles -VideoPath $FilePath -Existing).Count)
     $noBin = Get-KhoNoRecycleReason (Split-Path $FilePath -Parent)
-    if ($noBin) { return (Show-ConfirmDialog -Title 'Ổ này không có Thùng rác — xóa vĩnh viễn?' -Message (Get-DeleteConfirmText -FilePath $FilePath -NoRecycle $noBin) -ConfirmText "Xóa vĩnh viễn $n file" -Danger) }
-    return (Show-ConfirmDialog -Title 'Xóa video này?' -Message (Get-DeleteConfirmText -FilePath $FilePath) -ConfirmText "Chuyển $n file vào Thùng rác" -Danger)
+    if ($noBin) { return (Show-ConfirmDialog -Title 'Ổ này không có Thùng rác — xóa vĩnh viễn?' -Message (Get-DeleteConfirmText -FilePath $FilePath -NoRecycle $noBin) -ConfirmText "Xóa vĩnh viễn $n file" -Danger -Exclusive) }
+    return (Show-ConfirmDialog -Title 'Xóa video này?' -Message (Get-DeleteConfirmText -FilePath $FilePath) -ConfirmText "Chuyển $n file vào Thùng rác" -Danger -Exclusive)
 }
 
 function Open-GalleryFile {
@@ -6731,6 +6734,7 @@ function Invoke-GalleryDelete {
     if ($journalBlock) { Show-Toast $journalBlock -Kind warning; return $false }
     if (Test-TikTokTransferActive $FilePath) { Show-Toast 'Video đang được chuyển sang bộ đăng nền. Đợi chuyển xong rồi hãy xóa.' -Kind warning; return $false }
     if (-not (Confirm-GalleryDelete $FilePath)) { return $false }
+    if (-not (Test-Path -LiteralPath $FilePath)) { Show-Toast 'Video đã được chuyển hoặc không còn ở vị trí này; chưa xóa gì.' -Kind warning; return $false }
 
     $savedSource = $Controls.Player.Source
     $savedSourceText = if ($savedSource) { $savedSource.ToString() } else { '' }
@@ -8123,6 +8127,7 @@ function Confirm-KhoDelete {
     param($Owner, [string]$Name, [int]$Count = 0, [string]$NoRecycle = '')
     if ($null -ne $script:confirmDialogAutoAnswer) { return [bool]$script:confirmDialogAutoAnswer }
     Write-FileLog "DIALOG Xóa kho '$Name' ($Count video)"
+    $script:khoExclusive++
     try {
         if ($NoRecycle) {
             $dlg = New-ConfirmDialog -Title 'Ổ này không có Thùng rác — xóa vĩnh viễn?' -Message "Ổ này không có Thùng rác ($NoRecycle) — xóa vĩnh viễn?`r`nXóa kho '$Name' và $Count video KHÔNG khôi phục được." -ConfirmText 'Xóa vĩnh viễn' -Danger
@@ -8134,7 +8139,7 @@ function Confirm-KhoDelete {
     } catch {
         Write-FileLog "ERR  Confirm-KhoDelete: $($_.Exception.Message)"
         return $false
-    }
+    } finally { $script:khoExclusive-- }
 }
 
 function Update-KhoCardsAfterRename {
@@ -8493,6 +8498,8 @@ function Show-KhoManagerDialog {
             $name = [string]$lib.name; $count = Get-KhoTotalCount ([string]$lib.id)
             $noBin = Get-KhoNoRecycleReason ([string]$lib.path)
             if (-not (Confirm-KhoDelete -Owner $dlg -Name $name -Count $count -NoRecycle $noBin)) { return }
+            $again = Get-KhoById ([string]$lib.id)
+            if (-not $again -or [string]$again.path -cne [string]$lib.path) { $c.Status.Text = "Kho '$name' đã thay đổi trong lúc xác nhận; chưa xóa gì."; return }
             $r = Remove-KhoAndRefresh -Id ([string]$lib.id) -AllowPermanent:([bool]$noBin)
             if ($r.Success) {
                 $state.Selected = [string]@(Get-KhoList)[0].id
@@ -10111,12 +10118,13 @@ function Invoke-ClearReeditCache {
         $okShape = ([IO.Path]::GetFileName($full) -ceq $script:reelCacheName) -and (@($scope.Roots | Where-Object { Test-SamePath ([IO.Path]::GetDirectoryName($full)) $_ }).Count -eq 1)
         if (-not $okShape) { Show-Toast 'Đường dẫn .cache không hợp lệ; không xóa.' -Kind error; return }
     }
-    $ok = Show-ConfirmDialog -Title 'Dọn cache sửa lại?' -Danger -ConfirmText 'Dọn cache' -Message (
+    $ok = Show-ConfirmDialog -Title 'Dọn cache sửa lại?' -Danger -Exclusive -ConfirmText 'Dọn cache' -Message (
         "Xóa vĩnh viễn cache sửa lại của $($scope.Label):`r`n$(($s.CacheDirs) -join "`r`n")`r`n`r`n$($s.CacheFiles) file · $(Format-Bytes $s.CacheBytes)" +
         " (video gốc -1, âm thanh -2 và ảnh thu nhỏ).`r`n`r`nSau khi xóa, $($s.ReeditCount) video cũ sẽ KHÔNG sửa lại logo/GIF được nữa; " +
         "muốn sửa phải tải và ghi âm lại. Video hoàn chỉnh (-3) và biên nhận đăng TikTok được giữ nguyên.")
     if (-not $ok) { return }
     if (Test-CacheActionBlocked $scope.Roots) { return }
+    foreach ($cd in $s.CacheDirs) { if (-not [System.IO.Directory]::Exists($cd)) { Show-Toast 'Thư mục .cache đã thay đổi trong lúc xác nhận; chưa dọn gì. Thử lại.' -Kind warning; Update-CacheInfo; return } }
     $protected = Get-KhoJournalPaths
     if ($null -eq $protected) { Show-Toast 'Có nhật ký chuyển kho không đọc được; chưa dọn gì.' -Kind warning; return }
     $script:khoExclusive++
@@ -10240,11 +10248,12 @@ function Invoke-KhoCleanup {
     $cands = @($cands | Where-Object { -not (Test-TikTokTransferActive -FilePath ([string]$_.Path)) })
     if (-not $cands.Count) { Show-Toast "Không có video nào đã đăng hơn $days ngày còn file trung gian ($scopeText)." -Kind info; return }
     $total = [double]0; foreach ($c in $cands) { $total += $c.Bytes }
-    $ok = Show-ConfirmDialog -Title 'Dọn ổ?' -Danger -ConfirmText 'Xóa file trung gian' -Message (
+    $ok = Show-ConfirmDialog -Title 'Dọn ổ?' -Danger -Exclusive -ConfirmText 'Xóa file trung gian' -Message (
         "Xóa file trung gian (để ghi âm lại) của $($cands.Count) video đã đăng hơn $days ngày ($scopeText), giải phóng $(Format-Bytes $total). " +
         "Video hoàn chỉnh (-3) được giữ nguyên. Sau khi xóa sẽ không ghi âm lại/sửa lại được các video này.")
     if (-not $ok) { return }
     if (Test-CacheActionBlocked $scopeRoots) { return }
+    if (@($cands | Where-Object { -not [System.IO.File]::Exists([string]$_.Path) }).Count) { Show-Toast 'Có video đã được chuyển hoặc xóa trong lúc xác nhận; chưa dọn gì. Thử lại.' -Kind warning; return }
     $protected = Get-KhoJournalPaths
     if ($null -eq $protected) { Show-Toast 'Có nhật ký chuyển kho không đọc được; chưa dọn gì.' -Kind warning; return }
     $script:khoExclusive++

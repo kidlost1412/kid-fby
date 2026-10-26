@@ -104,6 +104,34 @@ Test-Case '2: an unreadable pending-deletes file refuses the delete (nothing rec
         Assert-True ([IO.File]::Exists((Join-Path $w.B.path "$id-3-hoan-chinh.mp4"))) 'video untouched'
     } finally { $script:khoRecycleOverride = $null }
 }
+# ---------------------------------------------------------------- 3
+function New-ConfirmDialog {
+    # Test double of the WPF dialog: records what the app state is WHILE the dialog is displayed.
+    $d = [pscustomobject]@{ Owner = $null }
+    Add-Member -InputObject $d -MemberType ScriptMethod -Name ShowDialog -Value { $script:seenExclusive = $script:khoExclusive; $script:seenQuiet = Test-KhoQuiet; return $true }
+    return $d
+}
+Test-Case '3: video-delete, cleanup and kho-delete confirmations hold khoExclusive while shown (the mover is not quiet) and release it afterwards' {
+    $w = New-TestWorld @('B')
+    $id = NextId; [void](New-TestVideo $w.B.path $id)
+    $path = Join-Path $w.B.path "$id-3-hoan-chinh.mp4"
+    $script:seenExclusive = -1; $script:seenQuiet = ''
+    Assert-Equal (Confirm-GalleryDelete $path) $true
+    Assert-Equal $script:seenExclusive 1 'exclusive while the delete dialog is shown'
+    Assert-True ($script:seenQuiet -like '*hộp thoại*') "quiet check says: '$($script:seenQuiet)'"
+    Assert-Equal $script:khoExclusive 0 'released'
+    $script:seenExclusive = -1
+    Assert-Equal (Show-ConfirmDialog -Title 'Dọn ổ?' -Message 'x' -Danger -Exclusive) $true
+    Assert-Equal $script:seenExclusive 1 'cleanup confirm exclusive'; Assert-Equal $script:khoExclusive 0
+    $script:seenExclusive = -1; $script:seenQuiet = ''
+    Assert-Equal (Confirm-KhoDelete -Owner $null -Name 'B' -Count 1) $true
+    Assert-Equal $script:seenExclusive 1 'kho delete exclusive'; Assert-Equal $script:khoExclusive 0
+    # and an auto-move attempted while a dialog is open is refused as busy
+    $script:khoExclusive = 1
+    $r = Invoke-KhoMove -Items @((Item $w.B.path $id)) -TargetId $w.A.id -Reason auto
+    $script:khoExclusive = 0
+    Assert-True ($r.Busy -like '*hộp thoại*') "busy: '$($r.Busy)'"; Assert-True ([IO.File]::Exists($path)) 'video did not move'
+}
 # ---- END ----
 $server.Stop()
 Complete-Tests
