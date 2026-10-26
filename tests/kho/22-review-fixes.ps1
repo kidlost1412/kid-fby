@@ -198,6 +198,26 @@ Test-Case '5: END TO END with real ffmpeg: a file with an attached cover picture
         Remove-Item -LiteralPath $dir -Recurse -Force
     }
 } else { Skip-Case '5: END TO END with real ffmpeg' 'tools\ffmpeg not available' }
+# ---------------------------------------------------------------- 6
+Test-Case '6: a retiring (not yet stopped) dialog preparation task keeps the mover out; a finished one does not' {
+    $w = New-TestWorld @('B')
+    $id = NextId; [void](New-TestVideo $w.A.path $id)
+    $path = Join-Path $w.A.path "$id-3-hoan-chinh.mp4"
+    $script:tikTokReaper = @{ Tasks = New-Object System.Collections.ArrayList; Timer = $null }
+    $running = @{ Async = [pscustomobject]@{ IsCompleted = $false }; StopAsync = $null }
+    [void]$script:tikTokReaper.Tasks.Add($running)
+    try {
+        $r = Invoke-KhoMove -Items @((Item $w.A.path $id)) -TargetId $w.B.id -Reason manual
+        Assert-True ($r.Busy -like '*dừng tác vụ chuẩn bị*') "busy: '$($r.Busy)'"
+        Assert-True ([IO.File]::Exists($path)) 'nothing moved while the worker is stopping'
+        $running.Async = [pscustomobject]@{ IsCompleted = $true }; $running.StopAsync = [pscustomobject]@{ IsCompleted = $false }
+        Assert-True ((Test-KhoQuiet) -like '*dừng tác vụ chuẩn bị*') 'stop request still pending'
+        $running.StopAsync = [pscustomobject]@{ IsCompleted = $true }
+        Assert-Equal (Test-KhoQuiet) '' 'quiet once invocation and stop have finished'
+        $r2 = Invoke-KhoMove -Items @((Item $w.A.path $id)) -TargetId $w.B.id -Reason manual
+        Assert-Equal @($r2.Moved).Count 1 (($r2.Failed | ForEach-Object { $_.Why }) -join ';')
+    } finally { $script:tikTokReaper = $null }
+}
 # ---- END ----
 $server.Stop()
 Complete-Tests

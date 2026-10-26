@@ -2232,6 +2232,8 @@ function Test-KhoQuiet {
     if ($script:importBusy) { return 'đang thêm video từ thư mục' }
     if (Test-SpreadRunActive) { return 'đang rải lịch đăng TikTok' }
     if ($script:khoExclusive -gt 0) { return 'đang mở hộp thoại đăng, rải lịch hoặc dọn dẹp' }
+    # A closed dialog's preparation worker (writes metadata) may still be stopping: an unfinished retiring task keeps the folders busy.
+    if ($script:tikTokReaper -and @($script:tikTokReaper.Tasks | Where-Object { -not $_.Async.IsCompleted -or ($_.StopAsync -and -not $_.StopAsync.IsCompleted) }).Count) { return 'đang dừng tác vụ chuẩn bị đăng TikTok' }
     if ($script:autotokInstall -or (Test-AutotokUpgradeActive)) { return 'đang cài hoặc cập nhật bộ đăng' }
     return ''
 }
