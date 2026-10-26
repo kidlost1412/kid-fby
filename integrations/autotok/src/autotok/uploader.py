@@ -429,10 +429,15 @@ class Client:
                 scheduled_for = datetime.fromtimestamp(ts, tz=timezone.utc)
 
             try:
-                if publish_at is not None:
-                    # requests-sent schedules always get "Invalid parameters"; a real page succeeds.
+                # requests-signed publishes (scheduled and, since 2026-10, immediate) get
+                # "Invalid parameters"; a real page succeeds.
+                try:
                     response = self._publish_in_browser(payload)
-                else:
+                except _BrowserNotStarted:
+                    if publish_at is not None:
+                        raise
+                    # Nothing was sent, so the old requests path is safe for an immediate post.
+                    log.warning("Publishing browser could not start; falling back to the requests path.")
                     response = self._publish(session, payload)
             except PublishError as exc:
                 if delay is not None and delay > SHORT_SCHEDULE_WINDOW:
@@ -636,7 +641,7 @@ class Client:
                                         user_agent=self.user_agent, proxy=self.proxy, timeout=self.timeout)
         except BrowserStartError as exc:
             log.warning("Scheduling browser could not start: %s", redact_url(exc))
-            raise PublishError("không mở được trình duyệt để hẹn giờ", status_msg=redact_url(exc)[:300]) from exc
+            raise _BrowserNotStarted("không mở được trình duyệt để hẹn giờ", status_msg=redact_url(exc)[:300]) from exc
         except Exception as exc:
             raise PublishUncertainError(
                 f"publish request from the browser failed ({redact_url(exc)}); the video may or may not have been "
@@ -650,6 +655,10 @@ class Client:
                 "not have been posted. Check the account on TikTok before retrying."
             )
         return _check_publish(status, result.get("text") or "")
+
+
+class _BrowserNotStarted(PublishError):
+    """The publishing browser could not be prepared; nothing was sent to TikTok."""
 
 
 def _check_publish(status: int, text: str) -> dict:

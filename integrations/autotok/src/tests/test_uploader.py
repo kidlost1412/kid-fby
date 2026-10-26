@@ -91,7 +91,8 @@ def client(saved_account):
 
 
 @responses.activate
-def test_upload_sends_requested_settings(client, video_file):
+def test_upload_sends_requested_settings(client, video_file, browser):
+    browser.exc = browser_publish.BrowserStartError("fallback: exercise the requests publish path")
     mock_tiktok(responses)
     result = client.upload(
         video_file, "Hello #fyp @bob", visibility="private", allow_comment=False,
@@ -319,7 +320,8 @@ def test_account_without_session():
         Client(Account(name="empty"))
 
 
-def test_proxy_reaches_requests_and_signer(saved_account, video_file, monkeypatch):
+def test_proxy_reaches_requests_and_signer(saved_account, video_file, monkeypatch, browser):
+    browser.exc = browser_publish.BrowserStartError("fallback: exercise the requests publish path")
     seen = {}
 
     class RecordingSigner(FakeSigner):
@@ -375,7 +377,8 @@ def test_check_session(client):
 
 
 @responses.activate
-def test_environment_proxy_cannot_override_account_proxy(client, video_file, monkeypatch):
+def test_environment_proxy_cannot_override_account_proxy(client, video_file, monkeypatch, browser):
+    browser.exc = browser_publish.BrowserStartError("fallback: exercise the requests publish path")
     monkeypatch.setenv("HTTPS_PROXY", "http://corporate.example:3128")
     monkeypatch.setenv("https_proxy", "http://corporate.example:3128")
     mock_tiktok(responses)
@@ -419,11 +422,34 @@ def test_scheduled_post_uses_browser_with_unchanged_payload_and_tz(client, video
 
 
 @responses.activate
-def test_immediate_post_does_not_use_browser(client, video_file, browser):
+def test_immediate_post_goes_through_browser(client, video_file, browser):
     mock_tiktok(responses)
-    client.upload(video_file, "now")
-    assert browser.calls == []
-    publish_call(responses)
+    browser.result = {"status": 200, "text": STUDIO_OK, "error": None}
+    result = client.upload(video_file, "now")
+    assert len(browser.calls) == 1
+    assert "schedule_time" not in json.loads(browser.calls[0]["body"])["feature_common_info_list"][0]
+    assert result.scheduled_for is None
+    assert result.post_id == "7700174768095415572"
+    assert not [c for c in responses.calls if "/project/post/" in c.request.url]
+
+
+@responses.activate
+def test_immediate_post_falls_back_to_requests_when_browser_cannot_start(client, video_file, browser):
+    mock_tiktok(responses)
+    browser.exc = browser_publish.BrowserStartError("chrome missing")
+    result = client.upload(video_file, "now")
+    assert len(browser.calls) == 1
+    assert result.video_id == "v123"
+    publish_call(responses)  # exactly one requests publish
+
+
+@responses.activate
+def test_immediate_browser_failure_after_send_never_falls_back(client, video_file, browser):
+    mock_tiktok(responses)
+    browser.exc = RuntimeError("browser closed")
+    with pytest.raises(PublishUncertainError):
+        client.upload(video_file, "now")
+    assert not [c for c in responses.calls if "/project/post/" in c.request.url]
 
 
 @responses.activate
