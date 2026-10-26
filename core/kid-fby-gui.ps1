@@ -7670,7 +7670,7 @@ function Move-GalleryBand {
         $pos = $EventArgs.GetPosition($b.Panel)
         if ([Math]::Abs($pos.X - $b.StartX) -lt 5 -and [Math]::Abs($pos.Y - $b.StartY) -lt 5) { return }
         $b.Active = $true
-        [void]$ui.GalleryList.CaptureMouse()
+        $b.Captured = $(if ($null -ne $global:KhoBandPointerOverride) { $false } else { [bool]$ui.GalleryList.CaptureMouse() })   # test seam: an injected pointer has no real button down, so no capture (its synthetic mouse events would end the band)
         if (-not $script:tBand) {
             $script:tBand = New-Object Windows.Threading.DispatcherTimer
             $script:tBand.Interval = [TimeSpan]::FromMilliseconds(50)
@@ -9755,7 +9755,7 @@ $ui.PanelLibVideos.Add_Drop({
 $ui.GalleryList.Add_PreviewMouseLeftButtonDown({ param($s, $e) try { Start-GalleryBand $e.OriginalSource $e } catch { Write-FileLog "WARN Khung kéo (nhấn): $($_.Exception.Message)" } })
 $ui.GalleryList.Add_PreviewMouseMove({ param($s, $e) try { Move-GalleryBand $e } catch { Write-FileLog "WARN Khung kéo (di chuyển): $($_.Exception.Message)"; Stop-GalleryBand } })
 $ui.GalleryList.Add_PreviewMouseLeftButtonUp({ param($s, $e) try { $wasActive = [bool]($script:band -and $script:band.Active); Stop-GalleryBand; if ($wasActive) { $e.Handled = $true } } catch { Write-FileLog "WARN Khung kéo (nhả): $($_.Exception.Message)" } })
-$ui.GalleryList.Add_LostMouseCapture({ param($s, $e) if ($script:band -and $script:band.Active -and -not $ui.GalleryList.IsMouseCaptured) { Stop-GalleryBand } })
+$ui.GalleryList.Add_LostMouseCapture({ param($s, $e) if ($script:band -and $script:band.Active -and $script:band.Captured -and -not $ui.GalleryList.IsMouseCaptured) { Stop-GalleryBand } })
 $ui.GalleryList.Add_SelectionChanged({
     Update-MoveSelectedButton
     if ($script:gallerySyncing) { return }
