@@ -204,4 +204,18 @@ Test-Case 'script header: the GUI file declares param([switch]$SelfTest, [string
     $names = @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
     Assert-Equal ($names -join ',') 'SelfTest,TikTokJobFile'
 }
+Test-Case 'script header: the first 7 lines equal the v3.0.1 header (#Requires, doc comment, param block)' {
+    $base = Get-BaseGuiFile
+    if (-not $base) { Skip-Case 'header vs baseline' 'git baseline not available'; return }
+    $strip = { param($f) @([IO.File]::ReadAllLines($f, [Text.Encoding]::UTF8) | Select-Object -First 7 | ForEach-Object { $_.TrimStart([char]0xFEFF) }) -join "`n" }
+    Assert-Equal (& $strip (Join-Path $script:RepoRoot 'core\kid-fby-gui.ps1')) (& $strip $base)
+}
+Test-Case 'no function of v3.0.1 vanished except the two knowingly removed (Restore-RedoOutDir, Test-GalleryItemMatch: no callers left)' {
+    $base = Get-BaseGuiFile
+    if (-not $base) { Skip-Case 'function set' 'git baseline not available'; return }
+    $t = $null; $e = $null
+    $names = { param($f) $a = [System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$t, [ref]$e); @($a.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Name } | Sort-Object -Unique) }
+    $old = & $names $base; $new = & $names (Join-Path $script:RepoRoot 'core\kid-fby-gui.ps1')
+    Assert-Equal (($old | Where-Object { $new -notcontains $_ }) -join ',') 'Restore-RedoOutDir,Test-GalleryItemMatch'
+}
 Complete-Tests

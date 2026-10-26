@@ -9,7 +9,7 @@ $l.Start()
 $latin = [Text.Encoding]::GetEncoding(28591)
 function Get-Field {
     param([string]$Raw, [string]$Name)
-    $m = [regex]::Match($Raw, ('name="' + $Name + '"\r\n\r\n(.*?)\r\n--'), [Text.RegularExpressions.RegexOptions]::Singleline)
+    $m = [regex]::Match($Raw, ('name="' + $Name + '"(?:\r\n[^\r\n]+)*\r\n\r\n(.*?)\r\n--'), [Text.RegularExpressions.RegexOptions]::Singleline)
     if (-not $m.Success) { return '' }
     return [Text.Encoding]::UTF8.GetString($latin.GetBytes($m.Groups[1].Value))
 }
