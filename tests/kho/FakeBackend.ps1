@@ -53,7 +53,7 @@ public class KhoFakeBackend
             using (var r = new StreamReader(c.Request.InputStream, Encoding.UTF8)) body = r.ReadToEnd();
             var sb = new StringBuilder("[");
             bool first = true;
-            foreach (Match m in Regex.Matches(body, "\"reel_id\"\\s*:\\s*\"(\\d+)\""))
+            foreach (Match m in Regex.Matches(body, "\"reel_id\"\\s*:\\s*\"([A-Za-z0-9_]+)\""))
             {
                 string id = m.Groups[1].Value, entries;
                 if (!Rows.TryGetValue(id, out entries)) entries = "[]";

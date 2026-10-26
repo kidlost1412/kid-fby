@@ -20,7 +20,7 @@
         $ast=[Management.Automation.Language.Parser]::ParseFile($PSCommandPath,[ref]$tokens,[ref]$errors)
         if($errors.Count){throw 'TikTok worker source parse failed.'}
         foreach($node in $ast.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst]},$true)){
-            if($node.Name -in @('Get-TikTokEndpoint','Save-TikTokReceipt','Find-TikTokTool','ConvertTo-TikTokArgument','Invoke-TikTokTool','Get-TikTokCleanArgs','Get-TikTokMediaInfo','Get-TikTokVideoCounts','Test-TikTokCleanFile','New-TikTokCleanCopy')){. ([scriptblock]::Create($node.Extent.Text))}
+            if($node.Name -in @('Get-TikTokEndpoint','Save-TikTokReceipt','Find-TikTokTool','ConvertTo-TikTokArgument','Invoke-TikTokTool','Get-TikTokCleanArgs','Get-TikTokCleanPlan','Get-TikTokMediaInfo','Get-TikTokVideoCounts','Test-TikTokCleanFile','New-TikTokCleanCopy')){. ([scriptblock]::Create($node.Extent.Text))}
         }
         $assignment=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$script:tikTokWorker'},$true))[0]
         . ([scriptblock]::Create($assignment.Extent.Text))
@@ -1073,7 +1073,7 @@ function Set-ReupMetadata {
         $item = if ($property) { $property.Value } else { $null }
         if (-not $item) {
             # S6: never create an entry for a video whose -3 is no longer in this folder (moved or deleted).
-            if (-not [System.IO.File]::Exists((Join-Path $OutDir ($VideoId + '-3-hoan-chinh.mp4')))) { throw "Reel #$VideoId không còn trong thư mục kho này (đã chuyển hoặc xóa)." }
+            if (-not [System.IO.File]::Exists((Get-KhoVideoPath $OutDir $VideoId))) { throw "$(Get-ReelLabel $VideoId) không còn trong thư mục kho này (đã chuyển hoặc xóa)." }
             $meta | Add-Member -MemberType NoteProperty -Name $VideoId -Force -Value ([pscustomobject]@{ Posted = $Posted; Date = $markDate })
         } elseif ($item.Source -ne 'autotok-history') {
             # Pre-integration shape: Posted/Date are the manual mark.
@@ -1101,6 +1101,56 @@ $script:khoExclusive = 0             # > 0 while a dialog / cleanup holds the kh
 $script:khoMoveRunning = $false      # a move batch is running (every other actor refuses)
 $script:khoAutoMoveWanted = $false   # a sync pass changed history: look for videos to move into their account kho
 $script:khoAutoMoveFailed = @{}      # account -> time of the last failed attempt to create its kho (not retried for 10 minutes)
+
+# D12: video trong kho = MỌI file video của thư mục kho (.mp4 .mov .m4v .mkv .webm .avi, không phân biệt hoa/thường; bỏ file ẩn bắt đầu bằng '.', *.part, *.tmp).
+# Khóa nhận diện (key): video do app tạo (<số>-3-hoan-chinh.mp4) giữ khóa là số ID; video ngoài có khóa 'f:' + tên file đúng nguyên văn.
+# Khóa dùng làm tên mục reup-status.json, VideoId của biên nhận, id nhật ký chuyển kho. Ảnh thu nhỏ: khóa số dùng nguyên, video ngoài dùng 'f_' + SHA1(tên file) (chữ thường).
+function Test-KhoVideoFileName {
+    param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name) -or $Name.StartsWith('.')) { return $false }
+    $ext = [System.IO.Path]::GetExtension($Name).ToLowerInvariant()
+    return ($ext -in @('.mp4', '.mov', '.m4v', '.mkv', '.webm', '.avi'))
+}
+
+function Get-KhoVideoKey {
+    # '' khi $FileName không phải file video của kho.
+    param([string]$FileName)
+    if (-not (Test-KhoVideoFileName $FileName)) { return '' }
+    $m = [regex]::Match($FileName, '^(\d+)-3-hoan-chinh\.mp4$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if ($m.Success) { return $m.Groups[1].Value }
+    return ('f:' + $FileName)
+}
+
+function Test-KhoExternalKey { param([string]$Key) return ([string]$Key).StartsWith('f:') }
+
+function Test-KhoVideoKey {
+    param([string]$Key)
+    if ($Key -match '^\d+$') { return $true }
+    return ($Key.StartsWith('f:') -and (Test-KhoVideoFileName $Key.Substring(2)))
+}
+
+function Get-KhoVideoFileName {
+    # Tên file trong thư mục kho của một khóa; '' nếu khóa không hợp lệ.
+    param([string]$Key)
+    if ($Key -match '^\d+$') { return ($Key + '-3-hoan-chinh.mp4') }
+    if (Test-KhoVideoKey $Key) { return $Key.Substring(2) }
+    return ''
+}
+
+function Get-KhoVideoPath {
+    param([string]$Root, [string]$Key)
+    $name = Get-KhoVideoFileName $Key
+    if (-not $name) { return '' }
+    return (Join-Path $Root $name)
+}
+
+function Get-KhoThumbKey {
+    param([string]$Key)
+    if (-not $Key.StartsWith('f:')) { return $Key }
+    $sha = [System.Security.Cryptography.SHA1]::Create()
+    try { return ('f_' + [BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Key.Substring(2)))).Replace('-', '').ToLowerInvariant()) }
+    finally { $sha.Dispose() }
+}
 
 function Get-KhoPath { return (Join-Path $root 'data\kho.json') }
 
@@ -1506,6 +1556,58 @@ function Test-KhoImportBlocked {
     return ''
 }
 
+function Copy-KhoExternalFiles {
+    # D12: chép các file video người dùng thả vào trang Kho vào thư mục kho $ToRoot. KHÔNG ghi đè (trùng tên thì bỏ qua); chép sang <tên>.part rồi đổi tên
+    # (File.Move không ghi đè) nên không bao giờ có file video dở. Trả về @{ Copied = tên; Skipped = @(@{Name; Why}); Failed = @(@{Name; Why}) }.
+    param([string[]]$Files, [string]$ToRoot)
+    $copied = New-Object System.Collections.Generic.List[string]
+    $skipped = New-Object System.Collections.Generic.List[object]
+    $failed = New-Object System.Collections.Generic.List[object]
+    foreach ($src in @($Files)) {
+        $name = [System.IO.Path]::GetFileName([string]$src)
+        if ([System.IO.Directory]::Exists([string]$src)) { $skipped.Add(@{ Name = $name; Why = 'là thư mục' }); continue }
+        if (-not (Test-KhoVideoFileName $name)) { $skipped.Add(@{ Name = $name; Why = 'không phải file video (.mp4 .mov .m4v .mkv .webm .avi)' }); continue }
+        if (-not [System.IO.File]::Exists([string]$src)) { $skipped.Add(@{ Name = $name; Why = 'không thấy file' }); continue }
+        $dest = Join-Path $ToRoot $name
+        if ([System.IO.File]::Exists($dest)) { $skipped.Add(@{ Name = $name; Why = 'kho đã có file cùng tên (không ghi đè)' }); continue }
+        $partial = $dest + '.part'
+        try {
+            [void][System.IO.Directory]::CreateDirectory($ToRoot)
+            [System.IO.File]::Copy([string]$src, $partial, $true)
+            if ([System.IO.FileInfo]::new($partial).Length -ne [System.IO.FileInfo]::new([string]$src).Length) { throw 'file chép ra không đủ dung lượng' }
+            [System.IO.File]::Move($partial, $dest)
+            $copied.Add($name)
+        } catch {
+            $failed.Add(@{ Name = $name; Why = $_.Exception.Message })
+            Write-FileLog "WARN Thả video vào kho: không chép được '$src' -> '$dest': $($_.Exception.Message)"
+            try { if ([System.IO.File]::Exists($partial)) { [System.IO.File]::Delete($partial) } } catch { Write-FileLog "WARN Không xóa được file dở '$partial': $($_.Exception.Message)" }
+        }
+    }
+    return @{ Copied = $copied.ToArray(); Skipped = $skipped.ToArray(); Failed = $failed.ToArray() }
+}
+
+function Invoke-KhoDrop {
+    # Thả file từ Explorer lên trang Kho: chép vào kho đang chọn. Từ chối khi ứng dụng không yên hoặc đang xem "Tất cả kho".
+    param([string[]]$Files)
+    $files = @($Files | Where-Object { $_ })
+    if (-not $files.Count) { return }
+    $busy = Test-KhoQuiet
+    if ($busy) { Show-Toast "Đang bận ($busy)… thử lại sau." -Kind warning; return }
+    $lib = $null
+    if ($script:filterKho -and [string]$script:filterKho -ne 'all') { $lib = Get-KhoById ([string]$script:filterKho) }
+    if (-not $lib) { Show-Toast 'Chọn một kho cụ thể (không phải "Tất cả kho") rồi thả video vào lại.' -Kind warning; return }
+    $script:khoMoveRunning = $true
+    $r = $null
+    try { $r = Copy-KhoExternalFiles -Files $files -ToRoot ([string]$lib.path) }
+    finally { $script:khoMoveRunning = $false }
+    if (@($r.Copied).Count) { Update-Gallery }
+    $parts = @()
+    if (@($r.Copied).Count) { $parts += "Đã thêm $(@($r.Copied).Count) video vào $($lib.name)." }
+    if (@($r.Skipped).Count) { $parts += "Bỏ qua $(@($r.Skipped).Count): $($r.Skipped[0].Name) $($r.Skipped[0].Why)." }
+    if (@($r.Failed).Count) { $parts += "Lỗi $(@($r.Failed).Count): $($r.Failed[0].Name) — $($r.Failed[0].Why)." }
+    Show-Toast ($parts -join ' ') -Kind $(if (@($r.Failed).Count) { 'error' } elseif (@($r.Copied).Count) { 'success' } else { 'warning' })
+}
+
 function Get-KhoFileSha256 {
     param([string]$Path)
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -1745,7 +1847,7 @@ function Get-KhoReceiptGroups {
             try {
                 $doc = [System.IO.File]::ReadAllText($f.Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop
                 $vid = $(if ($f.Rest -cmatch '^json') { [string]$doc.VideoId } else { [string]$doc.Record.VideoId })
-                if ($vid -match '^\d+$') { $g.VideoId = $vid; break }
+                if (Test-KhoVideoKey $vid) { $g.VideoId = $vid; break }
             } catch { Write-FileLog "WARN Không đọc được biên nhận '$($f.Name)': $($_.Exception.Message)" }
         }
     }
@@ -1763,7 +1865,7 @@ function Get-KhoVideoBlock {
         if ($g.VideoId -ceq $Id) { return 'Video có lệnh đăng chưa xong hoặc lỗi chưa xử lý — Thử lại hoặc Lưu trữ trước.' }
         if (-not $g.VideoId) { return 'Thư mục có lệnh đăng không rõ thuộc video nào (xem Lịch sử đăng) — xử lý trước.' }
     }
-    if (Test-TikTokTransferActive (Join-Path $Root "$Id-3-hoan-chinh.mp4")) { return 'Video đang được chuyển sang bộ đăng nền.' }
+    if (Test-TikTokTransferActive (Get-KhoVideoPath $Root $Id)) { return 'Video đang được chuyển sang bộ đăng nền.' }
     return ''
 }
 
@@ -1774,11 +1876,13 @@ function New-KhoMovePlan {
     $items = New-Object System.Collections.Generic.List[object]
     $add = { param($src, $dst, $optional, $kind) if ([System.IO.File]::Exists($src)) { $items.Add([ordered]@{ src = $src; dst = $dst; optional = [bool]$optional; kind = $kind; status = 'pending' }) } }
     $fc = Join-Path $FromRoot '.cache'; $tc = Join-Path $ToRoot '.cache'
-    foreach ($leaf in @("$Id-1-video-goc.mp4", "$Id-2-am-thanh-tho.m4a")) {
+    # Video ngoài không có -1/-2: chỉ ảnh thu nhỏ, biên nhận đã xong và chính file.
+    foreach ($leaf in $(if (Test-KhoExternalKey $Id) { @() } else { @("$Id-1-video-goc.mp4", "$Id-2-am-thanh-tho.m4a") })) {
         & $add (Join-Path $fc $leaf) (Join-Path $tc $leaf) $false 'companion'
         & $add (Join-Path $FromRoot $leaf) (Join-Path $ToRoot $leaf) $false 'legacy-companion'
     }
-    foreach ($ext in @('jpg', 'json')) { & $add (Join-Path (Join-Path $fc 'thumbs') "$Id.$ext") (Join-Path (Join-Path $tc 'thumbs') "$Id.$ext") $true 'thumb' }
+    $tk = Get-KhoThumbKey $Id
+    foreach ($ext in @('jpg', 'json')) { & $add (Join-Path (Join-Path $fc 'thumbs') "$tk.$ext") (Join-Path (Join-Path $tc 'thumbs') "$tk.$ext") $true 'thumb' }
     if ($null -eq $Groups) { $Groups = Get-KhoReceiptGroups $FromRoot }
     foreach ($req in @($Groups.Keys | Sort-Object)) {
         $g = $Groups[$req]
@@ -1787,7 +1891,7 @@ function New-KhoMovePlan {
             & $add $f.Path (Join-Path (Join-Path $tc 'tiktok-posts') $f.Name) $false $(if ($f.Rest -ceq 'json') { 'receipt' } else { 'receipt-archive' })
         }
     }
-    & $add (Join-Path $FromRoot "$Id-3-hoan-chinh.mp4") (Join-Path $ToRoot "$Id-3-hoan-chinh.mp4") $false 'final'
+    & $add (Get-KhoVideoPath $FromRoot $Id) (Get-KhoVideoPath $ToRoot $Id) $false 'final'
     return $items.ToArray()
 }
 
@@ -1826,7 +1930,7 @@ function Update-KhoReceiptPaths {
     if (-not [System.IO.File]::Exists($ReceiptPath)) { return }
     try { $rec = [System.IO.File]::ReadAllText($ReceiptPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop }
     catch { Write-FileLog "WARN Chuyển kho: không đọc được biên nhận '$ReceiptPath': $($_.Exception.Message)"; return }
-    $newSource = Join-Path $NewRoot "$Id-3-hoan-chinh.mp4"
+    $newSource = Get-KhoVideoPath $NewRoot $Id
     if ((Test-SamePath ([string]$rec.OutDir) $NewRoot) -and (Test-SamePath ([string]$rec.SourcePath) $newSource)) { return }
     Set-ReupField $rec 'OutDir' $NewRoot
     Set-ReupField $rec 'SourcePath' $newSource
@@ -1975,7 +2079,7 @@ function Move-KhoVideos {
         $id = [string]$v.Id; $from = Get-CanonicalPath ([string]$v.From)
         $why = ''
         try {
-            if ($id -notmatch '^\d+$') { throw 'ID video không hợp lệ.' }
+            if (-not (Test-KhoVideoKey $id)) { throw 'ID video không hợp lệ.' }
             if (Test-SamePath $from $to) { throw 'Video đã ở kho này.' }
             $block = Get-KhoJournalBlock @($from, $to)
             if ($block) { throw $block }
@@ -2078,7 +2182,7 @@ function Invoke-KhoMove {
         $recovered = Resume-KhoMoves
         if ($recovered.Pending.Count) { $result.Busy = 'còn lần chuyển kho dở dang: ' + ($recovered.Pending -join '; '); return $result }
         $videos = @(@($Items) | Where-Object { $_ -and [string]$_.Id -and [string]$_.Path } | ForEach-Object { @{ Id = [string]$_.Id; From = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath([string]$_.Path)) } } | Where-Object { -not (Test-SamePath $_.From ([string]$target.path)) })
-        Release-KhoPlayer @($videos | ForEach-Object { Join-Path $_.From ($_.Id + '-3-hoan-chinh.mp4') })
+        Release-KhoPlayer @($videos | ForEach-Object { Get-KhoVideoPath $_.From $_.Id })
         $batch = Move-KhoVideos -Videos $videos -ToRoot ([string]$target.path) -Manual:($Reason -eq 'manual')
         $result.Moved = @($batch.Moved); $result.Failed = @($batch.Failed)
         return $result
@@ -2111,7 +2215,7 @@ function Get-KhoAutoMoveCandidates {
                 if ($key -lt $bestKey) { $bestKey = $key; $best = $h }
             }
             if ($null -eq $best) { continue }
-            if (-not [System.IO.File]::Exists((Join-Path ([string]$lib.path) ($p.Name + '-3-hoan-chinh.mp4')))) { continue }
+            if (-not [System.IO.File]::Exists((Get-KhoVideoPath ([string]$lib.path) ([string]$p.Name)))) { continue }
             $out.Add(@{ Id = [string]$p.Name; From = [string]$lib.path; Username = (ConvertTo-KhoUsername ([string]$best.username)); When = $bestKey })
         }
     }
@@ -2138,7 +2242,7 @@ function Invoke-KhoAutoMove {
             try { $lib = New-KhoForAccount $user; Write-FileLog "INFO Tự tạo kho '$($lib.name)' tại '$($lib.path)' cho @$user." }
             catch { $script:khoAutoMoveFailed[$user.ToLowerInvariant()] = [DateTime]::UtcNow; Write-FileLog "WARN Không tự tạo được kho cho @${user}: $($_.Exception.Message)"; continue }
         }
-        $items = @($group.Group | ForEach-Object { [pscustomobject]@{ Id = $_.Id; Path = (Join-Path $_.From ($_.Id + '-3-hoan-chinh.mp4')) } })
+        $items = @($group.Group | ForEach-Object { [pscustomobject]@{ Id = $_.Id; Path = (Get-KhoVideoPath $_.From $_.Id) } })
         $r = Invoke-KhoMove -Items $items -TargetId ([string]$lib.id) -Reason auto
         if ($r.Busy) { $script:khoAutoMoveWanted = $true; return $movedTotal }
         $movedTotal += @($r.Moved).Count
@@ -2170,10 +2274,10 @@ function Remove-ReelToRecycleBin {
     $recycled = New-Object System.Collections.Generic.List[string]; $errors = New-Object System.Collections.Generic.List[string]
     $remaining = New-Object System.Collections.Generic.List[string]
     $r = Get-CanonicalPath $Root
-    if ($Id -notmatch '^\d+$') { $result.Errors = @('ID video không hợp lệ.'); return $result }
+    if (-not (Test-KhoVideoKey $Id)) { $result.Errors = @('ID video không hợp lệ.'); return $result }
     $files = New-Object System.Collections.Generic.List[string]
-    $files.Add((Join-Path $r "$Id-3-hoan-chinh.mp4"))
-    foreach ($leaf in @("$Id-1-video-goc.mp4", "$Id-2-am-thanh-tho.m4a")) { $files.Add((Join-Path (Join-Path $r '.cache') $leaf)); $files.Add((Join-Path $r $leaf)) }
+    $files.Add((Get-KhoVideoPath $r $Id))
+    foreach ($leaf in $(if (Test-KhoExternalKey $Id) { @() } else { @("$Id-1-video-goc.mp4", "$Id-2-am-thanh-tho.m4a") })) { $files.Add((Join-Path (Join-Path $r '.cache') $leaf)); $files.Add((Join-Path $r $leaf)) }
     if ($null -eq $Groups) { $Groups = Get-KhoReceiptGroups $r }
     $block = Get-KhoVideoBlock $r $Id $Groups
     if ($block) { $result.Errors = @($block); return $result }
@@ -2190,7 +2294,7 @@ function Remove-ReelToRecycleBin {
     $result.Recycled = $recycled.ToArray(); $result.Errors = $errors.ToArray(); $result.Remaining = $remaining.ToArray()
     if ($errors.Count) { return $result }
     foreach ($ext in @('jpg', 'json')) {
-        $t = Join-Path (Join-Path (Join-Path $r '.cache') 'thumbs') "$Id.$ext"
+        $t = Join-Path (Join-Path (Join-Path $r '.cache') 'thumbs') ((Get-KhoThumbKey $Id) + ".$ext")
         try { if ([System.IO.File]::Exists($t)) { [System.IO.File]::Delete($t) } } catch { Write-FileLog "WARN Không xóa được ảnh thu nhỏ '$t': $($_.Exception.Message)" }
     }
     try {
@@ -2227,7 +2331,7 @@ function Test-KhoFolderOnlyAppFiles {
 function Get-KhoVideoFiles {
     param([string]$Root)
     if (-not [System.IO.Directory]::Exists($Root)) { return @() }
-    return @([System.IO.DirectoryInfo]::new($Root).GetFiles('*-3-hoan-chinh.mp4') | Where-Object { $_.Name -match '^\d+-3-hoan-chinh\.mp4$' })
+    return @([System.IO.DirectoryInfo]::new($Root).GetFiles() | Where-Object { Test-KhoVideoFileName $_.Name })
 }
 
 function Remove-KhoWithVideos {
@@ -2254,7 +2358,7 @@ function Remove-KhoWithVideos {
         $videos = @(Get-KhoVideoFiles $khoRoot)
         $groups = Get-KhoReceiptGroups $khoRoot
         foreach ($v in $videos) {
-            $vid = $v.Name -replace '-3-hoan-chinh\.mp4$', ''
+            $vid = Get-KhoVideoKey $v.Name
             $why = Get-KhoVideoBlock $khoRoot $vid $groups
             if ($why) { $result.Why = "Video #${vid}: $why"; return $result }
         }
@@ -2263,7 +2367,7 @@ function Remove-KhoWithVideos {
         Release-KhoPlayer @($videos | ForEach-Object { $_.FullName })
         $failed = New-Object System.Collections.Generic.List[object]; $deleted = 0
         foreach ($v in $videos) {
-            $vid = $v.Name -replace '-3-hoan-chinh\.mp4$', ''
+            $vid = Get-KhoVideoKey $v.Name
             $r = Remove-ReelToRecycleBin -Root $khoRoot -Id $vid -Groups $groups
             if ($r.Success) { $deleted++ } else { $failed.Add(@{ Id = $vid; Errors = @($r.Errors) }) }
         }
@@ -2647,19 +2751,19 @@ $script:tikTokWorker = {
         # At most 500 videos per request (R8). A failed chunk leaves its videos out, so their stored state is kept.
         $byVideo=@{}
         foreach($r in @($Receipts)){$vid=[string]$r.VideoId;if(-not $byVideo.ContainsKey($vid)){$byVideo[$vid]=New-Object Collections.Generic.List[string]};$byVideo[$vid].Add([string]$r.RequestId)}
-        $rows=@{};$failed=0;$message=''
+        $rows=@{};$failed=0;$message='';$wireToKey=@{}   # D12: video ngoài gửi lên backend bằng mã ngắn f_<sha1> (reel_id tối đa 128 ký tự); trả lời đổi ngược về khóa
         $list=@($Identities)
         for($i=0;$i -lt $list.Count;$i+=500){
             $CancelToken.ThrowIfCancellationRequested()
             $chunk=New-Object Collections.Generic.List[object]
             for($j=$i;$j -lt [Math]::Min($i+500,$list.Count);$j++){
                 $v=$list[$j];$ids=if($byVideo.ContainsKey([string]$v.reel_id)){$byVideo[[string]$v.reel_id].ToArray()}else{@()}
-                $chunk.Add(@{reel_id=[string]$v.reel_id;sha256=[string]$v.sha256;request_ids=@($ids)})
+                $wire=Get-KhoThumbKey ([string]$v.reel_id);$wireToKey[$wire]=[string]$v.reel_id;$chunk.Add(@{reel_id=$wire;sha256=[string]$v.sha256;request_ids=@($ids)})
             }
             $content=[Net.Http.StringContent]::new((ConvertTo-Json -InputObject @{videos=$chunk.ToArray()} -Depth 6 -Compress),[Text.Encoding]::UTF8,'application/json')
             try{
                 $parsed=(Read-Response ($client.PostAsync($BaseUrl+'/api/history/lookup',$content,$CancelToken).GetAwaiter().GetResult())) | ConvertFrom-Json
-                foreach($row in $parsed){if($row){$rows[[string]$row.reel_id]=@($row.entries | Where-Object {$null -ne $_})}}
+                foreach($row in $parsed){if($row){$rk=[string]$row.reel_id;if($wireToKey.ContainsKey($rk)){$rk=$wireToKey[$rk]};$rows[$rk]=@($row.entries | Where-Object {$null -ne $_})}}
             }catch{if($CancelToken.IsCancellationRequested){throw};$failed++;$message=$_.Exception.Message}
             finally{$content.Dispose()}
         }
@@ -2693,7 +2797,7 @@ $script:tikTokWorker = {
         $files=@()
         if($Data.file){$files=@($Data.file)}
         elseif([IO.Directory]::Exists($outDir)){
-            foreach($file in [IO.DirectoryInfo]::new($outDir).GetFiles('*-3-hoan-chinh.mp4')){if($file.Name -match '^(\d+)-3-hoan-chinh\.mp4$'){$files+=@{id=$Matches[1];path=$file.FullName}}}
+            foreach($file in [IO.DirectoryInfo]::new($outDir).GetFiles()){$key=Get-KhoVideoKey $file.Name;if($key){$files+=@{id=$key;path=$file.FullName}}}
         }
         if(-not $files.Count){return $result}
         if(-not $Single -and -not (Test-Health)){$result.Stale='Chưa kết nối được bộ đăng nền; trạng thái TikTok trong Kho có thể chưa mới.';return $result}
@@ -2756,7 +2860,7 @@ $script:tikTokWorker = {
             foreach($vid in @($todo.Keys)){
                 $old=$meta.PSObject.Properties[$vid]
                 # D6/S6: a video whose -3 left this folder (moved or deleted) never gets a NEW entry from a pass that captured it earlier.
-                if(-not $old -and -not [IO.File]::Exists((Join-Path $outDir ($vid+'-3-hoan-chinh.mp4')))){continue}
+                if(-not $old -and -not [IO.File]::Exists((Get-KhoVideoPath $outDir $vid))){continue}
                 $history=@(Merge-TikTokVideoHistory $vid $perVideo[$vid] $receipts $(if($old){$old.Value}else{$null}) $probe.Missing $now $receiptIndex)
                 $merged[$vid]=$history
                 if(Set-TikTokItemHistory $meta $vid $history ([string]$result.Hashes[$vid])){$any=$true}
@@ -2896,7 +3000,8 @@ $script:tikTokWorker = {
 $script:tikTokWorkerFunctions = @('Get-CanonicalPath', 'Get-FileStamp', 'Get-ReupMutexName', 'Get-ReupMetadata', 'Update-ReupMetadata',
     'Set-ReupField', 'Get-ReupManualState', 'Update-ReupAggregate', 'Format-TikTokTime', 'Get-TikTokSortKey', 'ConvertTo-TikTokHistoryEntry',
     'Get-TikTokHistorySignature', 'Get-TikTokReceiptAge', 'Get-TikTokReceiptState', 'Merge-TikTokVideoHistory', 'Set-TikTokItemHistory',
-    'Test-TikTokStaleDowngrade', 'Update-TikTokEntryFromJob', 'New-TikTokReceiptIndex')
+    'Test-TikTokStaleDowngrade', 'Update-TikTokEntryFromJob', 'New-TikTokReceiptIndex',
+    'Test-KhoVideoFileName', 'Get-KhoVideoKey', 'Test-KhoVideoKey', 'Get-KhoVideoFileName', 'Get-KhoVideoPath', 'Get-KhoThumbKey')
 
 function Get-TikTokWorkerSessionState {
     # Functions are defined through the session state (not a prepended statement): a multi-statement batch runs on a
@@ -2995,7 +3100,7 @@ function Get-TikTokReceipts {
             if ($parsed.RequestId -notmatch '^[a-f0-9]{32}$' -or $file.BaseName -ne $parsed.RequestId -or
                 -not (Test-SamePath ([string]$parsed.OutDir) $out) -or
                 -not (Test-SamePath ([IO.Path]::GetDirectoryName([string]$parsed.SourcePath)) $out) -or
-                [string]$parsed.VideoId -notmatch '^\d+$' -or [string]$parsed.VideoId -ne (Get-ReelId $parsed.SourcePath)) { throw 'Biên nhận không hợp lệ.' }
+                -not (Test-KhoVideoKey ([string]$parsed.VideoId)) -or [string]$parsed.VideoId -ne (Get-ReelId $parsed.SourcePath)) { throw 'Biên nhận không hợp lệ.' }
             $record = $parsed
         } catch { Write-FileLog ('WARN TikTok receipt ignored: ' + $file.Name + ' · ' + $_.Exception.Message) }
         $script:tikTokReceiptCache[$file.FullName] = @{ Stamp = $stamp; Record = $record }
@@ -3399,7 +3504,7 @@ function Add-TikTokLocalReceiptHistory {
         param($meta)
         $old = $meta.PSObject.Properties[$VideoId]
         # S6: no NEW entry for a video whose -3 left this folder.
-        if (-not $old -and -not [IO.File]::Exists((Join-Path $OutDir ($VideoId + '-3-hoan-chinh.mp4')))) { return $false }
+        if (-not $old -and -not [IO.File]::Exists((Get-KhoVideoPath $OutDir $VideoId))) { return $false }
         $history = @(Merge-TikTokVideoHistory $VideoId $Entries @($view) $(if ($old) { $old.Value } else { $null }))
         return [bool](Set-TikTokItemHistory $meta $VideoId $history '')
     }
@@ -3625,6 +3730,28 @@ function Invoke-TikTokTool {
     } finally { $process.Dispose() }
 }
 
+function Get-TikTokWireReelId {
+    # reel_id gửi cho bộ đăng nền: ID số của video do app tạo; video ngoài KHÔNG gửi reel_id (lịch sử khớp theo sha256 của file).
+    param([string]$Key)
+    if ($Key -match '^\d+$') { return $Key }
+    return ''
+}
+
+function Get-TikTokCleanPlan {
+    # Chọn cách tạo bản sạch từ kết quả ffprobe (đã ConvertFrom-Json): 'copy' (đóng gói lại, không mã hóa lại) khi hình H.264/HEVC và âm AAC hoặc không có âm;
+    # 'audio' (giữ hình, mã hóa lại âm sang AAC) khi hình H.264/HEVC nhưng âm khác AAC; 'video' (H.264 + AAC) khi hình là codec khác; 'none' khi không có luồng hình.
+    param($Info)
+    $streams = @($Info.streams | Where-Object { $_ })
+    $video = @($streams | Where-Object { $_.codec_type -eq 'video' -and [string]$_.disposition.attached_pic -ne '1' })
+    if (-not $video.Count) { return 'none' }
+    $vcodec = ([string]$video[0].codec_name).ToLowerInvariant()
+    if ($vcodec -notin @('h264', 'avc', 'avc1', 'hevc', 'h265')) { return 'video' }
+    $audio = @($streams | Where-Object { $_.codec_type -eq 'audio' })
+    if (-not $audio.Count) { return 'copy' }
+    if (([string]$audio[0].codec_name).ToLowerInvariant() -eq 'aac') { return 'copy' }
+    return 'audio'
+}
+
 function Get-TikTokCleanArgs {
     # Keep in sync with Get-CleanOutputArgs in core\kid-fby.ps1 (the engine is not loaded in this process).
     param([string]$Codec)
@@ -3722,14 +3849,17 @@ function New-TikTokCleanCopy {
         $free = [IO.DriveInfo]::new([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($PostsDir))).AvailableFreeSpace
         if ($free -lt $size + 64MB) { throw ('Không đủ dung lượng trống để làm sạch video (cần khoảng ' + [Math]::Ceiling(($size + 64MB) / 1MB) + ' MB).') }
     } catch [ArgumentException] { <# UNC or unknown drive: copy anyway, ffmpeg reports a full disk #> }
-    $source = Get-TikTokMediaInfo $ffprobe $SourcePath
+    try { $source = Get-TikTokMediaInfo $ffprobe $SourcePath }
+    catch { throw ('Không đọc được thông tin video bằng ffprobe (file hỏng hoặc không phải video?). ' + $_.Exception.Message) }
+    $plan = Get-TikTokCleanPlan $source
+    if ($plan -eq 'none') { throw 'File này không có hình ảnh nên không đăng được lên TikTok.' }
     $codec = [string](@($source.streams | Where-Object codec_type -eq 'video')[0].codec_name)
     $sourceDuration = 0.0; [void][double]::TryParse([string]$source.format.duration, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$sourceDuration)
     $sourceCounts = Get-TikTokVideoCounts $ffprobe $SourcePath
     $clean = Join-Path $PostsDir ($RequestId + '.clean.mp4')
     $temp = Join-Path $PostsDir ($RequestId + '.clean-tmp.mp4')
     $last = ''
-    $mode = 'copy'
+    $mode = $plan   # copy | audio | video
     while ($mode) {
         foreach ($p in @($temp, $clean)) { if ([IO.File]::Exists($p)) { [IO.File]::Delete($p) } }
         $codecArgs = switch ($mode) {
@@ -4241,7 +4371,7 @@ function New-TikTokSpreadJob {
     $source = [IO.Path]::GetFullPath($Path); $outDir = [IO.Path]::GetDirectoryName($source); $videoId = Get-ReelId $source
     $scheduled = $When.ToUniversalTime().ToString('o')
     $options = @{ allow_comment = 1; allow_duet = 0; allow_stitch = 0; visibility_type = 0; ai_label = 0 }
-    $payload = @{ username = $Account; title = $Caption; scheduled_for = $scheduled; options_json = ($options | ConvertTo-Json -Compress); reel_id = $videoId }
+    $payload = @{ username = $Account; title = $Caption; scheduled_for = $scheduled; options_json = ($options | ConvertTo-Json -Compress); reel_id = (Get-TikTokWireReelId $videoId) }
     $now = [DateTime]::UtcNow.ToString('o')
     $record = [pscustomobject]@{ RequestId = [Guid]::NewGuid().ToString('N'); SourcePath = $source; OutDir = $outDir; VideoId = $videoId; Username = $Account; ScheduledFor = $scheduled; Status = 'submitted'; CreatedAt = $now; LaunchedAt = $now; Message = '' }
     return @{ Record = $record; Payload = $payload }
@@ -4327,10 +4457,10 @@ function Complete-TikTokSpreadCurrent {
     $Run.Current = $null; $Run.CurrentRow = $null; $Run.CurrentJob = $null; $Run.LongWait = $false
     if (-not $Run.Verifier -or -not $row) { return }
     try { $v = & $Run.Verifier $row $job $proc }
-    catch { $v = @{ Sent = $false; Message = 'Không kiểm tra được kết quả gửi: ' + $_.Exception.Message }; Write-FileLog ('WARN Rải lịch: kiểm kết quả Reel #' + $row.Id + ': ' + $_.Exception.Message) }
+    catch { $v = @{ Sent = $false; Message = 'Không kiểm tra được kết quả gửi: ' + $_.Exception.Message }; Write-FileLog ('WARN Rải lịch: kiểm kết quả ' + (Get-ReelLabel $row.Id) + ': ' + $_.Exception.Message) }
     if ($v.Sent) { return }
     $row.State = 'failed'; $row.Message = [string]$v.Message; $Run.Sent--; $Run.Failed++
-    Write-FileLog ('WARN Rải lịch: Reel #' + $row.Id + ' gửi lỗi: ' + $row.Message)
+    Write-FileLog ('WARN Rải lịch: ' + (Get-ReelLabel $row.Id) + ' gửi lỗi: ' + $row.Message)
 }
 
 function Stop-TikTokSpreadRun {
@@ -4388,7 +4518,7 @@ function Step-TikTokSpreadRun {
     # Kiểm lại lịch sử MỚI NHẤT của video ngay trước khi gửi (có thể vừa có lệnh đang chạy / vừa được đăng từ lúc xem trước).
     if ($Run.HistoryReader) {
         $cur = $null
-        try { $cur = & $Run.HistoryReader $row } catch { Write-FileLog ('WARN Rải lịch: không đọc lại lịch sử Reel #' + $row.Id + ': ' + $_.Exception.Message) }
+        try { $cur = & $Run.HistoryReader $row } catch { Write-FileLog ('WARN Rải lịch: không đọc lại lịch sử ' + (Get-ReelLabel $row.Id) + ': ' + $_.Exception.Message) }
         if ($cur) {
             $w = Get-TikTokSpreadWarn -History @($cur.History) -Posted ([bool]$cur.Posted)
             if (-not $w -and $cur.TransferActive) { $w = 'active' }
@@ -4397,7 +4527,7 @@ function Step-TikTokSpreadRun {
             elseif ($w -eq 'posted' -and -not ($row.Warn -eq 'posted' -and $row.Include)) { $why = 'Video vừa được đăng xong — bỏ qua (tick lại để vẫn hẹn).' }
             if ($why) {
                 $row.State = 'skipped'; $row.Message = $why; $Run.Skipped++
-                Write-FileLog ('WARN Rải lịch: bỏ qua Reel #' + $row.Id + ' vì ' + $why)
+                Write-FileLog ('WARN Rải lịch: bỏ qua ' + (Get-ReelLabel $row.Id) + ' vì ' + $why)
                 return 'skipped'
             }
         }
@@ -4407,7 +4537,7 @@ function Step-TikTokSpreadRun {
         $next = @(Get-TikTokSpreadPlan -Count 1 -Favorites $Run.Favorites -Busy $busy -Now $Now -Days $Run.Days -DailyCap $Run.DailyCap -MinSpacingMinutes $Run.MinSpacing)
         if (-not $next.Count) {
             $row.State = 'skipped'; $row.Message = 'Giờ hẹn đã quá gần và không còn giờ trống.'; $Run.Skipped++
-            Write-FileLog ('WARN Rải lịch: bỏ qua Reel #' + $row.Id + ' vì ' + $row.Message)
+            Write-FileLog ('WARN Rải lịch: bỏ qua ' + (Get-ReelLabel $row.Id) + ' vì ' + $row.Message)
             return 'skipped'
         }
         $row.When = $next[0]; $row.Shifted = $true; $Run.Shifted++
@@ -4417,17 +4547,17 @@ function Step-TikTokSpreadRun {
     try { $proc = & $Launcher $job.Record $job.Payload }
     catch {
         $row.State = 'failed'; $row.Message = [string]$_.Exception.Message; $Run.Failed++
-        Write-FileLog ('WARN Rải lịch: không giao được Reel #' + $row.Id + ': ' + $row.Message)
+        Write-FileLog ('WARN Rải lịch: không giao được ' + (Get-ReelLabel $row.Id) + ': ' + $row.Message)
         return 'failed'
     }
     $row.State = 'sent'; $Run.Sent++; $Run.Current = $proc; $Run.CurrentRow = $row; $Run.CurrentJob = $job; $Run.CurrentStarted = $Now; $Run.LongWait = $false
-    if ($AfterLaunch) { try { & $AfterLaunch $row $job } catch { Write-FileLog ('WARN Rải lịch sau khi giao Reel #' + $row.Id + ': ' + $_.Exception.Message) } }
+    if ($AfterLaunch) { try { & $AfterLaunch $row $job } catch { Write-FileLog ('WARN Rải lịch sau khi giao ' + (Get-ReelLabel $row.Id) + ': ' + $_.Exception.Message) } }
     return 'launched'
 }
 
 function Show-TikTokPublishDialog {
     param([string]$FilePath)
-    if([string]::IsNullOrWhiteSpace($FilePath) -or -not (Test-Path -LiteralPath $FilePath -PathType Leaf) -or [IO.Path]::GetFileName($FilePath) -notmatch '^\d+-3-hoan-chinh\.mp4$'){Show-Toast 'Chọn video hoàn chỉnh trong Kho trước khi đăng.' -Kind warning;return}
+    if([string]::IsNullOrWhiteSpace($FilePath) -or -not (Test-Path -LiteralPath $FilePath -PathType Leaf) -or -not (Test-KhoVideoFileName ([IO.Path]::GetFileName($FilePath)))){Show-Toast 'Chọn video hoàn chỉnh trong Kho trước khi đăng.' -Kind warning;return}
     # D4: posting only reads a finished -3 file, so a running download queue does not block it.
     if($script:stopping){Show-Toast 'Đợi tác vụ hiện tại dừng hẳn trước khi đăng video.' -Kind warning;return}
     $source=[IO.Path]::GetFullPath($FilePath);$outDir=[IO.Path]::GetDirectoryName($source);$videoId=Get-ReelId $source
@@ -4651,7 +4781,7 @@ function Show-TikTokPublishDialog {
                 $scheduled=$when.ToUniversalTime().ToString('o')
             }
             $options=@{allow_comment=[int][bool]$c.Comments.IsChecked;allow_duet=[int][bool]$c.Duet.IsChecked;allow_stitch=[int][bool]$c.Stitch.IsChecked;visibility_type=[int][bool]$c.Private.IsChecked;ai_label=[int][bool]$c.AI.IsChecked}
-            $payload=@{username=$state.SelectedAccount;title=$caption;scheduled_for=$scheduled;options_json=($options|ConvertTo-Json -Compress);reel_id=$videoId}
+            $payload=@{username=$state.SelectedAccount;title=$caption;scheduled_for=$scheduled;options_json=($options|ConvertTo-Json -Compress);reel_id=(Get-TikTokWireReelId $videoId)}
             $now=[DateTime]::UtcNow.ToString('o')
             $record=[pscustomobject]@{RequestId=[Guid]::NewGuid().ToString('N');SourcePath=$source;OutDir=$outDir;VideoId=$videoId;Username=$state.SelectedAccount;ScheduledFor=$scheduled;Status='submitted';CreatedAt=$now;LaunchedAt=$now;Message=''}
             # G2: marked before launching; reset only when Start-TikTokBackgroundJob reports that nothing was started.
@@ -6033,6 +6163,7 @@ function Load-Player {
         $script:previewingClean = $false
         if ($ui.BadgePreviewMode) { $ui.BadgePreviewMode.Visibility = 'Collapsed' }
         if ($ui.BtnReedit) { $ui.BtnReedit.IsEnabled = (-not $script:ps -and (Test-ReeditInputs $Path)) }
+        Update-RedoAvailability $Path
         try { $ui.Player.Stop() }  catch { Write-FileLog "WARN Player.Stop: $($_.Exception.Message)" }
         try { $ui.Player.Close() } catch { Write-FileLog "WARN Player.Close: $($_.Exception.Message)" }
         $full = [System.IO.Path]::GetFullPath($Path)
@@ -6163,6 +6294,8 @@ function Switch-AudioTrack {
 $script:reelCacheName = '.cache'
 function Get-ReelId {
     param([string]$VideoPath)
+    $key = Get-KhoVideoKey ([IO.Path]::GetFileName([string]$VideoPath))
+    if ($key) { return $key }
     return ([IO.Path]::GetFileName([string]$VideoPath) -replace '-3-hoan-chinh\.mp4$', '')
 }
 
@@ -6192,6 +6325,24 @@ function Get-ReelCompanionPath {
     return ''
 }
 
+function Test-KhoExternalVideoPath {
+    # Video ngoài (không phải -3 của app) nằm trong một thư mục kho đã đăng ký: đã là video hoàn chỉnh, không phủ logo/GIF xem trước lên nó.
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-KhoExternalKey (Get-ReelId $Path))) { return $false }
+    return [bool](Get-KhoByPath ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path))))
+}
+
+function Update-RedoAvailability {
+    # Ghi âm lại / sửa logo-GIF chỉ cho video do app tạo (cần file -1/-2); video ngoài: tắt kèm giải thích.
+    param([string]$Path)
+    $external = [bool]($Path -and (Test-KhoExternalKey (Get-ReelId $Path)))
+    if ($ui.BtnRedo) {
+        $ui.BtnRedo.IsEnabled = (-not $external)
+        $ui.BtnRedo.ToolTip = $(if ($external) { 'Chỉ dùng cho video do app tạo' } else { 'Ghi âm lại video này (Ctrl+R)' })
+    }
+    if ($ui.BtnReedit -and $external) { $ui.BtnReedit.ToolTip = 'Chỉ dùng cho video do app tạo' }
+}
+
 function Test-ReeditInputs {
     # Nut "Ap dung len video dang xem" chi bat khi co du -3 + -1 + -2 (.cache hoac goc cu).
     param([string]$VideoPath)
@@ -6206,6 +6357,12 @@ function Get-ReelMediaFiles {
     $dir = Split-Path $VideoPath -Parent
     $id = Get-ReelId $VideoPath
     $cache = Get-ReelCacheDir $dir
+    # Video ngoài chỉ có file chính (không có -1/-2).
+    if (Test-KhoExternalKey $id) {
+        $one = @([pscustomobject]@{ Path = (Join-Path $dir (Get-KhoVideoFileName $id)); Leaf = (Get-KhoVideoFileName $id); Location = 'root'; Kind = 'final' })
+        if ($Existing) { return @($one | Where-Object { [System.IO.File]::Exists($_.Path) }) }
+        return $one
+    }
     $list = @(
         [pscustomobject]@{ Path = (Join-Path $dir "$id-3-hoan-chinh.mp4"); Leaf = "$id-3-hoan-chinh.mp4"; Location = 'root'; Kind = 'final' }
         [pscustomobject]@{ Path = (Join-Path $cache "$id-1-video-goc.mp4"); Leaf = "$id-1-video-goc.mp4"; Location = 'cache'; Kind = 'source' }
@@ -6222,11 +6379,12 @@ function Get-ReelThumbFiles {
     param([string]$VideoPath)
     $dir = Split-Path $VideoPath -Parent
     $id = Get-ReelId $VideoPath
+    $tk = Get-KhoThumbKey $id
     $found = New-Object System.Collections.ArrayList
     foreach ($td in @((Join-Path (Get-ReelCacheDir $dir) 'thumbs'), (Join-Path $dir '.thumbs'))) {
         if (-not [System.IO.Directory]::Exists($td)) { continue }
         foreach ($f in [System.IO.DirectoryInfo]::new($td).GetFiles()) {
-            if ($f.Name -eq "$id.jpg" -or $f.Name -eq "$id.json" -or $f.Name.StartsWith("$id.jpg.tmp")) { [void]$found.Add($f.FullName) }
+            if ($f.Name -eq "$tk.jpg" -or $f.Name -eq "$tk.json" -or $f.Name.StartsWith("$tk.jpg.tmp")) { [void]$found.Add($f.FullName) }
         }
     }
     return @($found)
@@ -6290,9 +6448,9 @@ function Get-DeleteConfirmText {
     $desc = @{ final = 'video hoàn chỉnh'; source = 'video gốc sạch (để sửa lại logo/GIF)'; audio = 'âm thanh đã thu (để sửa lại)' }
     $where = @{ root = 'thư mục kho'; cache = '.cache (ẩn)'; legacy = 'thư mục kho, file cũ' }
     $lines = @($files | ForEach-Object { "• $($_.Leaf) — $($desc[$_.Kind]) · $($where[$_.Location])" })
-    if (-not $lines.Count) { $lines = @("• $id-3-hoan-chinh.mp4 — video hoàn chỉnh") }
+    if (-not $lines.Count) { $lines = @("• $(Get-KhoVideoFileName $id) — video hoàn chỉnh") }
     $thumbs = @(Get-ReelThumbFiles -VideoPath $FilePath)
-    return ("Chuyển Reel #$id trong kho vào Thùng rác:`r`n$dir`r`n`r`n" + ($lines -join "`r`n") +
+    return ("Chuyển $(Get-ReelLabel $id) trong kho vào Thùng rác:`r`n$dir`r`n`r`n" + ($lines -join "`r`n") +
         $(if ($thumbs.Count) { "`r`n• ảnh thu nhỏ trong .cache\thumbs (tự tạo lại được, xóa luôn)" } else { '' }) +
         "`r`n`r`nCác file nằm trong Thùng rác của Windows nên khôi phục được từ đó; lịch sử đăng của video này sẽ được xóa khỏi kho.")
 }
@@ -6437,7 +6595,7 @@ function Invoke-GalleryDelete {
     if ($recoveryPaths.Count -or $result.CleanupStatus -ne 'Complete') {
         $retained = if ($recoveryPaths.Count) { $recoveryPaths -join ', ' } else { 'đường dẫn không xác định' }
         Show-Toast "Đã xóa video; còn bản sao tạm cần dọn: $retained" -Kind warning
-    } else { Show-Toast "Đã xóa video Reel #$rowId." -Kind success }
+    } else { Show-Toast "Đã xóa video $(Get-ReelLabel $rowId)." -Kind success }
     Update-Gallery
     return $true
 }
@@ -6556,7 +6714,7 @@ while (-not $Jobs.IsCompleted) {
                 try {
                     if (-not [System.IO.Directory]::Exists([string]$dir)) { $entry.Missing = $true }
                     else {
-                        $entry.Files = @(Get-ChildItem -LiteralPath $dir -Filter '*-3-hoan-chinh.mp4' -File -ErrorAction Stop |
+                        $entry.Files = @(Get-ChildItem -LiteralPath $dir -File -ErrorAction Stop | Where-Object { $_.Name[0] -ne '.' -and $_.Extension.ToLowerInvariant() -in @('.mp4', '.mov', '.m4v', '.mkv', '.webm', '.avi') } |
                             Sort-Object LastWriteTime -Descending |
                             ForEach-Object { [pscustomobject]@{ FullName = $_.FullName; Name = $_.Name; Length = $_.Length; LastWriteTime = $_.LastWriteTime; Stamp = "$($_.Length)-$($_.LastWriteTimeUtc.Ticks)"; Root = [string]$dir } })
                     }
@@ -6811,7 +6969,8 @@ function Get-TikTokHeldUntilUtc {
 
 function New-GalleryItem {
     param($File, $Metadata, $Probe)
-    $id = ([string]$File.Name) -replace '-3-hoan-chinh\.mp4$', ''
+    $id = Get-KhoVideoKey ([string]$File.Name)
+    $external = Test-KhoExternalKey $id
     $isPosted = ($null -ne $Metadata -and $Metadata.PSObject.Properties.Name -contains $id -and $Metadata.$id.Posted -eq $true)
     $postedDate = if ($isPosted -and $Metadata.$id.Date) { [string]$Metadata.$id.Date } else { '' }
     $date = [DateTime]$File.LastWriteTime
@@ -6865,12 +7024,12 @@ function New-GalleryItem {
     $khoName = $(if ($khoLib) { [string]$khoLib.name } else { '' })
     $statusName = $(if ($heldUntil -and $heldUntil -gt [DateTime]::UtcNow) { 'Đã hẹn' } elseif ($isPosted) { 'Đã đăng' } else { 'Chờ đăng' })
     return [pscustomobject]@{
-        Path = [string]$File.FullName; Id = $id; Title = "Reel #$id"; Date = $date; Stamp = [string]$File.Stamp
+        Path = [string]$File.FullName; Id = $id; Title = (Get-ReelLabel $id); External = $external; ThumbKey = (Get-KhoThumbKey $id); FileName = [string]$File.Name; Date = $date; Stamp = [string]$File.Stamp
         MetaText = $metaText; DetailText = $detail; Posted = [bool]$isPosted; ManualPosted = [bool]$manual.Posted; PostedText = $postedText; PostedShort = $postedShort
         PostedMultiline = $postedShort.Contains("`n")
         Thumb = $thumb; ThumbPath = $thumbPath; File = $File
         PostUrl = $postUrl; PostId = $postId; LinkKey = $linkKey; LinkState = $linkState
-        Kho = $khoId; Root = [string]$File.Root; HeldUntil = $heldUntil; KhoName = $khoName; AutomationText = "Reel #$id · $statusName · $khoName"
+        Kho = $khoId; Root = [string]$File.Root; HeldUntil = $heldUntil; KhoName = $khoName; AutomationText = "$(Get-ReelLabel $id) · $statusName · $khoName"
         # Chu ky hien thi: giong nhau -> giu nguyen doi tuong cu (khong tao lai the, giu cuon/chon).
         Signature = ([string]$File.Stamp + '|' + $metaText + '|' + $detail + '|' + $postedText + '|' + $postedShort + '|' + [bool]$manual.Posted + '|' + $thumbPath + '|' + $postUrl + '|' + $postId + '|' + $linkState + '|' + $khoId + '|' + $khoName)
     }
@@ -6987,7 +7146,7 @@ function Complete-GalleryScan {
     # Lay thong tin/anh thu nho cho muc chua co (thu tu dang hien thi truoc).
     foreach ($it in $script:galleryAll) {
         $cached = $script:probeCache[$it.Path]
-        if (-not $cached -or $cached.Stamp -ne $it.Stamp) { Request-MediaJob @{ Kind = 'probe'; Gen = $script:galleryGen; Path = $it.Path; Id = $it.Id } }
+        if (-not $cached -or $cached.Stamp -ne $it.Stamp) { Request-MediaJob @{ Kind = 'probe'; Gen = $script:galleryGen; Path = $it.Path; Id = $it.ThumbKey } }
     }
 }
 
@@ -7393,9 +7552,9 @@ function Move-GalleryItemsToKho {
     if ($movedCount) { Update-Gallery }
     if ($movedCount) { Show-Toast ("Đã chuyển $movedCount video sang $name.") -Kind success }
     if ($failedCount) {
-        foreach ($x in @($result.Failed)) { Add-Log "Không chuyển được Reel #$($x.Id): $($x.Why)" 'Warning' }
+        foreach ($x in @($result.Failed)) { Add-Log "Không chuyển được $(Get-ReelLabel ([string]$x.Id)): $($x.Why)" 'Warning' }
         $first = @($result.Failed)[0]
-        Show-Toast ("Không chuyển được $failedCount video. Reel #$($first.Id): $($first.Why)") -Kind warning
+        Show-Toast ("Không chuyển được $failedCount video. $(Get-ReelLabel ([string]$first.Id)): $($first.Why)") -Kind warning
     }
     Test-KhoLowStock
 }
@@ -7562,8 +7721,8 @@ function Set-GalleryPosted {
         $script:galleryAll[$i] = $updated
     }
     Apply-GalleryFilter
-    if (-not $newState -and $updated -and $updated.Posted) { Show-Toast "Đã bỏ đánh dấu thủ công. Reel #$($Item.Id) vẫn có lượt đăng TikTok thành công từ bộ đăng nền." -Kind success; return }
-    Show-Toast $(if ($newState) { "Đã đánh dấu Reel #$($Item.Id) là đã đăng TikTok." } else { "Đã bỏ đánh dấu đăng TikTok cho Reel #$($Item.Id)." }) -Kind success
+    if (-not $newState -and $updated -and $updated.Posted) { Show-Toast "Đã bỏ đánh dấu thủ công. $(Get-ReelLabel ([string]$Item.Id)) vẫn có lượt đăng TikTok thành công từ bộ đăng nền." -Kind success; return }
+    Show-Toast $(if ($newState) { "Đã đánh dấu $(Get-ReelLabel ([string]$Item.Id)) là đã đăng TikTok." } else { "Đã bỏ đánh dấu đăng TikTok cho $(Get-ReelLabel ([string]$Item.Id))." }) -Kind success
 }
 
 function Invoke-GalleryRowAction {
@@ -7653,7 +7812,7 @@ function Show-GalleryCardMenu {
     $specs+=,@('Sao chép để đăng',0xE8C8,'copy')
     $specs+=,@('Mở thư mục',0xE838,'folder')
     $specs+=,@('Xem lớn',0xE740,'view')
-    $specs+=,@('Ghi âm lại',0xE720,'redo')
+    $specs+=,@('Ghi âm lại',0xE720,'redo')   # video ngoài: mục bị tắt bên dưới
     $moveItems=@(Get-GalleryMoveTargets $Item)
     $specs+=,@($(if($moveItems.Count -gt 1){"Chuyển $($moveItems.Count) video sang kho…"}else{'Chuyển sang kho…'}),0xE8B7,'moveto')
     $specs+=,@('Xóa video',0xE74D,'delete')
@@ -7661,6 +7820,7 @@ function Show-GalleryCardMenu {
         if($spec[2] -eq 'delete'){ [void]$menu.Items.Add((New-Object Windows.Controls.Separator)) }
         $entry=New-Object Windows.Controls.MenuItem
         $entry.Header=[string]$spec[0];$entry.Tag=[string][char][int]$spec[1]
+        if($spec[2] -eq 'redo' -and $Item.External){$entry.IsEnabled=$false;$entry.ToolTip='Chỉ dùng cho video do app tạo';[Windows.Controls.ToolTipService]::SetShowOnDisabled($entry,$true)}
         $entry.CommandParameter=@{Path=[string]$Item.Path;Action=[string]$spec[2];Item=$Item;PostUrl=[string]$Item.PostUrl;PostId=[string]$Item.PostId;LinkKey=[string]$Item.LinkKey;Button=$Button;MoveItems=$moveItems}
         [Windows.Automation.AutomationProperties]::SetName($entry,[string]$spec[0])
         # Read all per-video context from the sender. No nested dynamic-module closures.
@@ -8052,7 +8212,7 @@ function Show-KhoManagerDialog {
             } else {
                 & $afterChange
                 $why = [string]$r.Why
-                if (@($r.Failed).Count) { $why += ' ' + (@($r.Failed | Select-Object -First 2 | ForEach-Object { "Reel #$($_.Id): $($_.Errors -join '; ')" }) -join ' | ') }
+                if (@($r.Failed).Count) { $why += ' ' + (@($r.Failed | Select-Object -First 2 | ForEach-Object { "$(Get-ReelLabel ([string]$_.Id)): $($_.Errors -join '; ')" }) -join ' | ') }
                 $c.Status.Text = $why
                 Write-FileLog "WARN Xóa kho '$name' chưa hoàn tất: $why"
             }
@@ -8678,6 +8838,7 @@ function Start-RecordingAgain {
         Show-Toast 'Chọn video đã xuất trong Kho trước khi ghi âm lại.' -Kind warning
         return
     }
+    if (Test-KhoExternalKey (Get-ReelId $redoFile)) { Show-Toast 'Chỉ dùng cho video do app tạo.' -Kind warning; return }
     $match = [regex]::Match([IO.Path]::GetFileName($redoFile), '^(\d+)-3-hoan-chinh\.mp4$', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
     if (-not $match.Success) {
         Show-Toast 'Không xác định được ID Facebook từ tên video để ghi âm lại.' -Kind warning
@@ -9360,6 +9521,15 @@ $ui.GalleryList.Add_MouseDoubleClick({
     }
 })
 # Nguoi dung chon mot the: nap vao khung xem truoc o 0:00, khong tu phat. Khong bao gio tu chon khi vao Kho.
+# D12: thả file video từ Explorer lên trang Kho = chép vào kho đang chọn.
+foreach ($dropTarget in @($ui.PanelLibVideos, $ui.GalleryList)) { if ($dropTarget) { $dropTarget.AllowDrop = $true } }
+$ui.PanelLibVideos.Add_DragOver({ param($s, $e) $e.Effects = $(if ($e.Data.GetDataPresent([Windows.DataFormats]::FileDrop)) { [Windows.DragDropEffects]::Copy } else { [Windows.DragDropEffects]::None }); $e.Handled = $true })
+$ui.PanelLibVideos.Add_Drop({
+    param($s, $e)
+    $e.Handled = $true
+    try { if ($e.Data.GetDataPresent([Windows.DataFormats]::FileDrop)) { Invoke-KhoDrop -Files @($e.Data.GetData([Windows.DataFormats]::FileDrop)) } }
+    catch { Write-FileLog "ERR  Thả video vào kho: $($_.Exception.Message)`r`n$($_.ScriptStackTrace)"; Show-Toast ('Không thêm được video: ' + (Get-FriendlyError $_.Exception.Message)) -Kind error }
+})
 # D11: kéo một khung trên vùng trống để chọn nhiều thẻ (Ctrl giữ lựa chọn cũ).
 $ui.GalleryList.Add_PreviewMouseLeftButtonDown({ param($s, $e) try { Start-GalleryBand $e.OriginalSource $e } catch { Write-FileLog "WARN Khung kéo (nhấn): $($_.Exception.Message)" } })
 $ui.GalleryList.Add_PreviewMouseMove({ param($s, $e) try { Move-GalleryBand $e } catch { Write-FileLog "WARN Khung kéo (di chuyển): $($_.Exception.Message)"; Stop-GalleryBand } })
@@ -10148,7 +10318,7 @@ function Update-WatermarkOverlay {
         foreach ($o in @($ui.BoxLogoOverlay, $ui.BoxGifOverlay, $ui.ImgVideoWatermark, $ui.ImgVideoGif)) { if ($o) { $o.Visibility = 'Collapsed' } }
         return
     }
-    $isFinalizedVideo = ($ui.Player -and $ui.Player.Source -and $script:lastOut -and ($script:lastOut -match '-3-hoan-chinh\.mp4$') -and (-not $script:previewingClean))
+    $isFinalizedVideo = ($ui.Player -and $ui.Player.Source -and $script:lastOut -and (($script:lastOut -match '-3-hoan-chinh\.mp4$') -or (Test-KhoExternalVideoPath $script:lastOut)) -and (-not $script:previewingClean))
     if ($isFinalizedVideo) {
         if ($ui.BoxLogoOverlay)    { $ui.BoxLogoOverlay.Visibility    = 'Collapsed' }
         if ($ui.BoxGifOverlay)     { $ui.BoxGifOverlay.Visibility     = 'Collapsed' }
