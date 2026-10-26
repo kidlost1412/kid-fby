@@ -1180,7 +1180,7 @@ function ConvertTo-KhoRegistry {
 
 function Get-KhoLegacyOutDir {
     $saved = ([string]$script:khoLegacyOutDir).Trim()
-    if ($saved -match '^[A-Za-z]:[\/]' -or $saved.StartsWith('\')) { return $saved }
+    if ($saved -match '^[A-Za-z]:[\\/]' -or $saved.StartsWith('\\')) { return $saved }
     if ($saved) { Write-FileLog "WARN outDir đã lưu '$saved' không phải đường dẫn đầy đủ; dùng thư mục output mặc định cho kho 'Output cũ'." }
     return (Join-Path $root 'output')
 }

@@ -96,6 +96,72 @@ function New-TestHistoryEntry {
         planned_for = ''; accepted_at = $Accepted; created_at = $Created; time_source = 'backend'; sha256 = ''; post_url = ''; post_id = ''; link_state = ''
         tiktok_schedule_time = ''; schedule_mode = 'now' }
 }
+# ---- physical kho world (temp root, registry v2, complete videos) ----
+function New-TestWorld {
+    # Fresh $script:root (temp) with data\, registry reset, every busy flag cleared. Kho "Output cũ" = <root>\kho-A (the legacy outDir);
+    # every name in -Names becomes a kho at <root>\kho-<name> made by the product's New-Kho. Returns @{ A; <name> = library }.
+    param([string[]]$Names = @('B'))
+    $script:root = New-TestDir
+    [void][IO.Directory]::CreateDirectory((Join-Path $script:root 'data'))
+    $script:khoRegistry = $null; $script:khoRegistryReady = $true
+    $script:khoLegacyOutDir = Join-Path $script:root 'kho-A'
+    $script:khoMoveRunning = $false; $script:importBusy = $false; $script:stopping = $false; $script:autotokInstall = $false
+    $script:khoExclusive = 0; $script:ps = $null; $script:queue = @(); $script:tikTokSync = $null; $script:khoRecycleOverride = $null
+    $script:khoAutoMoveFailed = @{}; $script:khoAutoMoveWanted = $false; $script:reelCacheName = '.cache'
+    $script:TestLog.Clear()
+    [void][IO.Directory]::CreateDirectory($script:khoLegacyOutDir)
+    $reg = Get-KhoRegistry
+    $world = @{ A = $reg.libraries[0] }
+    foreach ($n in $Names) { $world[$n] = New-Kho -Name $n -Path (Join-Path $script:root ('kho-' + $n)) }
+    return $world
+}
+function Get-TestBytes { param([string]$Text) return [Text.Encoding]::UTF8.GetBytes($Text) }
+function New-TestVideo {
+    # A complete Reel in a kho folder: -3, .cache\-1/-2 (or legacy root -1/-2 with -Legacy), thumbs jpg+json, a finished receipt and an
+    # archived copy of it (VideoId inside), plus -Entry (a metadata entry hashtable) written through Update-ReupMetadata.
+    param([string]$Root, [string]$Id, [switch]$Legacy, [switch]$NoReceipt, [switch]$NoThumb, $Entry = $null, [string]$User = 'anna')
+    [void][IO.Directory]::CreateDirectory($Root)
+    $cache = Join-Path $Root '.cache'
+    [IO.File]::WriteAllBytes((Join-Path $Root "$Id-3-hoan-chinh.mp4"), (Get-TestBytes "final $Id"))
+    $dir = $(if ($Legacy) { $Root } else { $cache })
+    [void][IO.Directory]::CreateDirectory($dir)
+    [IO.File]::WriteAllBytes((Join-Path $dir "$Id-1-video-goc.mp4"), (Get-TestBytes "source $Id"))
+    [IO.File]::WriteAllBytes((Join-Path $dir "$Id-2-am-thanh-tho.m4a"), (Get-TestBytes "audio $Id"))
+    if (-not $NoThumb) {
+        $t = Join-Path $cache 'thumbs'; [void][IO.Directory]::CreateDirectory($t)
+        [IO.File]::WriteAllBytes((Join-Path $t "$Id.jpg"), (Get-TestBytes "thumb $Id"))
+        [IO.File]::WriteAllBytes((Join-Path $t "$Id.json"), (Get-TestBytes "{}"))
+    }
+    $req = '{0:x32}' -f [long]$Id
+    if (-not $NoReceipt) {
+        $rec = [pscustomobject]@{ RequestId = $req; VideoId = $Id; Username = $User; ScheduledFor = ''; Status = 'posted'; CreatedAt = '2026-10-20T09:00:00Z'; LaunchedAt = ''
+                                  OutDir = $Root; SourcePath = (Join-Path $Root "$Id-3-hoan-chinh.mp4"); SourceSha256 = ''; UploadSha256 = '' }
+        Save-TikTokReceipt $rec
+        $posts = Join-Path $cache 'tiktok-posts'
+        $arch = '{0:x32}' -f ([long]$Id + 7)
+        $rec2 = $rec.PSObject.Copy(); $rec2.RequestId = $arch
+        [IO.File]::WriteAllText((Join-Path $posts "$arch.json.archived-20261021-101010"), (ConvertTo-Json $rec2 -Depth 5), [Text.UTF8Encoding]::new($false))
+    }
+    if ($null -ne $Entry) {
+        [void](Update-ReupMetadata -OutDir $Root -Change { param($meta) $meta | Add-Member -MemberType NoteProperty -Name $Id -Force -Value ([pscustomobject]$Entry); return $true })
+    }
+    return $req
+}
+function New-TestPostedEntry {
+    # Metadata entry with one confirmed TikTok post (history shape of the sync).
+    param([string]$Request, [string]$User = 'anna', [string]$Accepted = '2026-10-25T10:00:00Z')
+    $h = New-TestHistoryEntry -Request $Request -User $User -Accepted $Accepted
+    return [ordered]@{ Posted = $true; Date = '25/10 17:00'; Source = 'autotok-history'; History = @($h); ManualPosted = $false; ManualDate = ''; FileSha256 = 'sha-' + $Request }
+}
+function Get-TestTree {
+    # relative path -> sha256 for every file under a folder (proves "untouched"); journals / temp excluded by the caller.
+    param([string]$Dir)
+    if (-not [IO.Directory]::Exists($Dir)) { return '' }
+    $base = (Get-Item -LiteralPath $Dir -Force).FullName.TrimEnd('\')
+    return ((Get-ChildItem -LiteralPath $Dir -Recurse -Force -File | Sort-Object FullName | ForEach-Object { $_.FullName.Substring($base.Length) + '=' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }) -join '|')
+}
+function Get-TestJournalFiles { return @(if ([IO.Directory]::Exists((Join-Path $script:root 'data\kho-moves'))) { Get-ChildItem -LiteralPath (Join-Path $script:root 'data\kho-moves') -Force -File }) }
+
 function Complete-Tests {
     Write-Output "SUMMARY pass=$($script:TestPass) fail=$($script:TestFail) skip=$($script:TestSkip)"
     if ($script:TestFail -gt 0) { exit 1 }
