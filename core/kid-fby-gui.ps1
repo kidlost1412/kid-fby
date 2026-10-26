@@ -591,7 +591,7 @@ $script:uiNames = @(
     'GalleryState','TxtGalleryStateGlyph','TxtGalleryStateTitle','TxtGalleryStateText','PanelLibRejected','TxtRejectedDashboard','RejectedList',
     'ImgGalleryMascot','BadgeGalleryGlyph','BtnGalleryRetry','PanelSelBar','TxtSelCount','BtnClearSelection','PanelKhoEmptyActions','BtnKhoEmptyImport','BtnKhoEmptyManage',
     'ViewSettings','SetTabTools','SetTabGeneral','SetTabLogs','SetTabUpdate','SetTabAbout','ViewTools','BtnCheck','BtnInstallAllTools',
-    'ViewGeneral','ChkAllowOnsetSync','TxtCacheInfo','BtnCleanLegacy','BtnClearCache',
+    'ViewGeneral','ChkAllowOnsetSync','TxtCacheInfo','BtnCleanLegacy','BtnClearCache','TxtCleanupDays','BtnCleanupOld',
     'BadgeStatusScrcpy','TxtStatusScrcpy','BtnInstallScrcpy','BadgeStatusAdb','TxtStatusAdb','BtnInstallAdb',
     'BadgeStatusYtdlp','TxtStatusYtdlp','BtnInstallYtdlp','BadgeStatusFfmpeg','TxtStatusFfmpeg','BtnInstallFfmpeg',
     'BadgeStatusWhisper','TxtStatusWhisper','BtnInstallWhisper','BtnCheckTools','BtnOpenUninstall',
@@ -8449,7 +8449,122 @@ function Invoke-ClearReeditCache {
     Update-Gallery
 }
 
+function ConvertFrom-ManualPostedDate {
+    # Ngay danh dau thu cong co dang "dd/MM HH:mm" (khong co nam): lay nam hien tai, neu ra tuong lai thi lui 1 nam. $null neu khong doc duoc.
+    param([string]$Text, [DateTime]$Now)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    $m = [regex]::Match($Text.Trim(), '^(\d{1,2})/(\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?')
+    if (-not $m.Success) { return $null }
+    $hh = if ($m.Groups[3].Success) { [int]$m.Groups[3].Value } else { 0 }
+    $mm = if ($m.Groups[4].Success) { [int]$m.Groups[4].Value } else { 0 }
+    foreach ($year in @($Now.Year, ($Now.Year - 1))) {
+        try {
+            $d = [DateTime]::new($year, [int]$m.Groups[2].Value, [int]$m.Groups[1].Value, $hh, $mm, 0, [DateTimeKind]::Local)
+            if ($d -le $Now) { return $d }
+        } catch { continue }
+    }
+    return $null
+}
+
+function Get-KhoCleanupCandidates {
+    # Don o: video co bai dang xac nhan MOI NHAT (hoac ngay danh dau thu cong) cu hon $Days ngay VA con file trung gian -1/-2
+    # (.cache hoac file cu o goc). Chi doc dia de xem file nao con. Khong bao gio tra -3.
+    # Gio dang = tiktok_schedule_time neu co, khong thi accepted_at; muc succeeded khong ro gio => bo video (khong doan tuoi).
+    param($Items, $Metadata, [int]$Days, [DateTime]$Now, [string]$OutDir, [string]$KhoId = 'all')
+    $cutoff = $Now.AddDays(-$Days)
+    $result = New-Object System.Collections.Generic.List[object]
+    foreach ($it in @($Items)) {
+        if ($null -eq $it -or -not [string]$it.Id) { continue }
+        if ($KhoId -and $KhoId -ne 'all' -and [string]$it.Kho -cne $KhoId) { continue }
+        $id = [string]$it.Id
+        $entry = if ($Metadata -and $Metadata.PSObject.Properties[$id]) { $Metadata.$id } else { $null }
+        if ($null -eq $entry) { continue }
+        $times = New-Object System.Collections.Generic.List[DateTime]
+        $unknown = $false
+        foreach ($h in @($entry.History)) {
+            if ($null -eq $h -or [string]$h.status -ne 'succeeded' -or $h.publish_uncertain -eq $true) { continue }
+            $raw = if ([string]$h.tiktok_schedule_time) { [string]$h.tiktok_schedule_time } else { [string]$h.accepted_at }
+            $t = ConvertTo-TikTokLocalTime $raw
+            if ($null -eq $t) { $unknown = $true } else { $times.Add($t) }
+        }
+        $manual = Get-ReupManualState $entry
+        if ($manual.Posted) {
+            $t = ConvertFrom-ManualPostedDate -Text ([string]$manual.Date) -Now $Now
+            if ($null -eq $t) { $unknown = $true } else { $times.Add($t) }
+        }
+        if ($unknown -or $times.Count -eq 0) { continue }
+        $newest = ($times | Sort-Object -Descending | Select-Object -First 1)
+        if ($newest -gt $cutoff) { continue }
+        $virtual = Join-Path $OutDir "$id-3-hoan-chinh.mp4"
+        $files = @(Get-ReelMediaFiles -VideoPath $virtual -Existing | Where-Object { $_.Kind -ne 'final' } |
+            ForEach-Object { [pscustomobject]@{ Path = $_.Path; Leaf = $_.Leaf; Length = [double][IO.FileInfo]::new($_.Path).Length } })
+        if (-not $files.Count) { continue }
+        $bytes = [double]0; foreach ($f in $files) { $bytes += $f.Length }
+        $result.Add([pscustomobject]@{ Id = $id; Path = [string]$it.Path; Kho = [string]$it.Kho; PostedAt = $newest; Files = $files; Bytes = $bytes })
+    }
+    return $result.ToArray()
+}
+
+function Remove-KhoCleanupFiles {
+    # Xoa -1/-2 cua cac ung vien. Bo qua video dang co luot chuyen TikTok chay. Tiep tuc khi mot file loi.
+    # Chi xoa dung file ten -1-video-goc.mp4 / -2-am-thanh-tho.m4a; -3, anh thu nho, .kidfby-publish-* khong bao gio bi cham.
+    param($Candidates)
+    $r = @{ Deleted = 0; Failed = 0; Skipped = 0; Freed = [double]0; Errors = New-Object System.Collections.Generic.List[string] }
+    foreach ($c in @($Candidates)) {
+        if (Test-TikTokTransferActive -FilePath ([string]$c.Path)) { $r.Skipped++; Write-FileLog "Dọn ổ: bỏ qua $($c.Id) vì đang chuyển TikTok."; continue }
+        foreach ($f in @($c.Files)) {
+            if ($f.Leaf -notmatch '^.+-(1-video-goc\.mp4|2-am-thanh-tho\.m4a)$') { $r.Failed++; $r.Errors.Add("$($f.Leaf): không phải file trung gian"); continue }
+            try {
+                Remove-Item -LiteralPath $f.Path -Force -ErrorAction Stop
+                $r.Deleted++; $r.Freed += $f.Length
+            } catch {
+                $r.Failed++; $r.Errors.Add("$($f.Leaf): $($_.Exception.Message)")
+                Write-FileLog "WARN Dọn ổ không xóa được '$($f.Path)': $($_.Exception.Message)"
+            }
+        }
+    }
+    return $r
+}
+
+function Invoke-KhoCleanup {
+    if (Test-AppBusy) { Show-Toast 'Đang xử lý (hàng đợi, sửa lại hoặc nhập video) — đợi xong rồi dọn ổ.' -Kind warning; return }
+    $outDir = [string]$ui.TxtOut.Text
+    if ([string]::IsNullOrWhiteSpace($outDir)) { Show-Toast 'Chưa chọn thư mục xuất.' -Kind warning; return }
+    $days = 0
+    if (-not [int]::TryParse(([string]$ui.TxtCleanupDays.Text).Trim(), [ref]$days) -or $days -lt 7 -or $days -gt 365) {
+        Show-Toast 'Số ngày phải từ 7 đến 365.' -Kind warning; return
+    }
+    $scope = 'all'
+    if ($script:filterKho -and $script:filterKho -ne 'all') {
+        $khoName = if ($script:khoNames -and $script:khoNames.ContainsKey($script:filterKho)) { [string]$script:khoNames[$script:filterKho] } else { [string]$script:filterKho }
+        $pick = Show-ChoiceDialog -Title 'Dọn ổ: phạm vi' -Kind info -ConfirmText 'Tiếp tục' -Choices @("Chỉ kho đang chọn ($khoName)", 'Tất cả kho') -Default 0 `
+            -Message "Chọn phạm vi tìm video đã đăng hơn $days ngày."
+        if ($pick -lt 0) { return }
+        if ($pick -eq 0) { $scope = [string]$script:filterKho }
+    }
+    try { $meta = Get-ReupMetadata } catch { Show-Toast 'Không đọc được lịch sử đăng; chưa dọn gì.' -Kind error; Write-FileLog "WARN Dọn ổ Get-ReupMetadata: $($_.Exception.Message)"; return }
+    $cands = @(Get-KhoCleanupCandidates -Items @($script:galleryAll) -Metadata $meta -Days $days -Now (Get-Date) -OutDir $outDir -KhoId $scope)
+    $cands = @($cands | Where-Object { -not (Test-TikTokTransferActive -FilePath ([string]$_.Path)) })
+    if (-not $cands.Count) { Show-Toast "Không có video nào đã đăng hơn $days ngày còn file trung gian." -Kind info; return }
+    $total = [double]0; foreach ($c in $cands) { $total += $c.Bytes }
+    $ok = Show-ConfirmDialog -Title 'Dọn ổ?' -Danger -ConfirmText 'Xóa file trung gian' -Message (
+        "Xóa file trung gian (để ghi âm lại) của $($cands.Count) video đã đăng hơn $days ngày, giải phóng $(Format-Bytes $total). " +
+        "Video hoàn chỉnh (-3) được giữ nguyên. Sau khi xóa sẽ không ghi âm lại/sửa lại được các video này.")
+    if (-not $ok) { return }
+    if (Test-AppBusy) { Show-Toast 'Vừa có tác vụ bắt đầu chạy — chưa dọn gì.' -Kind warning; return }
+    Release-PlayerFromCache (Get-ReelCacheDir $outDir)
+    $r = Remove-KhoCleanupFiles -Candidates $cands
+    $summary = "Dọn ổ: đã xóa $($r.Deleted) file · giải phóng $(Format-Bytes $r.Freed) · lỗi $($r.Failed)"
+    if ($r.Skipped) { $summary += " · bỏ qua $($r.Skipped) video đang chuyển TikTok" }
+    Add-Log $summary $(if ($r.Failed) { 'Warning' } else { 'Success' })
+    foreach ($e in $r.Errors) { Add-Log "Dọn ổ lỗi: $e" 'Warning' }
+    Show-Toast ($summary + '.') -Kind $(if ($r.Failed) { 'warning' } else { 'success' })
+    Update-CacheInfo
+    Update-Gallery
+}
+
 $ui.BtnCleanLegacy.Add_Click({ Invoke-CleanLegacyFiles })
+$ui.BtnCleanupOld.Add_Click({ Invoke-KhoCleanup })
 $ui.BtnClearCache.Add_Click({ Invoke-ClearReeditCache })
 
 function Get-RejectedLinkMatches {

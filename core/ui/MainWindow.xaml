@@ -1043,6 +1043,17 @@
                         <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Dọn cache sửa lại…" VerticalAlignment="Center"/></StackPanel>
                       </Button>
                     </WrapPanel>
+                    <TextBlock Style="{DynamicResource TextMutedStyle}" FontSize="14" Margin="0,4,0,6" TextWrapping="Wrap"
+                               Text="Dọn ổ: xóa file trung gian (-1/-2) của video đã đăng quá số ngày dưới đây. Video hoàn chỉnh (-3) luôn được giữ."/>
+                    <StackPanel Orientation="Horizontal">
+                      <TextBlock Text="Đã đăng hơn" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                      <TextBox x:Name="TxtCleanupDays" Text="30" Width="64" MinHeight="44" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" MaxLength="3" AutomationProperties.Name="Số ngày đã đăng để dọn ổ (7 đến 365)"/>
+                      <TextBlock Text="ngày" VerticalAlignment="Center" Margin="8,0,14,0"/>
+                      <Button x:Name="BtnCleanupOld" Style="{DynamicResource BtnDanger}" AutomationProperties.Name="Dọn ổ"
+                              ToolTip="Xóa -1/-2 của video đã đăng lâu để giải phóng ổ đĩa. Không ghi âm lại/sửa lại được các video này.">
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Dọn ổ…" VerticalAlignment="Center"/></StackPanel>
+                      </Button>
+                    </StackPanel>
                   </StackPanel>
                 </ContentControl>
               </StackPanel>
