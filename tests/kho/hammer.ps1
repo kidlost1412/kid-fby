@@ -3,6 +3,7 @@
 #   -Mode History : history change in one Change block, like the sync worker (own ids 2000001.. plus entry 9)
 param([Parameter(Mandatory)][ValidateSet('Posted', 'History')][string]$Mode, [Parameter(Mandatory)][string]$OutDir, [int]$Iterations = 200)
 . (Join-Path $PSScriptRoot '_load.ps1')
+$script:root = $OutDir   # Set-ReupMetadata consults <root>\data\kho-moves (pending journals); the folder does not exist here, so no journal reserves anything
 $failures = 0
 for ($i = 1; $i -le $Iterations; $i++) {
     try {

@@ -2070,9 +2070,11 @@ function Resume-KhoMove {
         }
         foreach ($r in @($Journal.renames)) { if ([string]$r.kind -eq 'receipt' -and [string]$r.status -in @('moved', 'done')) { Update-KhoReceiptPaths ([string]$r.dst) $to $id } }
         $snapshot = $Journal.sourceEntrySnapshot
-        # The source entry that still exists is the newest truth (also when the journal's snapshot is null).
-        $currentSource = (Get-ReupMetadata -OutDir $from).PSObject.Properties[$id]
-        if ($currentSource -and $null -ne $currentSource.Value) { $snapshot = Copy-ReupEntry $currentSource.Value }
+        # A journal without a snapshot (nothing was known at planning time): the source entry that still exists is the truth.
+        if ($null -eq $snapshot) {
+            $currentSource = (Get-ReupMetadata -OutDir $from).PSObject.Properties[$id]
+            if ($currentSource -and $null -ne $currentSource.Value) { $snapshot = Copy-ReupEntry $currentSource.Value }
+        }
         if ($null -ne $snapshot) {
             [void](Update-ReupMetadata -OutDir $to -Change { param($meta) return (Merge-KhoMoveEntry $meta $id $snapshot) })
         }
