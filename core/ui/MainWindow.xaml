@@ -21,9 +21,10 @@
       <RowDefinition Height="48"/>
       <RowDefinition Height="*"/>
       <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
     <!-- giay cham tron rat nhat phia sau moi thu -->
-    <Rectangle Grid.RowSpan="3" Fill="{DynamicResource PaperDots}" IsHitTestVisible="False"/>
+    <Rectangle Grid.RowSpan="4" Fill="{DynamicResource PaperDots}" IsHitTestVisible="False"/>
 
     <!-- ===================================================== thanh tieu de -->
     <Grid Grid.Row="0">
@@ -1273,7 +1274,15 @@
     </Grid>
 
     <!-- ===================================================== dai hanh dong day (72 px): the trang bo tron noi -->
-    <Border x:Name="ActionBar" Grid.Row="2" Style="{DynamicResource Card}" Margin="16,0,16,8" Padding="12,6" CornerRadius="26">
+    <!-- Rai lich chay nen: dai tien trinh ngay tren dai day (chi hien khi dang gui), nut Dung -->
+    <Border x:Name="SpreadBar" Grid.Row="2" Visibility="Collapsed" Style="{DynamicResource Card}" Margin="16,0,16,8" Padding="14,6" CornerRadius="26" HorizontalAlignment="Left" MinWidth="460">
+      <StackPanel Orientation="Horizontal">
+        <TextBlock x:Name="TxtSpreadStatus" Text="Đang gửi lịch…" FontWeight="ExtraBold" FontSize="15" VerticalAlignment="Center" MinWidth="180"/>
+        <ProgressBar x:Name="SpreadProgress" Width="180" Height="12" Minimum="0" Maximum="1" Value="0" Margin="14,0,14,0" VerticalAlignment="Center"/>
+        <Button x:Name="BtnSpreadStop" Content="Dừng" MinHeight="44" MinWidth="88" ToolTip="Dừng rải lịch: không gửi thêm video; video đang gửi vẫn chạy nền" AutomationProperties.Name="Dừng rải lịch"/>
+      </StackPanel>
+    </Border>
+    <Border x:Name="ActionBar" Grid.Row="3" Style="{DynamicResource Card}" Margin="16,0,16,8" Padding="12,6" CornerRadius="26">
       <Grid>
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto"/>
@@ -1340,7 +1349,7 @@
     </Border>
 
     <!-- ===================================================== thong bao: goc DUOI phai, ngay tren dai day (code dich sang trai cot xem truoc khi co) -->
-    <StackPanel x:Name="NotificationHost" Grid.Row="1" Grid.RowSpan="2" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+    <StackPanel x:Name="NotificationHost" Grid.Row="1" Grid.RowSpan="3" HorizontalAlignment="Right" VerticalAlignment="Bottom"
                 Margin="0,0,24,88" Width="360" Panel.ZIndex="100"/>
 
   </Grid>
