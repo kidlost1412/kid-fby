@@ -315,38 +315,51 @@ Mục này thay phần hộp đăng và đồng bộ của bản 23/10 (đã b�
 - **Chưa kiểm**: đăng video TikTok thật; xác minh bài trên hồ sơ; Reel Facebook thật; nhiều DPI cho hộp đăng; phản hồi publish có mã bài; bài hẹn lên đúng giờ khi máy tắt; bộ cài một chấm trên dịch vụ thật (chỉ kiểm với lớp dịch vụ giả). Kiểm bằng fixture và backend giả lập: harness WPF Windows PowerShell 5.1 STA; test làm sạch và đồng bộ trên fixture.
 - Phiên bản 3.0.0 đã phát hành qua `publish.ps1`: `core/version.txt` = 3.0.0, `version.json` và `version.json.sig` đã ký (15 file, gồm `core/autotok-bundle.zip`). Các thay đổi tích hợp TikTok và bộ cài nằm trong bản này (mục 8, 9).
 
-## 10. Kho theo tài khoản — nhánh `feature/kho-accounts` (26/10/2026, chưa gộp)
+## 10. Kho = thư mục thật theo tài khoản — nhánh `feature/kho-physical` (26/10/2026, chưa gộp)
 
-Vì sao: chủ dự án đăng TikTok bằng 3–5 tài khoản, mỗi tài khoản 2–3 bài/ngày. Cần biết video nào thuộc tài khoản nào, nhưng không muốn di chuyển file. Quyết định 26/10/2026: Kho là nhãn logic.
+Vì sao: chủ dự án đăng TikTok bằng 3–5 tài khoản. Kho là một thư mục thật chứa video của nó; chuyển video sang kho là chuyển file; xóa video/kho là đưa file vào Thùng rác Windows. Không còn "Kho chung" và không còn nhãn `Kho`/`KhoManual`.
 
 ### Nguyên tắc
 
-- File không bao giờ di chuyển. Mọi video vẫn ở thư mục xuất (`-3`, `.cache`, biên nhận, `reup-status.json` như cũ). Kho chỉ là nhãn.
-- Mỗi video có tối đa một Kho. Thiếu `Kho` nghĩa là Kho chung (`default`).
-- Chỉ `Update-ReupMetadata` ghi `reup-status.json`. Chỉ luồng UI ghi `data\kho.json`; mã nền làm việc với id và không đọc/ghi registry.
+- Mỗi kho là một thư mục xuất đầy đủ như thư mục `output` cũ: `<id>-3-hoan-chinh.mp4` ở gốc, `.cache` (`-1`/`-2`, `thumbs`, `tiktok-posts`, `tiktok-identities.json`) và `reup-status.json` riêng.
+- Chỉ `Update-ReupMetadata` ghi `reup-status.json`. Chỉ luồng UI ghi `data\kho.json`; mã nền làm việc với đường dẫn thư mục, không đọc/ghi registry.
+- Thư mục kho: đường dẫn đầy đủ, không phải gốc ổ đĩa, cùng ổ đĩa với kho đầu tiên (mọi lần chuyển là đổi tên tức thì), không trùng/không lồng trong kho khác (`Test-KhoPathAllowed`). Luôn có ít nhất một kho; mỗi tài khoản tối đa một kho.
 
-### Registry `data\kho.json`
+### Registry `data\kho.json` (version 2)
 
-- Dạng: `{version:1, libraries:[{id,name,account,caption,hashtags,lowStock}], downloadTarget}`.
-- Id: `default` (Kho chung, không xóa được); `c-<32 ký tự hex>` (kho tự tạo, `account` rỗng); `acct:<username chữ thường>` (kho tài khoản TikTok, `account` là username).
-- File thiếu: chỉ có Kho chung. File hỏng: đổi tên `kho.json.corrupt-<ts>`, coi như chỉ có Kho chung (không ném lỗi).
-- File không đọc được (ví dụ bị khóa tạm): chỉ có Kho chung và `khoRegistryReady=$false`. Phiên đó không ghi đè file: `Save-KhoRegistry` trả `$false`, xóa kho bị chặn, đổi kho đích chỉ giữ trong phiên.
-- `Get-KhoList` bổ sung kho `acct:*` mà video đang trỏ tới nhưng registry chưa có, rồi lưu một lần.
+- Dạng: `{version:2, libraries:[{id,name,path,account,caption,hashtags,lowStock,slots,createdByApp}], downloadTarget, autoMoveSince}`; id `k-<32 hex>`.
+- Lần chạy đầu (thiếu file, file v1 kho nhãn, hoặc không có kho hợp lệ): tạo kho "Output cũ" = `outDir` đã lưu (mặc định `<root>\output`), không di chuyển file. File v1/hỏng/không hợp lệ được đổi tên `kho.json.v1-<ts>` / `.corrupt-<ts>` / `.invalid-<ts>`, không xóa.
+- File không đọc được (khóa tạm): dùng mặc định trong bộ nhớ, `khoRegistryReady=$false`, phiên đó không ghi đè và mọi thay đổi kho bị từ chối.
+- `autoMoveSince` = lúc tạo registry: chỉ bài xác nhận từ mốc này mới tự chuyển kho.
 
-### Nhãn trong `reup-status.json`
+### Chuyển kho (`Invoke-KhoMove`, `Move-KhoVideos`)
 
-- `Kho`: id kho. `KhoManual` (true): chủ đã chuyển tay, tự gán không đụng vào.
-- Mục mới chỉ tạo để gán kho có dạng `{Posted:$false, Date:''}` cộng `Kho`, để bản cũ đọc được. Không tạo mục cho video lỗi.
+- Chỉ chạy khi ứng dụng yên (`Test-KhoQuiet`: không tải/ghi âm/sửa, import, hộp thoại/dọn dẹp, cài bộ đăng); đồng bộ TikTok được tạm dừng và chờ pass đang chạy xong (tối đa 8 s, không hủy giữa chừng). Không yên: báo "Đang bận…", tự chuyển để lần sau.
+- Video có `.job`/`.lock` trong `.cache	iktok-posts` (đang chạy hoặc giữ để thử lại) bị chặn; chỉ biên nhận đã xong/lưu trữ được chuyển, với `OutDir`/`SourcePath` viết lại.
+- Nhật ký `data\kho-moves\<txid>.json` (ngoài mọi kho; ghi tạm + Flush + đổi tên) ghi trước lần đổi tên đầu; pha `renaming` → `meta-target-done` → `meta-source-done`; `-3` đổi tên cuối cùng. Khôi phục (`Resume-KhoMoves`) chạy lúc khởi động trước khi quét kho/đồng bộ và trước mỗi lần chuyển; mọi bước idempotent. Cả hai tồn tại → xung đột: giữ nhật ký, khóa hai kho (chuyển/xóa/dọn), không ghi đè.
+- Gộp metadata đích: có mục thì gộp lịch sử theo `key` (đích thắng), giữ đánh dấu tay nếu một bên có (`Merge-KhoMoveEntry`).
+- Chuyển tay video đã có bài xác nhận đặt `KhoPinned=true` (đi theo mục); tự chuyển bỏ qua mục ghim.
+- Tự chuyển (`Invoke-KhoAutoMove`): sau đồng bộ, video ở kho không gắn tài khoản có bài xác nhận sớm nhất của một tài khoản → sang kho tài khoản đó; chưa có kho thì tự tạo `<thư mục cha của kho tải về>\Kho @user` (`createdByApp`); lỗi tạo kho thì thử lại sau 10 phút.
+- Không tạo mục `reup-status.json` mới cho video không còn `-3` ở thư mục đó (đồng bộ đầy đủ, biên nhận cục bộ, đánh dấu tay).
 
-### Quy tắc gán
+### Xóa (`Remove-ReelToRecycleBin`, `Remove-KhoWithVideos`)
 
-- **Tự gán** (`Invoke-KhoAutoAssign`): chạy trong khối ghi lịch sử của đồng bộ đầy đủ, đồng bộ nhanh và ghi biên nhận cục bộ. Chỉ xét mục có `Source='autotok-history'`, `Kho` rỗng/`default`/`c-*`, không có `KhoManual`. Đích là tài khoản của bài `succeeded` (không `publish_uncertain`) có `accepted_at` sớm nhất. Đã là `acct:*` thì không đổi tự động: đăng lại sang tài khoản B vẫn ở A. Chạy lại không đổi gì.
-- **Chuyển tay** (`Set-MetaKho -Manual`): sang kho tài khoản thì đặt `Kho`. Về Kho chung thì bỏ `Kho`, và chỉ đặt `KhoManual` khi video đã có bài xác nhận (để không bị kéo về kho tài khoản). Sang kho tự tạo thì đặt `Kho`, cùng quy tắc `KhoManual`.
-- **Xóa kho** (`Remove-Kho`): không xóa file. Video của kho bỏ `Kho`, về Kho chung. Với kho tài khoản, mọi video đó được đặt `KhoManual` để tự gán không kéo lại. Kho tài khoản hiện lại khi một video khác của tài khoản đó được xác nhận. Xong mới bỏ kho khỏi registry; `downloadTarget` về `default` nếu đang trỏ tới kho đó. Bị chặn khi đang nhập thư mục.
-- **Id treo** (kho đã bị xóa ở chỗ khác): hiển thị ở Kho chung (`Get-KhoEffectiveId`).
-- **Lưu vào kho** (đích tải): chọn ở ô cạnh ô nhập link, chốt khi hàng đợi bắt đầu (`$script:queueKhoId`). Chỉ gán khi video lưu thành công và chưa có `Kho`/`KhoManual` (`Add-QueueVideoToKho`). Tải lại và ghi âm lại không gán (`queueKhoId = $null`). Lỗi gán chỉ ghi log và báo, không làm hỏng hàng đợi.
-- **Nhập từ thư mục** (`Import-KhoFolder`, nút "Thêm video từ thư mục…" trong Quản lý kho): chỉ chép `<id>-3-hoan-chinh.mp4` chưa có ở thư mục xuất, theo kiểu `.part` rồi đổi tên, không ghi đè. Nếu đích đã có cùng kích thước và SHA256 thì chỉ làm bước metadata (chạy lại an toàn). Nếu đích khác nội dung thì bỏ qua. `-1`/`-2` đi kèm vào `.cache` nếu chưa có. Metadata: video chưa có mục thì chép mục từ nguồn; đã có thì gộp `History` theo `key` (đích thắng); đặt `Kho` trừ khi đích đã `acct:*` hoặc `KhoManual`. Thư mục nguồn chỉ đọc. Nhập và hàng đợi/sửa lại/xóa kho loại trừ nhau (`$script:importBusy`, `Test-KhoImportBlocked`).
-- **Chống hạ cấp lịch sử** (`Test-TikTokStaleDowngrade`): mục đã `succeeded` không bị thay bằng trạng thái đang chờ (`preparing|pending|queued|running`) của cùng request, cả khi đồng bộ đầy đủ lẫn nhanh. Mục không có mã lần thử nên không phân biệt được lần thử mới với dữ liệu cũ.
+- Xóa video: `-3` trước, rồi `-1`/`-2` và biên nhận đã xong vào Thùng rác; ảnh thu nhỏ xóa luôn. Một file lỗi → giữ mục metadata, báo phần còn lại; thử lại xóa nốt.
+- Xóa kho: từ chối khi ứng dụng bận, có nhật ký chuyển kho nhắc tới thư mục, hoặc có lệnh đăng; xóa hết video, chỉ bỏ đăng ký khi tất cả thành công; nếu là kho tải về thì chuyển đích sang kho khác. Thư mục chỉ vào Thùng rác khi `createdByApp` và chỉ còn file của ứng dụng.
+
+### Nhiều thư mục
+
+- Quét kho là một việc nền trên mọi thư mục; thẻ lấy kho từ thư mục chứa file. Đồng bộ TikTok chạy theo từng thư mục. Kiểm tra trùng khi tải xét mọi kho. Hàng đợi tải chốt thư mục đích lúc bắt đầu (`$script:queueOutDir`); ghi âm lại dùng thư mục của video.
+- Giờ bận/giới hạn ngày/giờ trống kế tiếp của một tài khoản đọc mọi kho, bỏ trùng theo `key` (`Get-TikTokAccountBusyTimes`).
+- Dọn cache/Dọn ổ theo kho đang chọn hoặc tất cả; không bao giờ đụng file mà nhật ký chuyển kho nhắc tới (`Get-KhoJournalPaths`); nhật ký không đọc được thì từ chối dọn.
+
+### Tương thích (giống ghi chú A1)
+
+- Bản cũ hơn (trước nhánh này) không biết `kho.json` v2: chỉ thấy thư mục "Output cũ" (`outDir` trong `settings.json`) và coi video đã chuyển sang kho khác là không có. Dùng đồng thời hai bản trên cùng dữ liệu không được hỗ trợ; không chạy bản cũ khi còn nhật ký `data\kho-moves` chưa xong.
+
+### Kiểm thử
+
+- `tests\khoun-all.ps1` (PowerShell 5.1 -STA): registry, luật thư mục, chuyển kho, nhật ký/khôi phục, xóa (Thùng rác thật), nhiều thư mục, hiệu năng 5 kho × 500 video. `tests\kho\smokeun-smoke.ps1 -Phase main|recovery`: chạy WPF thật trên bản sao tạm của ứng dụng.
 
 ### Giao diện (`core/kid-fby-gui.ps1`, `core/ui/*.xaml`)
 

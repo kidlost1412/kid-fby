@@ -262,7 +262,7 @@ public class KidWrapPanel : VirtualizingPanel, IScrollInfo
     {
         if (InternalChildren.Count == 0) return;
         ItemContainerGenerator.RemoveAll();
-        InternalChildren.Clear();
+        RemoveInternalChildRange(0, InternalChildren.Count);   // Clear() throws while the ItemsControl owns the panel
     }
 
     protected override void OnItemsChanged(object sender, ItemsChangedEventArgs args)

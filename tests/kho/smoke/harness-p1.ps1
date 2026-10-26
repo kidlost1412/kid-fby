@@ -175,7 +175,7 @@ $script:HTimer.Add_Tick({
                 $row = @($script:galleryRows | Where-Object { $_.Id -eq '1000000000201' })[0]
                 $ui.GalleryList.UpdateLayout(); Pump
                 $cont = $ui.GalleryList.ItemContainerGenerator.ContainerFromItem($row)
-                if (-not $cont) { $h.Data.Retry = 1 + [int]$h.Data.Retry; if ($h.Data.Retry -lt 12) { return } else { throw 'card container never realized' } }
+                if (-not $cont) { $h.Data.Retry = 1 + [int]$h.Data.Retry; if ($h.Data.Retry -lt 12) { return } else { HLog ('DIAG rows=' + $script:galleryRows.Count + ' row=' + ($null -ne $row) + ' vis=' + $ui.GalleryList.IsVisible + ' h=' + $ui.GalleryList.ActualHeight + ' page=' + $script:currentPage + ' realized=' + $ui.GalleryList.ItemContainerGenerator.Status); throw 'card container never realized' } }
                 $h.Data.Retry = 0
                 $more = Find-Visual $cont { param($n) $n -is [Windows.Controls.Button] -and [string]$n.Tag -eq 'more' }
                 Click-Btn $more
@@ -206,10 +206,11 @@ $script:HTimer.Add_Tick({
             8 {
                 # delete a video (Recycle Bin) through the card menu
                 $script:confirmDialogAutoAnswer = $true
+                $h.Data.Bin103 = InBin '1000000000103-3-hoan-chinh*'
                 $row = @($script:galleryRows | Where-Object { $_.Id -eq '1000000000103' })[0]
                 $ui.GalleryList.UpdateLayout(); Pump
                 $cont = $ui.GalleryList.ItemContainerGenerator.ContainerFromItem($row)
-                if (-not $cont) { $h.Data.Retry = 1 + [int]$h.Data.Retry; if ($h.Data.Retry -lt 12) { return } else { throw 'card container never realized' } }
+                if (-not $cont) { $h.Data.Retry = 1 + [int]$h.Data.Retry; if ($h.Data.Retry -lt 12) { return } else { HLog ('DIAG rows=' + $script:galleryRows.Count + ' row=' + ($null -ne $row) + ' vis=' + $ui.GalleryList.IsVisible + ' h=' + $ui.GalleryList.ActualHeight + ' page=' + $script:currentPage + ' realized=' + $ui.GalleryList.ItemContainerGenerator.Status); throw 'card container never realized' } }
                 $h.Data.Retry = 0
                 $more = Find-Visual $cont { param($n) $n -is [Windows.Controls.Button] -and [string]$n.Tag -eq 'more' }
                 Click-Btn $more
@@ -219,7 +220,7 @@ $script:HTimer.Add_Tick({
             9 {
                 if ($script:galleryState -ne 'ready') { return }
                 Expect 'delete video: file left the kho folder' (F $A '1000000000103-3-hoan-chinh.mp4') $false
-                Expect 'delete video: file is in the Recycle Bin' (InBin '1000000000103-3-hoan-chinh*') 1
+                Expect 'delete video: one more copy in the Recycle Bin' ((InBin '1000000000103-3-hoan-chinh*') - $h.Data.Bin103) 1
                 Expect 'delete video: card removed' @($script:galleryAll | Where-Object { $_.Id -eq '1000000000103' }).Count 0
                 Expect 'delete video: other videos untouched' (F $B '1000000000202-3-hoan-chinh.mp4') $true
                 HLog ('toast: ' + (ToastText)); HShot 'p1-09-after-delete-video'
@@ -228,6 +229,7 @@ $script:HTimer.Add_Tick({
             10 {
                 # delete the kho Delta (holds video 201) from the manager dialog
                 $script:confirmDialogAutoAnswer = $true
+                $script:H.Data.Bin201 = InBin '1000000000201-3-hoan-chinh*'
                 $id = $script:H.Data.GammaId
                 RunDialog $id {
                     param($d)
@@ -236,7 +238,7 @@ $script:HTimer.Add_Tick({
                     Click-Btn $d.FindName('BtnDelete')
                     Expect 'kho delete: removed from the registry' ($null -eq (Get-KhoById $id)) $true
                     Expect 'kho delete: its video left the folder' (F $script:H.Data.GammaPath '1000000000201-3-hoan-chinh.mp4') $false
-                    Expect 'kho delete: video is in the Recycle Bin' (InBin '1000000000201-3-hoan-chinh*') 1
+                    Expect 'kho delete: one more copy in the Recycle Bin' ((InBin '1000000000201-3-hoan-chinh*') - $script:H.Data.Bin201) 1
                     Expect 'kho delete: app-made folder recycled' ([IO.Directory]::Exists($script:H.Data.GammaPath)) $false
                     Expect 'kho delete: saved registry no longer lists it' (@((Get-Content -LiteralPath (Join-Path $root 'data\kho.json') -Raw -Encoding UTF8 | ConvertFrom-Json).libraries | Where-Object { $_.id -eq $id }).Count) 0
                 }

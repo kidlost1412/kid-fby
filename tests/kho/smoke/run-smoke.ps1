@@ -36,7 +36,6 @@ if ($Phase -eq 'main') {
 }
 [IO.File]::WriteAllText((Join-Path $A 'reup-status.json'), (ConvertTo-Json $metaA -Depth 12), $utf8)
 [IO.File]::WriteAllText((Join-Path $B 'reup-status.json'), (ConvertTo-Json $metaB -Depth 12), $utf8)
-Remove-Item -LiteralPath $seed
 function Lib($id, $name, $path) { return [ordered]@{ id = $id; name = $name; path = $path; account = ''; caption = ''; hashtags = @(); lowStock = 3; slots = @(); createdByApp = $false } }
 $ka = 'k-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; $kb = 'k-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 $reg = [ordered]@{ version = 2; libraries = @((Lib $ka 'Kho Alpha' $A), (Lib $kb 'Kho Beta' $B)); downloadTarget = $ka; autoMoveSince = [DateTime]::UtcNow.ToString('o') }
@@ -63,6 +62,7 @@ if ($Phase -eq 'recovery') {
     Write-Output "fabricated journal for $id with 3 of $($plan.Count) renames done"
 }
 
+Remove-Item -LiteralPath $seed
 $gui = Join-Path $app 'core\kid-fby-gui.ps1'
 $text = [IO.File]::ReadAllText($gui, [Text.Encoding]::UTF8)
 $marker = '[void]$win.ShowDialog()'
