@@ -6122,6 +6122,7 @@ $script:khoKnown = @{ default = $true }   # ma kho dang co trong registry (ma la
 $script:khoNames = @{ default = 'Kho chung' }   # ma kho -> ten hien tren the (chip kho)
 $script:khoCounts = @{}                   # ma kho -> [int[]] chờ đăng / đã hẹn / đã đăng
 $script:khoComboSig = ''
+$script:galleryTabCounts = [int[]]@(0, 0, 0)   # chờ đăng / đã hẹn / đã đăng theo bộ lọc ngày + kho + tìm kiếm hiện tại
 # Chữ kho: một dòng, cắt bằng dấu … khi quá dài (ô đóng và danh sách thả xuống không tràn sang khung xem trước).
 $script:khoItemTemplate = [Windows.Markup.XamlReader]::Parse('<DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis" MaxWidth="300"/></DataTemplate>')
 $script:khoDownloadSig = ''
@@ -6160,6 +6161,7 @@ function Select-GalleryItems {
     $khoFilter = [string]$script:filterKho; $search = [string]$script:filterSearch
     $statusIdx = switch ([string]$script:filterStatus) { 'pending' { 0 } 'held' { 1 } 'posted' { 2 } default { -1 } }
     $out = New-Object System.Collections.ArrayList
+    $tab = [int[]]@(0, 0, 0)   # status tab counts: current date + kho + search filters, any status
     foreach ($it in $script:galleryAll) {
         $k = [string]$it.Kho
         if (-not $known.ContainsKey($k)) { $k = 'default' }
@@ -6172,11 +6174,12 @@ function Select-GalleryItems {
             elseif ($it.Date.ToString('yyyy-MM-dd') -ne $fd) { continue }
         }
         if ($khoFilter -ne 'all' -and $k -cne $khoFilter) { continue }
-        if ($statusIdx -ge 0 -and $b -ne $statusIdx) { continue }
         if ($search -and $it.Id.IndexOf($search, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+        $tab[$b]++
+        if ($statusIdx -ge 0 -and $b -ne $statusIdx) { continue }
         [void]$out.Add($it)
     }
-    if ($UpdateCounts) { $script:khoKnown = $known; $script:khoCounts = $counts }
+    if ($UpdateCounts) { $script:khoKnown = $known; $script:khoCounts = $counts; $script:galleryTabCounts = $tab }
     return , $out
 }
 
@@ -6228,8 +6231,7 @@ function Update-GalleryKhoSelector {
             $script:khoDownloadSig = $dsig
         }
     } finally { $script:updatingCombo = $false }
-    $sc = if ($script:filterKho -eq 'all') { $total } else { $script:khoCounts[$script:filterKho] }
-    if (-not $sc) { $sc = [int[]]@(0, 0, 0) }
+    $sc = $script:galleryTabCounts
     $ui.TabStAll.Content = 'Tất cả ({0})' -f ($sc[0] + $sc[1] + $sc[2])
     $ui.TabStPending.Content = 'Chờ đăng ({0})' -f $sc[0]
     $ui.TabStHeld.Content = 'Đã hẹn ({0})' -f $sc[1]
@@ -6454,7 +6456,8 @@ function Apply-GalleryFilter {
                 if ($ui.CmbFilterSpecificDate) { $ui.CmbFilterSpecificDate.Visibility = 'Collapsed' }
             } finally { $script:resettingDateFilter = $false }
             Show-Toast 'Không còn video nào trong ngày đã chọn — đã chuyển về Tất cả ngày.' -Kind info
-            $wanted = Select-GalleryItems -Today $today
+            $wanted = Select-GalleryItems -Today $today -UpdateCounts
+            Update-GalleryKhoSelector
         }
     }
     $ui.GalleryList.Tag = $(if ($script:filterKho -eq 'all') { 'all' } else { 'one' })   # chip kho trên thẻ chỉ hiện khi xem Tất cả kho
@@ -6653,6 +6656,18 @@ function Confirm-KhoDelete {
         Write-FileLog "ERR  Confirm-KhoDelete: $($_.Exception.Message)"
         return $false
     }
+}
+
+function Update-KhoCardsAfterRename {
+    # Chip kho trên thẻ đổi theo tên mới: chỉ dựng lại thẻ của kho này (Ids rỗng nghĩa là TẤT CẢ nên phải chặn).
+    param([string]$KhoId)
+    $ids = New-Object System.Collections.Generic.List[string]
+    foreach ($it in @($script:galleryAll)) {
+        $k = [string]$it.Kho
+        if (-not $script:khoKnown.ContainsKey($k)) { $k = 'default' }
+        if ($k -ceq $KhoId) { $ids.Add([string]$it.Id) }
+    }
+    if ($ids.Count) { Update-GalleryItemsFromMeta -Ids $ids.ToArray() -Force } else { Apply-GalleryFilter }
 }
 
 function Remove-KhoAndRefresh {
@@ -6864,7 +6879,7 @@ function Show-KhoManagerDialog {
     $c.BtnRename.Add_Click({
         try {
             Rename-Kho -Id $state.Selected -Name $c.NameBox.Text
-            Update-GalleryItemsFromMeta -Force   # chip kho trên thẻ đổi theo tên mới (chỉ đọc lại siêu dữ liệu)
+            Update-KhoCardsAfterRename -KhoId ([string]$state.Selected)
             & $afterChange
             $c.Status.Text = 'Đã đổi tên kho.'
         } catch { & $fail $_ }
