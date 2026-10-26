@@ -27,7 +27,7 @@ if($TikTokJobFile){
         $ast=[Management.Automation.Language.Parser]::ParseFile($PSCommandPath,[ref]$tokens,[ref]$errors)
         if($errors.Count){throw 'TikTok worker source parse failed.'}
         foreach($node in $ast.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst]},$true)){
-            if($node.Name -in @('Get-TikTokEndpoint','Save-TikTokReceipt','Find-TikTokTool','ConvertTo-TikTokArgument','Invoke-TikTokTool','Get-TikTokCleanArgs','Get-TikTokCleanPlan','Get-TikTokMediaInfo','Get-TikTokVideoCounts','Test-TikTokCleanFile','New-TikTokCleanCopy')){. ([scriptblock]::Create($node.Extent.Text))}
+            if($node.Name -in @('Get-TikTokEndpoint','Save-TikTokReceipt','Find-TikTokTool','ConvertTo-TikTokArgument','Invoke-TikTokTool','Get-TikTokCleanArgs','Get-TikTokCleanPlan','Get-TikTokVideoStreamIndex','Get-TikTokMediaInfo','Get-TikTokVideoCounts','Test-TikTokCleanFile','New-TikTokCleanCopy')){. ([scriptblock]::Create($node.Extent.Text))}
         }
         $assignment=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$script:tikTokWorker'},$true))[0]
         . ([scriptblock]::Create($assignment.Extent.Text))
@@ -3945,13 +3945,29 @@ function Get-TikTokWireReelId {
     return ''
 }
 
+function Get-TikTokVideoStreamIndex {
+    # ffprobe stream index of the video the clean copy works on: the first video stream that is not an attached cover picture. -1 = none.
+    # Planning, ffmpeg mapping and frame/keyframe verification all use this one choice.
+    param($Info)
+    $streams = @($Info.streams | Where-Object { $_ })
+    for ($i = 0; $i -lt $streams.Count; $i++) {
+        $s = $streams[$i]
+        if ($s.codec_type -ne 'video' -or [string]$s.disposition.attached_pic -eq '1') { continue }
+        $n = 0
+        if ($s.PSObject.Properties['index'] -and [int]::TryParse([string]$s.index, [ref]$n)) { return $n }
+        return $i
+    }
+    return -1
+}
+
 function Get-TikTokCleanPlan {
     # Chọn cách tạo bản sạch từ kết quả ffprobe (đã ConvertFrom-Json): 'copy' (đóng gói lại, không mã hóa lại) khi hình H.264/HEVC và âm AAC hoặc không có âm;
     # 'audio' (giữ hình, mã hóa lại âm sang AAC) khi hình H.264/HEVC nhưng âm khác AAC; 'video' (H.264 + AAC) khi hình là codec khác; 'none' khi không có luồng hình.
     param($Info)
     $streams = @($Info.streams | Where-Object { $_ })
+    $videoIndex = Get-TikTokVideoStreamIndex $Info
+    if ($videoIndex -lt 0) { return 'none' }
     $video = @($streams | Where-Object { $_.codec_type -eq 'video' -and [string]$_.disposition.attached_pic -ne '1' })
-    if (-not $video.Count) { return 'none' }
     $vcodec = ([string]$video[0].codec_name).ToLowerInvariant()
     if ($vcodec -notin @('h264', 'avc', 'avc1', 'hevc', 'h265')) { return 'video' }
     $audio = @($streams | Where-Object { $_.codec_type -eq 'audio' })
@@ -3978,11 +3994,12 @@ function Get-TikTokMediaInfo {
 }
 
 function Get-TikTokVideoCounts {
-    # Keyframe packets and decoded frames of the first video stream. Stripping SEI from an open-GOP stream can drop
+    # Keyframe packets and decoded frames of one video stream (-Stream: ffprobe stream specifier; the clean copy holds only the chosen video, so
+    # 'v:0' there, while the source passes the planned stream index). Stripping SEI from an open-GOP stream can drop
     # keyframe flags (recovery-point SEI) or leading frames (stream starting with a non-IDR I frame).
-    param([string]$Ffprobe, [string]$Path)
-    $packets = Invoke-TikTokTool $Ffprobe @('-v','error','-select_streams','v:0','-show_entries','packet=flags','-of','csv=p=0',$Path) 600000
-    $frames = Invoke-TikTokTool $Ffprobe @('-v','error','-select_streams','v:0','-count_frames','-show_entries','stream=nb_read_frames','-of','csv=p=0',$Path) 1800000
+    param([string]$Ffprobe, [string]$Path, [string]$Stream = 'v:0')
+    $packets = Invoke-TikTokTool $Ffprobe @('-v','error','-select_streams',$Stream,'-show_entries','packet=flags','-of','csv=p=0',$Path) 600000
+    $frames = Invoke-TikTokTool $Ffprobe @('-v','error','-select_streams',$Stream,'-count_frames','-show_entries','stream=nb_read_frames','-of','csv=p=0',$Path) 1800000
     if ($packets.Code -ne 0 -or $frames.Code -ne 0) { throw ('ffprobe lỗi: ' + ($packets.Err + ' ' + $frames.Err).Trim()) }
     $count = 0
     # The line can carry side data too (e.g. rotation gives '180,'): take the first number.
@@ -4061,9 +4078,10 @@ function New-TikTokCleanCopy {
     catch { throw ('Không đọc được thông tin video bằng ffprobe (file hỏng hoặc không phải video?). ' + $_.Exception.Message) }
     $plan = Get-TikTokCleanPlan $source
     if ($plan -eq 'none') { throw 'File này không có hình ảnh nên không đăng được lên TikTok.' }
-    $codec = [string](@($source.streams | Where-Object codec_type -eq 'video')[0].codec_name)
+    $videoIndex = Get-TikTokVideoStreamIndex $source
+    $codec = [string](@($source.streams | Where-Object { $_.codec_type -eq 'video' -and [string]$_.disposition.attached_pic -ne '1' })[0].codec_name)
     $sourceDuration = 0.0; [void][double]::TryParse([string]$source.format.duration, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$sourceDuration)
-    $sourceCounts = Get-TikTokVideoCounts $ffprobe $SourcePath
+    $sourceCounts = Get-TikTokVideoCounts $ffprobe $SourcePath ([string]$videoIndex)
     $clean = Join-Path $PostsDir ($RequestId + '.clean.mp4')
     $temp = Join-Path $PostsDir ($RequestId + '.clean-tmp.mp4')
     $last = ''
@@ -4076,7 +4094,7 @@ function New-TikTokCleanCopy {
             # Same as Get-VideoEncoderArgs 'libx264' in core\kid-fby.ps1; passthrough keeps every source frame (no dup/drop).
             default { @('-c:v','libx264','-crf','19','-preset','medium','-profile:v','high','-pix_fmt','yuv420p','-fps_mode','passthrough','-c:a','aac','-b:a','192k') + (Get-TikTokCleanArgs 'h264') }
         }
-        $arguments = @('-hide_banner','-nostdin','-v','error','-y','-i',$SourcePath,'-map','0:v:0','-map','0:a:0?') + $codecArgs + @('-movflags','+faststart',$temp)
+        $arguments = @('-hide_banner','-nostdin','-v','error','-y','-i',$SourcePath,'-map',('0:' + $videoIndex),'-map','0:a:0?') + $codecArgs + @('-movflags','+faststart',$temp)
         $run = Invoke-TikTokTool $ffmpeg $arguments 3600000
         if ($run.Code -ne 0 -or -not [IO.File]::Exists($temp)) { $last = 'ffmpeg: ' + $run.Err.Trim(); break }
         [IO.File]::Move($temp, $clean)

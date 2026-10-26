@@ -147,6 +147,57 @@ Test-Case '4: an unreadable kho history is reported (completeness info + visible
     [void](Get-GalleryMetaByRoot -Unreadable $u)
     Assert-Equal $u.Count 1; Assert-Equal $u[0] $w.B.path
 }
+# ---------------------------------------------------------------- 5
+$coverFirst = '{"streams":[{"index":0,"codec_type":"video","codec_name":"mjpeg","disposition":{"attached_pic":1}},{"index":1,"codec_type":"video","codec_name":"h264","disposition":{"attached_pic":0}},{"index":2,"codec_type":"audio","codec_name":"aac"}],"format":{"duration":"1.0"}}'
+Test-Case '5: stream choice skips the attached cover (index 1 here), is -1 without a real video, and falls back to array position without an index field' {
+    Assert-Equal (Get-TikTokVideoStreamIndex (ConvertFrom-Json $coverFirst)) 1
+    Assert-Equal (Get-TikTokVideoStreamIndex (ConvertFrom-Json '{"streams":[{"codec_type":"audio","codec_name":"aac"}]}')) -1
+    Assert-Equal (Get-TikTokVideoStreamIndex (ConvertFrom-Json '{"streams":[{"codec_type":"audio"},{"codec_type":"video","codec_name":"h264"}]}')) 1 'position fallback'
+}
+Test-Case '5: New-TikTokCleanCopy maps the planned stream (0:1) and counts frames/keyframes of that stream - never 0:v:0 / v:0 of the cover' {
+    $dir = New-TestDir; $src = Join-Path $dir 'cover-first.mp4'; [IO.File]::WriteAllBytes($src, [byte[]](1..64))
+    $posts = Join-Path $dir 'posts'; [void][IO.Directory]::CreateDirectory($posts)
+    $script:toolCalls = New-Object System.Collections.Generic.List[object]
+    function Find-TikTokTool { param([string]$Name, [string]$AppRoot) return "fake-$Name.exe" }
+    function Invoke-TikTokTool {
+        param([string]$Exe, [string[]]$Arguments, [int]$TimeoutMs = 600000)
+        $script:toolCalls.Add(@{ Exe = $Exe; Args = @($Arguments) })
+        if ($Exe -like '*ffprobe*' -and $Arguments -contains '-show_streams') { return @{ Code = 0; Out = $coverFirst; Err = '' } }
+        if ($Exe -like '*ffprobe*' -and $Arguments -contains '-count_frames') { return @{ Code = 0; Out = '10'; Err = '' } }
+        if ($Exe -like '*ffprobe*') { return @{ Code = 0; Out = "K__`nK__`n___`n"; Err = '' } }
+        return @{ Code = 1; Out = ''; Err = 'stop after the first ffmpeg call' }   # ffmpeg: end the attempt here
+    }
+    Assert-Throws { New-TikTokCleanCopy -SourcePath $src -PostsDir $posts -RequestId ('b' * 32) -Root $dir } '*Làm sạch metadata không đạt*'
+    $ff = @($script:toolCalls | Where-Object { $_.Exe -like '*ffmpeg*' })
+    Assert-Equal $ff.Count 1 'one ffmpeg call'
+    $a = @($ff[0].Args); $i = [Array]::IndexOf($a, '-map')
+    Assert-Equal $a[$i + 1] '0:1' 'video map = the real video stream'
+    Assert-True ($a -notcontains '0:v:0') 'no hard-coded 0:v:0'
+    $sel = @($script:toolCalls | Where-Object { $_.Exe -like '*ffprobe*' -and $_.Args -contains '-select_streams' } | ForEach-Object { $_.Args[[Array]::IndexOf($_.Args, '-select_streams') + 1] })
+    Assert-True ($sel.Count -ge 2) 'packet + frame counts were requested'
+    foreach ($s in $sel) { Assert-Equal $s '1' 'source counts use the planned stream' }
+    Remove-Item -LiteralPath $dir -Recurse -Force
+}
+$ffRoot = 'D:\reup video fb meta'
+if ([IO.File]::Exists((Join-Path $ffRoot 'tools\ffmpeg\ffmpeg.exe')) -and [IO.File]::Exists((Join-Path $ffRoot 'tools\ffmpeg\ffprobe.exe'))) {
+    # (ffmpeg's mp4 muxer always writes the cover picture LAST, so a cover-FIRST file cannot be produced here; that order is covered by the stub test above.)
+Test-Case '5: END TO END with real ffmpeg: a file with an attached cover picture is cleaned from its real video (mapping by planned stream index works with the real tools)' {
+        $dir = New-TestDir; $ff = Join-Path $ffRoot 'tools\ffmpeg\ffmpeg.exe'; $fp = Join-Path $ffRoot 'tools\ffmpeg\ffprobe.exe'
+        $cover = Join-Path $dir 'cover.jpg'; $main = Join-Path $dir 'main.mp4'; $src = Join-Path $dir 'cover-first.mp4'
+        $r = Invoke-TikTokTool $ff @('-hide_banner','-v','error','-y','-f','lavfi','-i','color=c=red:s=64x64','-frames:v','1',$cover) 60000; Assert-Equal $r.Code 0 $r.Err
+        $r = Invoke-TikTokTool $ff @('-hide_banner','-v','error','-y','-f','lavfi','-i','testsrc=size=160x120:rate=10:duration=2','-f','lavfi','-i','sine=duration=2','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-t','2',$main) 60000; Assert-Equal $r.Code 0 $r.Err
+        $r = Invoke-TikTokTool $ff @('-hide_banner','-v','error','-y','-i',$cover,'-i',$main,'-map','0:v','-map','1:v','-map','1:a','-c','copy','-disposition:v:0','attached_pic',$src) 60000; Assert-Equal $r.Code 0 $r.Err
+        $info = Get-TikTokMediaInfo $fp $src
+        Assert-Equal @($info.streams | Where-Object { [string]$_.disposition.attached_pic -eq '1' }).Count 1 'fixture: has a cover stream'
+        $posts = Join-Path $dir 'posts'; [void][IO.Directory]::CreateDirectory($posts)
+        $clean = New-TikTokCleanCopy -SourcePath $src -PostsDir $posts -RequestId ('c' * 32) -Root $ffRoot
+        $out = Get-TikTokMediaInfo $fp $clean
+        $videos = @($out.streams | Where-Object { $_.codec_type -eq 'video' })
+        Assert-Equal $videos.Count 1 'one video stream in the clean copy'
+        Assert-Equal $videos[0].codec_name 'h264'; Assert-Equal $videos[0].width 160 'the real 160x120 video, not the 64x64 cover'
+        Remove-Item -LiteralPath $dir -Recurse -Force
+    }
+} else { Skip-Case '5: END TO END with real ffmpeg' 'tools\ffmpeg not available' }
 # ---- END ----
 $server.Stop()
 Complete-Tests
