@@ -2447,6 +2447,35 @@ function Remove-ReelToRecycleBin {
     return $result
 }
 
+function Get-KhoPendingDeletesPath { return (Join-Path $script:root 'data\kho-pending-deletes.json') }
+
+function Get-KhoPendingDeleteIds {
+    # Ids whose deletion in this kho folder did not finish (their -3 may already be in the Recycle Bin). Throws when the file is unreadable.
+    param([Alias('Root')][string]$KhoRoot)
+    $path = Get-KhoPendingDeletesPath
+    if (-not [System.IO.File]::Exists($path)) { return @() }
+    $data = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop
+    $key = (Get-CanonicalPath $KhoRoot).ToUpperInvariant()
+    foreach ($p in $data.PSObject.Properties) { if ($p.Name.ToUpperInvariant() -ceq $key) { return @(@($p.Value) | ForEach-Object { [string]$_ } | Where-Object { $_ }) } }
+    return @()
+}
+
+function Set-KhoPendingDeleteIds {
+    # Replaces the pending ids of one kho folder (empty = none); other folders' entries are kept. Atomic (Write-KidSettings).
+    param([Alias('Root')][string]$KhoRoot, [string[]]$Ids)
+    $path = Get-KhoPendingDeletesPath
+    $key = (Get-CanonicalPath $KhoRoot).ToUpperInvariant()
+    $map = [ordered]@{}
+    if ([System.IO.File]::Exists($path)) {
+        $data = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop
+        foreach ($p in $data.PSObject.Properties) { if ($p.Name.ToUpperInvariant() -cne $key) { $map[$p.Name] = @(@($p.Value) | ForEach-Object { [string]$_ }) } }
+    }
+    $ids = @(@($Ids) | Where-Object { $_ } | Select-Object -Unique)
+    if ($ids.Count) { $map[$key] = $ids }
+    elseif (-not $map.Count -and -not [System.IO.File]::Exists($path)) { return }
+    Write-KidSettings -Path $path -Data $map
+}
+
 function Test-KhoFolderOnlyAppFiles {
     # True when the folder holds nothing but files the app made itself (status file, thumbnails, identity cache, empty receipt folder).
     param([Alias('Root')][string]$KhoRoot)
@@ -2495,8 +2524,10 @@ function Remove-KhoWithVideos {
         $khoRoot = [string]$lib.path
         $videos = @(Get-KhoVideoFiles $khoRoot)
         $groups = Get-KhoReceiptGroups $khoRoot
-        foreach ($v in $videos) {
-            $vid = Get-KhoVideoKey $v.Name
+        # Ids of an earlier, incomplete deletion are retried even when their -3 is already gone (companions/metadata may remain).
+        try { $leftover = @(Get-KhoPendingDeleteIds $khoRoot) } catch { Write-FileLog "WARN kho-pending-deletes.json: $($_.Exception.Message)"; $result.Why = 'Không đọc được data\kho-pending-deletes.json (danh sách video xóa dở). Kiểm tra file rồi thử lại.'; return $result }
+        $ids = @(@(@($videos | ForEach-Object { Get-KhoVideoKey $_.Name }) + $leftover) | Where-Object { $_ } | Select-Object -Unique)
+        foreach ($vid in $ids) {
             $why = Get-KhoVideoBlock $khoRoot $vid $groups
             if ($why) { $result.Why = "$(if ($vid -match '^\d+$') { "Video #$vid" } else { Get-ReelLabel $vid }): $why"; return $result }
         }
@@ -2504,12 +2535,13 @@ function Remove-KhoWithVideos {
         foreach ($req in $groups.Keys) { if ($groups[$req].Live -and -not $groups[$req].VideoId) { $result.Why = 'Thư mục có lệnh đăng không rõ thuộc video nào — xử lý trước.'; return $result } }
         Release-KhoPlayer @($videos | ForEach-Object { $_.FullName })
         $failed = New-Object System.Collections.Generic.List[object]; $deleted = 0
-        foreach ($v in $videos) {
-            $vid = Get-KhoVideoKey $v.Name
+        try { Set-KhoPendingDeleteIds $khoRoot $ids } catch { Write-FileLog "WARN Không ghi được kho-pending-deletes.json: $($_.Exception.Message)"; $result.Why = 'Không ghi được data\kho-pending-deletes.json nên chưa xóa gì. Thử lại sau.'; return $result }
+        foreach ($vid in $ids) {
             $r = Remove-ReelToRecycleBin -Root $khoRoot -Id $vid -Groups $groups -AllowPermanent:$AllowPermanent
             if ($r.Success) { $deleted++ } else { $failed.Add(@{ Id = $vid; Errors = @($r.Errors) }) }
         }
         $result.Deleted = $deleted; $result.Failed = $failed.ToArray()
+        try { Set-KhoPendingDeleteIds $khoRoot @($failed | ForEach-Object { [string]$_.Id }) } catch { Write-FileLog "WARN Không cập nhật kho-pending-deletes.json: $($_.Exception.Message)"; if (-not $failed.Count) { $result.Why = 'Không cập nhật được data\kho-pending-deletes.json nên giữ kho lại. Thử lại sau.'; return $result } }
         if ($failed.Count) { $result.Why = "Chưa xóa hết: $($failed.Count) video còn lỗi. Kho được giữ lại; thử lại sau."; return $result }
         Invoke-KhoRegistryChange {
             param($r)

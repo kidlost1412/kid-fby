@@ -72,6 +72,38 @@ Test-Case '1: recovery with a NULL snapshot uses the current source entry (a man
     Assert-Equal $t.Posted $true 'manual mark carried over'
     Assert-True ($null -eq (Get-ReupMetadata -OutDir $w.A.path).PSObject.Properties[$id]) 'source entry removed'
 }
+# ---------------------------------------------------------------- 2
+Test-Case '2: delete kho - final video recycled but a locked companion fails; after unlock the retry (final -3 already gone) deletes the companion and only then unregisters' {
+    $w = New-TestWorld @('B')
+    $id = NextId; [void](New-TestVideo $w.B.path $id -NoReceipt)
+    $audio = Join-Path $w.B.path ".cache\$id-2-am-thanh-tho.m4a"
+    $script:locked = $true
+    $script:khoRecycleOverride = { param($Path, $IsFolder) if ($script:locked -and $Path -like '*-2-am-thanh-tho.m4a') { throw 'file đang mở' }; if ($IsFolder) { [IO.Directory]::Delete($Path, $true) } else { [IO.File]::Delete($Path) } }
+    try {
+        $r1 = Remove-KhoWithVideos -Id $w.B.id
+        Assert-Equal $r1.Success $false 'first attempt fails'
+        Assert-True (-not [IO.File]::Exists((Join-Path $w.B.path "$id-3-hoan-chinh.mp4"))) 'final video already recycled'
+        Assert-True ([IO.File]::Exists($audio)) 'companion still there'
+        Assert-True ($null -ne (Get-KhoById $w.B.id)) 'kho kept'
+        $script:locked = $false
+        $r2 = Remove-KhoWithVideos -Id $w.B.id
+        Assert-Equal $r2.Success $true "retry: $($r2.Why)"
+        Assert-True (-not [IO.File]::Exists($audio)) 'companion deleted by the retry'
+        Assert-True ($null -eq (Get-KhoById $w.B.id)) 'kho unregistered only now'
+        Assert-Equal @(Get-KhoPendingDeleteIds $w.B.path).Count 0 'pending list cleared'
+    } finally { $script:khoRecycleOverride = $null }
+}
+Test-Case '2: an unreadable pending-deletes file refuses the delete (nothing recycled, kho kept)' {
+    $w = New-TestWorld @('B')
+    $id = NextId; [void](New-TestVideo $w.B.path $id -NoReceipt)
+    [IO.File]::WriteAllText((Get-KhoPendingDeletesPath), '{ not json', [Text.UTF8Encoding]::new($false))
+    $script:khoRecycleOverride = { param($Path, $IsFolder) throw 'must not be called' }
+    try {
+        $r = Remove-KhoWithVideos -Id $w.B.id
+        Assert-Equal $r.Success $false; Assert-True ($r.Why -like '*kho-pending-deletes*') $r.Why
+        Assert-True ([IO.File]::Exists((Join-Path $w.B.path "$id-3-hoan-chinh.mp4"))) 'video untouched'
+    } finally { $script:khoRecycleOverride = $null }
+}
 # ---- END ----
 $server.Stop()
 Complete-Tests
