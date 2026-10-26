@@ -1117,6 +1117,20 @@ function ConvertTo-KhoUsername {
     return $u
 }
 
+function Get-KhoSlotsWith {
+    # D10: thêm một giờ người dùng gõ ("7:30" -> "07:30") vào danh sách khung giờ; sai định dạng thì ném lỗi tiếng Việt. Trùng thì giữ nguyên. Trả về danh sách đã sắp xếp.
+    param([string[]]$Slots = @(), [string]$Text)
+    $m = [regex]::Match(([string]$Text).Trim(), '^(\d{1,2})[:h](\d{2})$')
+    if (-not $m.Success -or [int]$m.Groups[1].Value -gt 23 -or [int]$m.Groups[2].Value -gt 59) { throw "Giờ không hợp lệ: '$Text'. Dùng dạng HH:mm, ví dụ 19:00." }
+    $slot = ('{0:00}:{1:00}' -f [int]$m.Groups[1].Value, [int]$m.Groups[2].Value)
+    return @(ConvertTo-KhoSlots (@($Slots) + $slot))
+}
+
+function Get-KhoSlotsWithout {
+    param([string[]]$Slots = @(), [string]$Slot)
+    return @(ConvertTo-KhoSlots @(@($Slots) | Where-Object { [string]$_ -cne $Slot }))
+}
+
 function ConvertTo-KhoSlots {
     # Valid 'HH:mm' times, sorted, no duplicates.
     param($Raw)
@@ -4245,6 +4259,38 @@ function Get-TikTokSpreadSettings {
     return @{ Days = $values[0]; Cap = $values[1]; Gap = $values[2] }
 }
 
+function ConvertFrom-SpreadTimeText {
+    # D10: ô giờ của một dòng ("dd/MM HH:mm", giờ máy). Năm = năm hiện tại, sang năm sau nếu ngày đã qua. Hợp lệ khi TikTok cho hẹn được (20 phút đến 10 ngày).
+    # Trả về @{ Ok; When; Error }.
+    param([string]$Text, [DateTime]$Now = [DateTime]::Now)
+    $m = [regex]::Match(([string]$Text).Trim(), '^(\d{1,2})/(\d{1,2})\s+(\d{1,2}):(\d{2})$')
+    $format = 'Nhập giờ dạng dd/MM HH:mm, ví dụ 28/10 19:00.'
+    if (-not $m.Success) { return @{ Ok = $false; When = $null; Error = $format } }
+    $d = [int]$m.Groups[1].Value; $mo = [int]$m.Groups[2].Value; $h = [int]$m.Groups[3].Value; $mi = [int]$m.Groups[4].Value
+    $when = $null
+    foreach ($year in @($Now.Year, ($Now.Year + 1))) {
+        try { $cand = [DateTime]::new($year, $mo, $d, $h, $mi, 0, [DateTimeKind]::Local) } catch { return @{ Ok = $false; When = $null; Error = 'Ngày giờ không có thật. ' + $format } }
+        if ($cand -ge $Now.Date) { $when = $cand; break }
+    }
+    if ($null -eq $when) { return @{ Ok = $false; When = $null; Error = $format } }
+    $err = Get-TikTokScheduleError $when $Now
+    if ($err) { return @{ Ok = $false; When = $null; Error = $err } }
+    return @{ Ok = $true; When = $when; Error = '' }
+}
+
+function Get-SpreadRowWarning {
+    # D10: cảnh báo (không chặn) cho MỘT dòng sau khi sửa giờ: quá gần bài khác (các dòng khác + giờ bận của tài khoản) hoặc ngày đó vượt số bài tối đa. '' nếu ổn.
+    param([DateTime]$When, [DateTime[]]$Others = @(), [DateTime[]]$Busy = @(), [int]$MinSpacingMinutes = 120, [int]$DailyCap = 3)
+    $all = @(@($Others) + @($Busy))
+    $parts = New-Object 'System.Collections.Generic.List[string]'
+    $nearest = $null
+    foreach ($b in $all) { $gap = [Math]::Abs(($When - $b).TotalMinutes); if ($gap -lt $MinSpacingMinutes -and ($null -eq $nearest -or $gap -lt $nearest)) { $nearest = $gap } }
+    if ($null -ne $nearest) { $parts.Add('Cách một bài khác chỉ ' + [int][Math]::Round($nearest) + ' phút (nên từ ' + $MinSpacingMinutes + ' phút).') }
+    $sameDay = @($all | Where-Object { $_.Date -eq $When.Date }).Count + 1
+    if ($sameDay -gt $DailyCap) { $parts.Add('Ngày ' + $When.ToString('dd/MM') + ' sẽ có ' + $sameDay + ' bài (tối đa ' + $DailyCap + ').') }
+    return ($parts -join ' ')
+}
+
 function Get-TikTokSpreadSendResult {
     # Kết quả THẬT của một tiến trình con sau khi thoát: đọc biên nhận .cache\tiktok-posts\<RequestId>.json.
     # Đã gửi = bộ đăng nền trả trạng thái nhận việc (pending/queued/running/succeeded...). Lỗi = transfer_failed, preparation_failed, failed, cancelled, missing, unknown,
@@ -4366,7 +4412,8 @@ function Step-TikTokSpreadRun {
         }
         $row.When = $next[0]; $row.Shifted = $true; $Run.Shifted++
     }
-    $job = New-TikTokSpreadJob -Path $row.Path -Account $Run.Account -Caption $Run.Caption -When $row.When
+    $rowCaption = $(if ($row.PSObject.Properties['Caption'] -and ([string]$row.Caption).Trim()) { [string]$row.Caption } else { [string]$Run.Caption })   # D10: caption riêng của dòng
+    $job = New-TikTokSpreadJob -Path $row.Path -Account $Run.Account -Caption $rowCaption -When $row.When
     try { $proc = & $Launcher $job.Record $job.Payload }
     catch {
         $row.State = 'failed'; $row.Message = [string]$_.Exception.Message; $Run.Failed++
@@ -4897,7 +4944,7 @@ function Show-TikTokSpreadDialog {
             $ok = @($hist | Where-Object { [string]$_.status -eq 'succeeded' -and $_.publish_uncertain -ne $true -and [string]$_.username } | Select-Object -First 1)
             if ($ok.Count) { $other = '@' + [string]$ok[0].username }
         }
-        $rows.Add([pscustomobject]@{ Id = [string]$it.Id; Path = [string]$it.Path; Root = $itemRoot; Kho = [string]$it.Kho; Warn = $warn; Include = ($warn -eq ''); When = $null; Other = $other; History = $hist })
+        $rows.Add([pscustomobject]@{ Id = [string]$it.Id; Path = [string]$it.Path; Root = $itemRoot; Kho = [string]$it.Kho; Warn = $warn; Include = ($warn -eq ''); When = $null; Other = $other; History = $hist; Caption = ''; CaptionEdited = $false; TimeEdited = $false; TimeBad = $false; TimeText = ''; TimeBox = $null; NoteBox = $null; CaptionBox = $null })
     }
     $state.Rows = $rows.ToArray()
 
@@ -4907,7 +4954,38 @@ function Show-TikTokSpreadDialog {
         $c.Confirm.Content = 'Hẹn ' + $n + ' video'
         # Ô ngày / bài mỗi ngày / khoảng cách không hợp lệ thì KHÔNG cho hẹn, ở mọi đường (sửa caption, tick dòng, đổi tài khoản).
         $inputsOk = $null -ne (& $readSettings)
-        $c.Confirm.IsEnabled = ($inputsOk -and $state.Ready -and $state.Native -and $state.Account -and $n -gt 0 -and -not $state.Done -and -not (Test-AutotokUpgradeActive))
+        $c.Confirm.IsEnabled = ($inputsOk -and $state.Ready -and $state.Native -and $state.Account -and $n -gt 0 -and -not @($state.Rows | Where-Object { $_.Include -and $_.TimeBad }).Count -and -not $state.Done -and -not (Test-AutotokUpgradeActive))
+    }.GetNewClosure()
+    # D10: giờ và caption sửa được ở từng dòng. Sửa giờ chỉ kiểm tra lại CHÍNH dòng đó (giờ hợp lệ trong khoảng TikTok cho phép; cách bài khác / số bài mỗi ngày
+    # chỉ là cảnh báo), không xếp lại các dòng khác. Giờ sai: viền đỏ, dòng không có giờ và nút Hẹn tắt.
+    $state.RowWarning = {
+        param($r)
+        $set = & $readSettings
+        $gap = $(if ($set) { $set.Gap * 60 } else { 120 }); $cap = $(if ($set) { $set.Cap } else { 3 })
+        $others = @($state.Rows | Where-Object { $_ -ne $r -and $_.Include -and $_.When } | ForEach-Object { [DateTime]$_.When })
+        return (Get-SpreadRowWarning -When ([DateTime]$r.When) -Others $others -Busy @($state.Busy) -MinSpacingMinutes $gap -DailyCap $cap)
+    }.GetNewClosure()
+    $state.TimeEdited = {
+        param($s, $e)
+        if ($state.Rendering) { return }
+        $r = $s.Tag
+        $p = ConvertFrom-SpreadTimeText -Text $s.Text
+        $r.TimeEdited = $true; $r.TimeText = [string]$s.Text
+        if ($p.Ok) {
+            $r.When = $p.When; $r.TimeBad = $false; $s.ClearValue([Windows.Controls.Control]::BorderBrushProperty)
+            $s.ToolTip = $null
+            $r.NoteBox.Text = [string](& $state.RowWarning $r)
+        } else {
+            $r.When = $null; $r.TimeBad = $true; $s.BorderBrush = $dlg.FindResource('Danger'); $s.ToolTip = $p.Error
+            $r.NoteBox.Text = $p.Error
+        }
+        & $updateConfirm
+    }.GetNewClosure()
+    $state.CaptionEdited = {
+        param($s, $e)
+        if ($state.Rendering -or $state.Programmatic) { return }
+        $s.Tag.Caption = [string]$s.Text; $s.Tag.CaptionEdited = $true
+        & $updateConfirm
     }.GetNewClosure()
     $render = {
         $state.Rendering = $true
@@ -4916,9 +4994,10 @@ function Show-TikTokSpreadDialog {
             foreach ($r in $state.Rows) {
                 $g = New-Object Windows.Controls.Grid
                 foreach ($w in @(44, 190, 150, -1)) { $col = New-Object Windows.Controls.ColumnDefinition; $col.Width = $(if ($w -gt 0) { [Windows.GridLength]::new($w) } else { [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star) }); [void]$g.ColumnDefinitions.Add($col) }
-                $g.Margin = [Windows.Thickness]::new(0, 2, 0, 2)
+                $g.Margin = [Windows.Thickness]::new(0, 2, 0, 8)
+                foreach ($hh in 1..2) { $rd = New-Object Windows.Controls.RowDefinition; $rd.Height = [Windows.GridLength]::Auto; [void]$g.RowDefinitions.Add($rd) }
                 $cb = New-Object Windows.Controls.CheckBox; $cb.IsChecked = [bool]$r.Include; $cb.IsEnabled = ($r.Warn -ne 'active'); $cb.MinHeight = 32; $cb.VerticalAlignment = 'Center'; $cb.Tag = $r
-                [Windows.Automation.AutomationProperties]::SetName($cb, 'Hẹn Reel #' + $r.Id)
+                [Windows.Automation.AutomationProperties]::SetName($cb, 'Hẹn ' + (Get-ReelLabel $r.Id))
                 $cb.Add_Click({
                     param($s, $e)
                     if ($state.Rendering) { return }
@@ -4926,10 +5005,14 @@ function Show-TikTokSpreadDialog {
                     & $state.Replan
                 }.GetNewClosure())
                 [Windows.Controls.Grid]::SetColumn($cb, 0); [void]$g.Children.Add($cb)
-                $t1 = New-Object Windows.Controls.TextBlock; $t1.Text = 'Reel #' + $r.Id; $t1.VerticalAlignment = 'Center'; $t1.FontWeight = 'SemiBold'
+                $t1 = New-Object Windows.Controls.TextBlock; $t1.Text = (Get-ReelLabel $r.Id); $t1.VerticalAlignment = 'Center'; $t1.FontWeight = 'SemiBold'
                 [Windows.Controls.Grid]::SetColumn($t1, 1); [void]$g.Children.Add($t1)
-                $t2 = New-Object Windows.Controls.TextBlock; $t2.VerticalAlignment = 'Center'; $t2.FontWeight = 'ExtraBold'
-                $t2.Text = $(if ($r.When) { ([DateTime]$r.When).ToString('dd/MM HH:mm') } else { '—' })
+                $t2 = New-Object Windows.Controls.TextBox; $t2.Width = 138; $t2.MinHeight = 36; $t2.VerticalContentAlignment = 'Center'; $t2.FontWeight = 'ExtraBold'; $t2.Margin = [Windows.Thickness]::new(0, 0, 8, 0)
+                $t2.Text = $(if ($r.When) { ([DateTime]$r.When).ToString('dd/MM HH:mm') } elseif ($r.TimeBad) { [string]$r.TimeText } else { '' }); $t2.Tag = $r; $t2.IsEnabled = ($r.Warn -ne 'active'); $t2.MaxLength = 12
+                [Windows.Automation.AutomationProperties]::SetName($t2, 'Giờ hẹn ' + (Get-ReelLabel $r.Id) + ' (dd/MM HH:mm)')
+                if ($r.TimeBad) { $t2.BorderBrush = $dlg.FindResource('Danger') }
+                $t2.Add_TextChanged($state.TimeEdited)
+                $r.TimeBox = $t2
                 [Windows.Controls.Grid]::SetColumn($t2, 2); [void]$g.Children.Add($t2)
                 $t3 = New-Object Windows.Controls.TextBlock; $t3.VerticalAlignment = 'Center'; $t3.TextWrapping = 'Wrap'; $t3.FontSize = 13; $t3.Foreground = $dlg.FindResource('TextMuted')
                 $note = ''
@@ -4937,7 +5020,15 @@ function Show-TikTokSpreadDialog {
                 elseif ($r.Warn -eq 'posted') { $note = 'Đã đăng' + $(if ($r.Other) { ' ở ' + $r.Other } else { '' }) + $(if ($r.Include) { ' — vẫn hẹn lại.' } else { ' — tick để vẫn hẹn.' }) }
                 elseif ($r.Include -and -not $r.When) { $note = 'Không đủ chỗ trống trong số ngày đã chọn.' }
                 $t3.Text = $note
+                $r.NoteBox = $t3
+                if ($r.Include -and $r.When -and -not $r.TimeBad -and $r.Warn -ne 'active') { $w0 = & $state.RowWarning $r; if ($w0) { $t3.Text = $w0 } }
                 [Windows.Controls.Grid]::SetColumn($t3, 3); [void]$g.Children.Add($t3)
+                $cap = New-Object Windows.Controls.TextBox; $cap.AcceptsReturn = $true; $cap.TextWrapping = 'Wrap'; $cap.MaxLength = 2200; $cap.MinHeight = 44; $cap.MaxHeight = 92; $cap.VerticalScrollBarVisibility = 'Auto'
+                $cap.Margin = [Windows.Thickness]::new(0, 4, 0, 0); $cap.Text = [string]$r.Caption; $cap.Tag = $r; $cap.IsEnabled = ($r.Warn -ne 'active')
+                [Windows.Automation.AutomationProperties]::SetName($cap, 'Caption ' + (Get-ReelLabel $r.Id))
+                $cap.Add_TextChanged($state.CaptionEdited)
+                $r.CaptionBox = $cap
+                [Windows.Controls.Grid]::SetRow($cap, 1); [Windows.Controls.Grid]::SetColumn($cap, 1); [Windows.Controls.Grid]::SetColumnSpan($cap, 3); [void]$g.Children.Add($cap)
                 [void]$c.Rows.Children.Add($g)
             }
         } finally { $state.Rendering = $false }
@@ -4961,14 +5052,25 @@ function Show-TikTokSpreadDialog {
             $slotLib = Get-KhoForAccount $state.Account
             if ($slotLib -and @($slotLib.slots).Count) { $state.Chips = @($slotLib.slots) }
             $state.Busy = @(Get-TikTokAccountBusyTimes -Account $state.Account -MetaByRoot $state.MetaByRoot)
-            $state.Unplaced = Set-TikTokSpreadTimes -Rows $state.Rows -Favorites $state.Chips -Busy $state.Busy -Days $days -DailyCap $cap -MinSpacingMinutes ($gap * 60)
+            # Dòng đã sửa giờ bằng tay giữ nguyên giờ; chỉ các dòng còn lại được xếp quanh chúng.
+            $kept = @($state.Rows | Where-Object { $_.TimeEdited -and $_.Include -and $_.Warn -ne 'active' })
+            $free = @($state.Rows | Where-Object { $kept -notcontains $_ })
+            $keptBusy = @($kept | Where-Object { $_.When } | ForEach-Object { [DateTime]$_.When })
+            $state.Unplaced = Set-TikTokSpreadTimes -Rows $free -Favorites $state.Chips -Busy (@($state.Busy) + $keptBusy) -Days $days -DailyCap $cap -MinSpacingMinutes ($gap * 60)
             $c.Hours.Text = 'Giờ yêu thích dùng để xếp: ' + ($state.Chips -join ', ') + $(if ($slotLib -and @($slotLib.slots).Count) { ' (khung giờ đã đặt cho kho @' + $state.Account + ').' } else { ' (theo giờ bạn hay dùng cho @' + $state.Account + ').' })
             $c.Status.Text = ''
         } catch { Write-FileLog ('WARN Rải lịch xếp giờ: ' + $_.Exception.Message); $c.Status.Text = 'Không xếp được giờ: ' + $_.Exception.Message }
         & $render
     }.GetNewClosure()
     foreach ($box in @($c.Days, $c.Cap, $c.Spacing)) { $box.Add_TextChanged({ if (-not $state.Rendering -and $state.Ready) { & $state.Replan } }.GetNewClosure()) }
-    $c.Caption.Add_TextChanged({ if (-not $state.Programmatic) { $state.Dirty = $true }; & $updateConfirm }.GetNewClosure())
+    $c.Caption.Add_TextChanged({
+        if (-not $state.Programmatic) { $state.Dirty = $true }
+        # Caption chung = mẫu của mọi dòng chưa được sửa riêng.
+        $text = [string]$c.Caption.Text
+        $was = $state.Programmatic; $state.Programmatic = $true
+        try { foreach ($r in $state.Rows) { if (-not $r.CaptionEdited) { $r.Caption = $text; if ($r.CaptionBox) { $r.CaptionBox.Text = $text } } } } finally { $state.Programmatic = $was }
+        & $updateConfirm
+    }.GetNewClosure())
 
     $setCaption = {
         if ($state.Dirty) { return }
@@ -5037,6 +5139,7 @@ function Show-TikTokSpreadDialog {
             if ($null -eq $set) { throw 'Số ngày từ 1–10, bài mỗi ngày từ 1–20, khoảng cách từ 1–12 giờ.' }
             $planned = @($state.Rows | Where-Object { $_.When })
             if (-not $planned.Count) { throw 'Không có video nào có giờ hẹn.' }
+            foreach ($p in $planned) { if (-not ([string]$p.Caption).Trim()) { $p.Caption = $cap } }
             # D9: hộp thoại đóng ngay; lượt gửi chạy nền (dải tiến trình ở dưới cùng, nút Dừng, toast khi có lỗi và khi xong).
             [void](Start-TikTokSpreadBackground -Rows $planned -Account $state.Account -Caption $cap -Favorites $state.Chips -Busy $state.Busy -Days $set.Days -DailyCap $set.Cap -MinSpacingMinutes ($set.Gap * 60))
             $state.Done = $true
@@ -7612,15 +7715,16 @@ function Show-KhoManagerDialog {
     <TextBox x:Name="CaptionBox" AcceptsReturn="True" TextWrapping="Wrap" MaxLength="2200" Height="92" VerticalScrollBarVisibility="Auto" Margin="0,6,0,10" AutomationProperties.Name="Mẫu caption"/>
     <TextBlock Text="Hashtag mặc định (cách nhau bằng dấu cách)" FontWeight="SemiBold"/>
     <TextBox x:Name="TagsBox" MinHeight="44" VerticalContentAlignment="Center" Margin="0,6,0,10" AutomationProperties.Name="Hashtag mặc định"/>
-    <TextBlock Text="Khung giờ đăng của kho (HH:mm, cách nhau bằng dấu cách; dùng cho Rải lịch)" FontWeight="SemiBold"/>
-    <TextBox x:Name="SlotsBox" MinHeight="44" VerticalContentAlignment="Center" Margin="0,6,0,10" AutomationProperties.Name="Khung giờ đăng"/>
+    <TextBlock Text="Khung giờ đăng của kho (bấm giờ để xóa; dùng cho Rải lịch và hộp Đăng)" FontWeight="SemiBold"/>
+    <WrapPanel x:Name="SlotChips" Margin="0,6,0,4"/>
+    <DockPanel Margin="0,0,0,10"><Button x:Name="BtnSlotAdd" Content="Thêm giờ" DockPanel.Dock="Right" Margin="8,0,0,0" AutomationProperties.Name="Thêm khung giờ"/><TextBox x:Name="SlotAddBox" MinHeight="44" MaxLength="5" VerticalContentAlignment="Center" ToolTip="Nhập giờ dạng HH:mm, ví dụ 19:00, rồi bấm Thêm giờ" AutomationProperties.Name="Giờ mới (HH:mm)"/></DockPanel>
     <StackPanel Orientation="Horizontal">
      <TextBlock Text="Báo sắp hết khi còn dưới" VerticalAlignment="Center"/>
      <TextBox x:Name="LowBox" Width="68" MinHeight="44" Padding="4,8" VerticalContentAlignment="Center" MaxLength="3" TextAlignment="Center" Margin="10,0,10,0" AutomationProperties.Name="Ngưỡng sắp hết"/>
      <TextBlock Text="video chờ đăng" VerticalAlignment="Center"/>
     </StackPanel>
     <WrapPanel Margin="0,12,0,0">
-     <Button x:Name="BtnSaveOpts" Content="Lưu mẫu, giờ đăng và ngưỡng" Style="{DynamicResource BtnMint}" Margin="0,0,8,8"/>
+     <Button x:Name="BtnSaveOpts" Content="Lưu mẫu và ngưỡng" Style="{DynamicResource BtnMint}" Margin="0,0,8,8"/>
      <Button x:Name="BtnSetTarget" Content="Dùng làm kho tải về" Margin="0,0,8,8" ToolTip="Video tải về từ trang Nguồn sẽ lưu vào kho này" AutomationProperties.Name="Đặt làm kho tải về"/>
      <Button x:Name="BtnAutoSchedule" Content="Tự hẹn lịch…" Visibility="Collapsed" Margin="0,0,8,8" ToolTip="Xếp các video Chờ đăng chưa từng đăng của kho này vào giờ yêu thích trong vài ngày tới (xem trước, bấm xác nhận mới gửi)" AutomationProperties.Name="Tự hẹn lịch cho kho tài khoản"/>
     </WrapPanel>
@@ -7663,11 +7767,34 @@ function Show-KhoManagerDialog {
     if ($win -and $win.IsVisible) { $dlg.Owner = $win }
     $dlg.MaxHeight = [Math]::Max(460, [Windows.SystemParameters]::WorkArea.Height - 40)
     $c = @{}
-    foreach ($name in @('WarnBox', 'Warn', 'KhoChips', 'DetailTitle', 'PathText', 'BtnOpenFolder', 'BtnDelete', 'BtnRename', 'NameBox', 'AccountBox', 'BtnSetAccount', 'CaptionBox', 'TagsBox', 'SlotsBox', 'LowBox',
+    foreach ($name in @('WarnBox', 'Warn', 'KhoChips', 'DetailTitle', 'PathText', 'BtnOpenFolder', 'BtnDelete', 'BtnRename', 'NameBox', 'AccountBox', 'BtnSetAccount', 'CaptionBox', 'TagsBox', 'SlotChips', 'SlotAddBox', 'BtnSlotAdd', 'LowBox',
                         'BtnSaveOpts', 'BtnSetTarget', 'BtnAutoSchedule', 'AddBox', 'AddPathBox', 'BtnBrowse', 'BtnAdd',
                         'AcctPanel', 'BtnAddAcct', 'BtnLoadAcct', 'CmbAcct', 'AcctStatus', 'BtnImport', 'BtnImportStop', 'ImportBar', 'ImportText', 'Close', 'Status')) { $c[$name] = $dlg.FindName($name) }
     $firstKho = @(Get-KhoList)[0]
     $state = @{ Selected = $(if ($Kho -and (Get-KhoById $Kho)) { $Kho } else { [string]$firstKho.id }); Rendering = $false; Job = $null; AcctTask = $null; Fill = $null; Render = $null; Writable = (Test-KhoRegistryWritable); TikTok = (Test-TikTokEnabled) }
+
+    # D10: khung giờ đăng của kho = các chip (bấm để xóa) + ô thêm HH:mm; lưu ngay vào kho.slots.
+    $state.RenderSlots = {
+        $lib = Get-KhoById $state.Selected
+        $c.SlotChips.Children.Clear()
+        if (-not $lib) { return }
+        if (-not @($lib.slots).Count) { $none = New-Object Windows.Controls.TextBlock; $none.Text = 'Chưa đặt khung giờ: Rải lịch dùng giờ bạn hay đăng hoặc 08:00, 12:00, 19:00, 21:00.'; $none.TextWrapping = 'Wrap'; $none.Foreground = $dlg.FindResource('TextMuted'); [void]$c.SlotChips.Children.Add($none) }
+        foreach ($s in @($lib.slots)) {
+            $b = New-Object Windows.Controls.Button; $b.Content = ([string]$s + '  ×'); $b.Tag = [string]$s; $b.Margin = [Windows.Thickness]::new(0, 0, 6, 6); $b.MinHeight = 36; $b.IsEnabled = $state.Writable
+            $b.ToolTip = 'Bấm để xóa khung giờ này'
+            [Windows.Automation.AutomationProperties]::SetName($b, 'Xóa khung giờ ' + [string]$s)
+            $b.Add_Click({
+                param($sender, $eventArgs)
+                try {
+                    $cur = Get-KhoById $state.Selected
+                    Set-KhoOptions -Id $state.Selected -Slots (Get-KhoSlotsWithout -Slots @($cur.slots) -Slot ([string]$sender.Tag))
+                    & $state.RenderSlots
+                    $c.Status.Text = 'Đã xóa khung giờ ' + [string]$sender.Tag + '.'
+                } catch { $c.Status.Text = (Get-FriendlyError $_.Exception.Message); Write-FileLog "WARN Quản lý kho (xóa giờ): $($_.Exception.Message)" }
+            }.GetNewClosure())
+            [void]$c.SlotChips.Children.Add($b)
+        }
+    }.GetNewClosure()
 
     # Fill the detail panel for the selected kho and enable/disable the controls.
     $state.Fill = {
@@ -7682,13 +7809,13 @@ function Show-KhoManagerDialog {
         $c.AccountBox.Text = $(if ($lib.account) { '@' + $lib.account } else { '' })
         $c.CaptionBox.Text = [string]$lib.caption
         $c.TagsBox.Text = (@($lib.hashtags) -join ' ')
-        $c.SlotsBox.Text = (@($lib.slots) -join ' ')
+        & $state.RenderSlots
         $c.LowBox.Text = [string]$lib.lowStock
         $w = $state.Writable
         $c.BtnRename.IsEnabled = $w
         $c.BtnDelete.IsEnabled = ($w -and -not $only -and -not $importing)
         $c.BtnDelete.ToolTip = $(if ($only) { 'Luôn phải có ít nhất một kho; không xóa được kho cuối cùng.' } else { 'Xóa kho và mọi video trong kho vào Thùng rác (khôi phục được từ Thùng rác)' })
-        foreach ($ctl in @($c.NameBox, $c.AccountBox, $c.BtnSetAccount, $c.CaptionBox, $c.TagsBox, $c.SlotsBox, $c.LowBox, $c.BtnSaveOpts, $c.AddBox, $c.AddPathBox, $c.BtnBrowse, $c.BtnAdd)) { $ctl.IsEnabled = $w }
+        foreach ($ctl in @($c.NameBox, $c.AccountBox, $c.BtnSetAccount, $c.CaptionBox, $c.TagsBox, $c.SlotAddBox, $c.BtnSlotAdd, $c.LowBox, $c.BtnSaveOpts, $c.AddBox, $c.AddPathBox, $c.BtnBrowse, $c.BtnAdd)) { $ctl.IsEnabled = $w }
         $c.BtnSetTarget.IsEnabled = ($w -and -not $isTarget)
         $c.BtnAddAcct.IsEnabled = ($w -and $c.CmbAcct.Items.Count -gt 0)
         $c.BtnImport.IsEnabled = (-not $importing)
@@ -7769,7 +7896,7 @@ function Show-KhoManagerDialog {
         } catch { & $fail $_ }
     }.GetNewClosure())
     # Enter: tên = đổi tên, tài khoản = lưu tài khoản, ô thêm = thêm kho, hashtag/giờ/ngưỡng = lưu. Esc: đóng hộp thoại.
-    $enterClicks = @{ NameBox = 'BtnRename'; AccountBox = 'BtnSetAccount'; AddBox = 'BtnAdd'; AddPathBox = 'BtnAdd'; TagsBox = 'BtnSaveOpts'; SlotsBox = 'BtnSaveOpts'; LowBox = 'BtnSaveOpts' }
+    $enterClicks = @{ NameBox = 'BtnRename'; AccountBox = 'BtnSetAccount'; AddBox = 'BtnAdd'; AddPathBox = 'BtnAdd'; TagsBox = 'BtnSaveOpts'; SlotAddBox = 'BtnSlotAdd'; LowBox = 'BtnSaveOpts' }
     foreach ($boxName in $enterClicks.Keys) {
         $target = $c[$enterClicks[$boxName]]
         $c[$boxName].Add_KeyDown({
@@ -7804,14 +7931,23 @@ function Show-KhoManagerDialog {
             }
         } catch { & $fail $_ }
     }.GetNewClosure())
+    $c.BtnSlotAdd.Add_Click({
+        try {
+            $cur = Get-KhoById $state.Selected
+            $new = Get-KhoSlotsWith -Slots @($cur.slots) -Text ([string]$c.SlotAddBox.Text)
+            Set-KhoOptions -Id $state.Selected -Slots $new
+            $c.SlotAddBox.Text = ''
+            & $state.RenderSlots
+            $c.Status.Text = 'Đã thêm khung giờ.'
+        } catch { & $fail $_ }
+    }.GetNewClosure())
     $c.BtnSaveOpts.Add_Click({
         try {
             $low = 0
             if (-not [int]::TryParse(([string]$c.LowBox.Text).Trim(), [ref]$low) -or $low -lt 0 -or $low -gt 999) { throw 'Ngưỡng sắp hết phải là số từ 0 đến 999.' }
-            $slots = @(([string]$c.SlotsBox.Text -split '[\s,;]+') | Where-Object { $_ })
-            Set-KhoOptions -Id $state.Selected -Caption ([string]$c.CaptionBox.Text) -Hashtags @(ConvertTo-KhoHashtagList $c.TagsBox.Text) -LowStock $low -Slots $slots
+            Set-KhoOptions -Id $state.Selected -Caption ([string]$c.CaptionBox.Text) -Hashtags @(ConvertTo-KhoHashtagList $c.TagsBox.Text) -LowStock $low
             & $state.Fill
-            $c.Status.Text = 'Đã lưu mẫu caption, hashtag, khung giờ đăng và ngưỡng.'
+            $c.Status.Text = 'Đã lưu mẫu caption, hashtag và ngưỡng.'
         } catch { & $fail $_ }
     }.GetNewClosure())
 
