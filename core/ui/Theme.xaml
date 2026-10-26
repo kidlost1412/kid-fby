@@ -1001,6 +1001,7 @@
 
   <!-- Muc the Kho (ListViewItem): vien chon hong day quanh the, khong nen -->
   <Style x:Key="GalleryItemStyle" TargetType="ListViewItem">
+    <Setter Property="AutomationProperties.Name" Value="{Binding AutomationText}"/>
     <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
     <Setter Property="Background" Value="Transparent"/>
     <Setter Property="HorizontalContentAlignment" Value="Center"/>

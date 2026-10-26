@@ -589,7 +589,7 @@ $script:uiNames = @(
     'ViewLibrary','TxtGalleryCount','TabLibVideos','TabLibRejected','TxtRejectedTabLabel','PanelLibFilters','TxtGallerySearch','TxtGallerySearchHint',
     'CmbDateFilter','CmbFilterSpecificDate','CmbKho','BtnKhoManage','PanelStatusTabs','TabStAll','TabStPending','TabStHeld','TabStPosted','BtnMoveSelected','TxtMoveSelected','PanelDownloadKho','CmbDownloadKho','BtnRefreshGallery','PanelLibVideos','GalleryList',
     'GalleryState','TxtGalleryStateGlyph','TxtGalleryStateTitle','TxtGalleryStateText','PanelLibRejected','TxtRejectedDashboard','RejectedList',
-    'ImgGalleryMascot','BadgeGalleryGlyph','BtnGalleryRetry',
+    'ImgGalleryMascot','BadgeGalleryGlyph','BtnGalleryRetry','PanelSelBar','TxtSelCount','BtnClearSelection','PanelKhoEmptyActions','BtnKhoEmptyImport','BtnKhoEmptyManage',
     'ViewSettings','SetTabTools','SetTabGeneral','SetTabLogs','SetTabUpdate','SetTabAbout','ViewTools','BtnCheck','BtnInstallAllTools',
     'ViewGeneral','ChkAllowOnsetSync','TxtCacheInfo','BtnCleanLegacy','BtnClearCache',
     'BadgeStatusScrcpy','TxtStatusScrcpy','BtnInstallScrcpy','BadgeStatusAdb','TxtStatusAdb','BtnInstallAdb',
@@ -5593,13 +5593,15 @@ function New-GalleryItem {
         $postedShort = 'Đã đăng' + $(if ($postedDate) { "`n$postedDate" } else { '' })
         $postedText += ' (đánh dấu thủ công)'
     }
+    $khoName = $(if ($script:khoNames -and $script:khoNames.ContainsKey($khoId)) { [string]$script:khoNames[$khoId] } else { 'Kho chung' })
+    $statusName = $(if ($heldUntil -and $heldUntil -gt [DateTime]::UtcNow) { 'Đã hẹn' } elseif ($isPosted) { 'Đã đăng' } else { 'Chờ đăng' })
     return [pscustomobject]@{
         Path = [string]$File.FullName; Id = $id; Title = "Reel #$id"; Date = $date; Stamp = [string]$File.Stamp
         MetaText = $metaText; DetailText = $detail; Posted = [bool]$isPosted; ManualPosted = [bool]$manual.Posted; PostedText = $postedText; PostedShort = $postedShort
         PostedMultiline = $postedShort.Contains("`n")
         Thumb = $thumb; ThumbPath = $thumbPath; File = $File
         PostUrl = $postUrl; PostId = $postId; LinkKey = $linkKey; LinkState = $linkState
-        Kho = $khoId; KhoManual = $khoManual; HeldUntil = $heldUntil
+        Kho = $khoId; KhoManual = $khoManual; HeldUntil = $heldUntil; KhoName = $khoName; AutomationText = "Reel #$id · $statusName · $khoName"
         # Chu ky hien thi: giong nhau -> giu nguyen doi tuong cu (khong tao lai the, giu cuon/chon).
         Signature = ([string]$File.Stamp + '|' + $metaText + '|' + $detail + '|' + $postedText + '|' + $postedShort + '|' + [bool]$manual.Posted + '|' + $thumbPath + '|' + $postUrl + '|' + $postId + '|' + $linkState + '|' + $khoId + '|' + $khoManual)
     }
@@ -5615,12 +5617,13 @@ function Set-GalleryAll {
 }
 
 function Set-GalleryState {
-    param([ValidateSet('hidden', 'loading', 'empty', 'nomatch', 'missing', 'error')][string]$State, [string]$Text = '')
+    param([ValidateSet('hidden', 'loading', 'empty', 'nomatch', 'khoempty', 'missing', 'error')][string]$State, [string]$Text = '')
     if (-not $ui.GalleryState) { return }
     if ($State -eq 'hidden') { $ui.GalleryState.Visibility = 'Collapsed'; return }
     $spec = switch ($State) {
         'loading' { @(0xE895, 'Đang quét kho…', 'Đang đọc thư mục xuất ở nền; cứ dùng giao diện bình thường nhé.') }
         'empty'   { @(0xE8F1, 'Kho trống', 'Chưa có video nào — dán link ở trang Nguồn nhé!') }
+        'khoempty' { @(0xE8F1, 'Kho này chưa có video.', 'Thêm video từ một thư mục, hoặc chọn kho này ở trang Nguồn rồi tải video về.') }
         'nomatch' { @(0xE71C, 'Không có video phù hợp', 'Thử đổi bộ lọc ngày, kho, trạng thái hoặc từ khóa tìm kiếm.') }
         'missing' { @(0xE8B7, 'Chưa có thư mục xuất', 'Chọn thư mục xuất ở trang Nguồn nhé.') }
         default   { @(0xEA39, 'Không đọc được kho', 'Dữ liệu được giữ nguyên; kiểm tra quyền truy cập rồi bấm Thử lại.') }
@@ -5633,6 +5636,7 @@ function Set-GalleryState {
         $ui.BadgeGalleryGlyph.Background = Get-Brush $(if ($isError) { 'DangerSubtle' } else { 'WarningSubtle' })
     }
     if ($ui.ImgGalleryMascot) { $ui.ImgGalleryMascot.Visibility = $(if ($isError -or $State -eq 'missing') { 'Collapsed' } else { 'Visible' }) }
+    if ($ui.PanelKhoEmptyActions) { $ui.PanelKhoEmptyActions.Visibility = $(if ($State -eq 'khoempty') { 'Visible' } else { 'Collapsed' }) }
     if ($ui.BtnGalleryRetry) { $ui.BtnGalleryRetry.Visibility = $(if ($isError) { 'Visible' } else { 'Collapsed' }) }
     $ui.TxtGalleryStateTitle.Text = $spec[1]
     $ui.TxtGalleryStateText.Text = $(if ($Text) { $Text } else { $spec[2] })
@@ -5755,8 +5759,11 @@ function Update-GalleryDateChoices {
 
 # ------------------------------------------------------------- kho: dem, bo loc, chuyen kho (UI) ----
 $script:khoKnown = @{ default = $true }   # ma kho dang co trong registry (ma la -> tinh vao Kho chung)
+$script:khoNames = @{ default = 'Kho chung' }   # ma kho -> ten hien tren the (chip kho)
 $script:khoCounts = @{}                   # ma kho -> [int[]] chờ đăng / đã hẹn / đã đăng
 $script:khoComboSig = ''
+# Chữ kho: một dòng, cắt bằng dấu … khi quá dài (ô đóng và danh sách thả xuống không tràn sang khung xem trước).
+$script:khoItemTemplate = [Windows.Markup.XamlReader]::Parse('<DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis" MaxWidth="300"/></DataTemplate>')
 $script:khoDownloadSig = ''
 $script:khoLowWarned = @{}                # kho tai khoan da bao sap het trong phien nay
 $script:galleryNowUtc = [DateTime]::UtcNow
@@ -5771,9 +5778,9 @@ function Get-GalleryBucket {
 
 function Update-KhoKnown {
     # Registry ids as a set; computed once per gallery build, not per item.
-    $known = @{}
-    foreach ($lib in @((Get-KhoRegistry).libraries)) { $known[[string]$lib.id] = $true }
-    $script:khoKnown = $known
+    $known = @{}; $names = @{}
+    foreach ($lib in @((Get-KhoRegistry).libraries)) { $known[[string]$lib.id] = $true; $names[[string]$lib.id] = [string]$lib.name }
+    $script:khoKnown = $known; $script:khoNames = $names
 }
 
 function Select-GalleryItems {
@@ -5814,8 +5821,14 @@ function Select-GalleryItems {
 }
 
 function Format-KhoCounts {
+    # "7 chờ đăng · 3 đã đăng": phần bằng 0 bị bỏ; kho trống -> "chưa có video".
     param([int[]]$Counts)
-    return ('{0} chờ · {1} hẹn · {2} đăng' -f $Counts[0], $Counts[1], $Counts[2])
+    $parts = @()
+    if ($Counts[0]) { $parts += ('{0} chờ đăng' -f $Counts[0]) }
+    if ($Counts[1]) { $parts += ('{0} đã hẹn' -f $Counts[1]) }
+    if ($Counts[2]) { $parts += ('{0} đã đăng' -f $Counts[2]) }
+    if (-not $parts.Count) { return 'chưa có video' }
+    return ($parts -join ' · ')
 }
 
 function Update-GalleryKhoSelector {
@@ -5826,17 +5839,17 @@ function Update-GalleryKhoSelector {
     $total = [int[]]@(0, 0, 0)
     foreach ($v in $script:khoCounts.Values) { for ($n = 0; $n -lt 3; $n++) { $total[$n] += $v[$n] } }
     $entries = New-Object System.Collections.Generic.List[object]
-    $entries.Add(@{ Id = 'all'; Text = 'Tất cả kho · ' + (Format-KhoCounts $total) })
+    $entries.Add(@{ Id = 'all'; Text = 'Tất cả kho — ' + (Format-KhoCounts $total) })
     foreach ($lib in $libs) {
         $c = $script:khoCounts[[string]$lib.id]; if (-not $c) { $c = [int[]]@(0, 0, 0) }
-        $entries.Add(@{ Id = [string]$lib.id; Text = [string]$lib.name + ' · ' + (Format-KhoCounts $c) })
+        $entries.Add(@{ Id = [string]$lib.id; Text = [string]$lib.name + ' — ' + (Format-KhoCounts $c) })
     }
     $sig = (@($entries | ForEach-Object { $_.Id + '=' + $_.Text }) -join "`n")
     $script:updatingCombo = $true
     try {
         if ($sig -ne $script:khoComboSig) {
             $ui.CmbKho.Items.Clear()
-            foreach ($e in $entries) { $ci = New-Object Windows.Controls.ComboBoxItem; $ci.Content = $e.Text; $ci.Tag = $e.Id; [void]$ui.CmbKho.Items.Add($ci) }
+            foreach ($e in $entries) { $ci = New-Object Windows.Controls.ComboBoxItem; $ci.Content = $e.Text; $ci.Tag = $e.Id; $ci.ToolTip = $e.Text; $ci.ContentTemplate = $script:khoItemTemplate; [void]$ui.CmbKho.Items.Add($ci) }
             $script:khoComboSig = $sig
         }
         $sel = $ui.CmbKho.SelectedItem
@@ -5879,13 +5892,29 @@ function Test-KhoLowStock {
 function Update-MoveSelectedButton {
     if (-not $ui.BtnMoveSelected -or -not $ui.GalleryList) { return }
     $n = $ui.GalleryList.SelectedItems.Count
-    $ui.BtnMoveSelected.Visibility = $(if ($n -ge 2) { 'Visible' } else { 'Collapsed' })
-    if ($n -ge 2) { $ui.TxtMoveSelected.Text = "Chuyển $n video sang kho…" }
+    # Thanh chọn nhiều là lớp phủ ở đáy lưới: hiện/ẩn không làm lưới nhảy.
+    $ui.PanelSelBar.Visibility = $(if ($n -ge 2) { 'Visible' } else { 'Collapsed' })
+    if ($n -ge 2) { $ui.TxtSelCount.Text = "Đã chọn $n video"; $ui.TxtMoveSelected.Text = "Chuyển $n video sang kho…" }
+}
+
+function Clear-GallerySelection {
+    if ($ui.GalleryList -and $ui.GalleryList.SelectedItems.Count) { $ui.GalleryList.UnselectAll() }
+}
+
+function Reset-GalleryScroll {
+    # Đổi kho/tab: lưới về đầu để không nhìn nhầm chỗ trống giữa danh sách.
+    $queue = New-Object System.Collections.Generic.Queue[object]
+    $queue.Enqueue($ui.GalleryList)
+    while ($queue.Count) {
+        $node = $queue.Dequeue()
+        if ($node -is [Windows.Controls.ScrollViewer]) { $node.ScrollToTop(); return }
+        for ($i = 0; $i -lt [Windows.Media.VisualTreeHelper]::GetChildrenCount($node); $i++) { $queue.Enqueue([Windows.Media.VisualTreeHelper]::GetChild($node, $i)) }
+    }
 }
 
 function Update-GalleryItemsFromMeta {
     # Re-reads reup-status.json only (no media scan) and rebuilds the cards of the given video ids (or every card when no id).
-    param([string[]]$Ids = @())
+    param([string[]]$Ids = @(), [switch]$Force)   # -Force: thay luôn thẻ dù chữ ký không đổi (đổi tên kho -> chip kho)
     try { $script:galleryMeta = Get-ReupMetadata }
     catch {
         Add-Log $_.Exception.Message 'Danger'
@@ -5898,7 +5927,7 @@ function Update-GalleryItemsFromMeta {
         $old = $script:galleryAll[$i]
         if ($idSet.Count -and -not $idSet.ContainsKey([string]$old.Id)) { continue }
         $new = New-GalleryItem -File $old.File -Metadata $script:galleryMeta -Probe $script:probeCache[[string]$old.Path]
-        if ($new.Signature -ne $old.Signature) { $script:galleryAll[$i] = $new }
+        if ($Force -or $new.Signature -ne $old.Signature) { $script:galleryAll[$i] = $new }
     }
     Apply-GalleryFilter
 }
@@ -5942,20 +5971,25 @@ function Move-GalleryItemsToKho {
     Test-KhoLowStock
 }
 
-function New-KhoMoveMenuItem {
-    # "Chuyển sang kho…" with one sub item per kho; a kho is disabled when every chosen video is already in it.
-    param([object[]]$Items)
-    $parent = New-Object Windows.Controls.MenuItem
-    $parent.Header = $(if (@($Items).Count -gt 1) { "Chuyển $(@($Items).Count) video sang kho…" } else { 'Chuyển sang kho…' })
-    $parent.Tag = [string][char]0xE8B7
-    [Windows.Automation.AutomationProperties]::SetName($parent, [string]$parent.Header)
+function Add-KhoMoveEntries {
+    # Danh sách kho phẳng (không menu con: giao diện menu không có popup con). Kho mà mọi video đã chọn đang ở đó thì tắt.
+    param($Menu, [object[]]$Items)
+    $count = @($Items).Count
+    $head = New-Object Windows.Controls.MenuItem
+    $head.Header = $(if ($count -gt 1) { "Chuyển $count video sang kho:" } else { 'Chuyển sang kho:' })
+    $head.Tag = [string][char]0xE8B7
+    $head.IsEnabled = $false
+    [Windows.Automation.AutomationProperties]::SetName($head, [string]$head.Header)
+    [void]$Menu.Items.Add($head)
     foreach ($lib in @((Get-KhoRegistry).libraries)) {
         $id = [string]$lib.id
         $here = 0
         foreach ($it in @($Items)) { $k = [string]$it.Kho; if (-not $script:khoKnown.ContainsKey($k)) { $k = 'default' }; if ($k -ceq $id) { $here++ } }
+        $all = ($here -ge $count)
         $sub = New-Object Windows.Controls.MenuItem
-        $sub.Header = ([string]$lib.name).Replace('_', '__')
-        $sub.IsEnabled = ($here -lt @($Items).Count)
+        $sub.Header = ([string]$lib.name).Replace('_', '__') + $(if ($all) { ' (đang ở đây)' } else { '' })
+        if ($all) { $sub.Tag = [string][char]0xE73E }
+        $sub.IsEnabled = (-not $all)
         $sub.CommandParameter = @{ Items = @($Items); KhoId = $id }
         [Windows.Automation.AutomationProperties]::SetName($sub, [string]$lib.name)
         $sub.Add_Click({
@@ -5963,16 +5997,15 @@ function New-KhoMoveMenuItem {
             $eventArgs.Handled = $true
             Move-GalleryItemsToKho -Items @($sender.CommandParameter.Items) -KhoId ([string]$sender.CommandParameter.KhoId)
         })
-        [void]$parent.Items.Add($sub)
+        [void]$Menu.Items.Add($sub)
     }
-    return $parent
 }
 
 function Show-KhoMoveMenu {
-    param($Target, [object[]]$Items)
+    param($Target, [object[]]$Items, $Placement = [Windows.Controls.Primitives.PlacementMode]::Bottom)
     $menu = New-Object Windows.Controls.ContextMenu
-    [void]$menu.Items.Add((New-KhoMoveMenuItem -Items $Items))
-    $Target.ContextMenu = $menu; $menu.PlacementTarget = $Target; $menu.Placement = [Windows.Controls.Primitives.PlacementMode]::Bottom; $menu.IsOpen = $true
+    Add-KhoMoveEntries -Menu $menu -Items $Items
+    $Target.ContextMenu = $menu; $menu.PlacementTarget = $Target; $menu.Placement = $Placement; $menu.IsOpen = $true
 }
 
 function Sync-GalleryRows {
@@ -6063,6 +6096,7 @@ function Apply-GalleryFilter {
             $wanted = Select-GalleryItems -Today $today
         }
     }
+    $ui.GalleryList.Tag = $(if ($script:filterKho -eq 'all') { 'all' } else { 'one' })   # chip kho trên thẻ chỉ hiện khi xem Tất cả kho
     Sync-GalleryRows -Wanted @($wanted)
     $viewCount = $script:galleryRows.Count
     $script:galleryCountBase = if ($all -eq 0) { '0 video' } elseif ($viewCount -eq $all) { "$all video" } else { "Hiển thị $viewCount / $all video" }
@@ -6070,7 +6104,11 @@ function Apply-GalleryFilter {
     Update-MoveSelectedButton
     if ($script:galleryState -eq 'loading' -and $all -eq 0) { Set-GalleryState loading }
     elseif ($all -eq 0) { Set-GalleryState empty }
-    elseif ($viewCount -eq 0) { Set-GalleryState nomatch }
+    elseif ($viewCount -eq 0) {
+        # Danh sách rỗng: bỏ khung xem trước video cũ (trừ khi đang ghi/xử lý).
+        if ($script:lastOut -and $script:galleryIndexByPath.ContainsKey([string]$script:lastOut) -and -not (Test-GalleryActionsBusy)) { Clear-Player }
+        if ($script:filterKho -ne 'all' -and (Get-KhoTotalCount $script:filterKho) -eq 0) { Set-GalleryState khoempty } else { Set-GalleryState nomatch }
+    }
     else { Set-GalleryState hidden }
 }
 
@@ -6185,15 +6223,14 @@ function Show-GalleryCardMenu {
     $specs+=,@('Mở thư mục',0xE838,'folder')
     $specs+=,@('Xem lớn',0xE740,'view')
     $specs+=,@('Ghi âm lại',0xE720,'redo')
+    $moveItems=@(Get-GalleryMoveTargets $Item)
+    $specs+=,@($(if($moveItems.Count -gt 1){"Chuyển $($moveItems.Count) video sang kho…"}else{'Chuyển sang kho…'}),0xE8B7,'moveto')
     $specs+=,@('Xóa video',0xE74D,'delete')
     foreach($spec in $specs){
-        if($spec[2] -eq 'delete'){
-            [void]$menu.Items.Add((New-KhoMoveMenuItem -Items (Get-GalleryMoveTargets $Item)))
-            [void]$menu.Items.Add((New-Object Windows.Controls.Separator))
-        }
+        if($spec[2] -eq 'delete'){ [void]$menu.Items.Add((New-Object Windows.Controls.Separator)) }
         $entry=New-Object Windows.Controls.MenuItem
         $entry.Header=[string]$spec[0];$entry.Tag=[string][char][int]$spec[1]
-        $entry.CommandParameter=@{Path=[string]$Item.Path;Action=[string]$spec[2];Item=$Item;PostUrl=[string]$Item.PostUrl;PostId=[string]$Item.PostId;LinkKey=[string]$Item.LinkKey}
+        $entry.CommandParameter=@{Path=[string]$Item.Path;Action=[string]$spec[2];Item=$Item;PostUrl=[string]$Item.PostUrl;PostId=[string]$Item.PostId;LinkKey=[string]$Item.LinkKey;Button=$Button;MoveItems=$moveItems}
         [Windows.Automation.AutomationProperties]::SetName($entry,[string]$spec[0])
         # Read all per-video context from the sender. No nested dynamic-module closures.
         $entry.Add_Click({
@@ -6217,6 +6254,7 @@ function Show-GalleryCardMenu {
                     $script:lastOut=$filePath
                     Start-RecordingAgain
                 }
+                'moveto' {Show-KhoMoveMenu -Target $context.Button -Items @($context.MoveItems)}
                 'delete' {[void](Invoke-GalleryDelete -FilePath $filePath -Controls $ui)}
             }
             $eventArgs.Handled=$true
@@ -6326,6 +6364,7 @@ function Format-KhoImportSummary {
 }
 
 function Show-KhoManagerDialog {
+    param([string]$Kho = '', [switch]$StartImport)
     $markup = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Quản lý kho" Width="780" Height="820" MinWidth="560" MinHeight="420" WindowStartupLocation="CenterOwner" ShowInTaskbar="False" Background="{DynamicResource Surface0}" Foreground="{DynamicResource TextPrimary}" FontFamily="{DynamicResource FontUi}" FontSize="15" Language="vi-VN">
  <Grid Margin="24">
@@ -6341,17 +6380,17 @@ function Show-KhoManagerDialog {
    <Border Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource InkFaint}" BorderThickness="1" CornerRadius="16" Padding="14" Margin="0,0,0,16"><StackPanel>
     <TextBlock x:Name="DetailTitle" FontWeight="ExtraBold" FontSize="17"/>
     <DockPanel Margin="0,8,0,12">
-     <Button x:Name="BtnDelete" Content="Xóa kho" DockPanel.Dock="Right" Margin="8,0,0,0" AutomationProperties.Name="Xóa kho đang chọn"/>
-     <Button x:Name="BtnRename" Content="Đổi tên" DockPanel.Dock="Right" Margin="8,0,0,0" AutomationProperties.Name="Đổi tên kho"/>
-     <TextBox x:Name="NameBox" MaxLength="60" Height="44" AutomationProperties.Name="Tên kho"/>
+     <Button x:Name="BtnDelete" Content="Xóa kho" DockPanel.Dock="Right" Margin="8,0,0,0" ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Xóa kho đang chọn"/>
+     <Button x:Name="BtnRename" Content="Đổi tên" DockPanel.Dock="Right" Margin="8,0,0,0" ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Đổi tên kho"/>
+     <TextBox x:Name="NameBox" MaxLength="60" MinHeight="44" VerticalContentAlignment="Center" ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Tên kho"/>
     </DockPanel>
     <TextBlock Text="Mẫu caption" FontWeight="SemiBold"/>
     <TextBox x:Name="CaptionBox" AcceptsReturn="True" TextWrapping="Wrap" MaxLength="2200" Height="92" VerticalScrollBarVisibility="Auto" Margin="0,6,0,10" AutomationProperties.Name="Mẫu caption"/>
     <TextBlock Text="Hashtag mặc định (cách nhau bằng dấu cách)" FontWeight="SemiBold"/>
-    <TextBox x:Name="TagsBox" Height="44" Margin="0,6,0,10" AutomationProperties.Name="Hashtag mặc định"/>
+    <TextBox x:Name="TagsBox" MinHeight="44" VerticalContentAlignment="Center" Margin="0,6,0,10" AutomationProperties.Name="Hashtag mặc định"/>
     <StackPanel Orientation="Horizontal">
      <TextBlock Text="Báo sắp hết khi còn dưới" VerticalAlignment="Center"/>
-     <TextBox x:Name="LowBox" Width="68" Height="44" MaxLength="3" TextAlignment="Center" Margin="10,0,10,0" AutomationProperties.Name="Ngưỡng sắp hết"/>
+     <TextBox x:Name="LowBox" Width="68" MinHeight="44" Padding="4,8" VerticalContentAlignment="Center" MaxLength="3" TextAlignment="Center" Margin="10,0,10,0" AutomationProperties.Name="Ngưỡng sắp hết"/>
      <TextBlock Text="video chờ đăng" VerticalAlignment="Center"/>
     </StackPanel>
     <Button x:Name="BtnSaveOpts" Content="Lưu mẫu và ngưỡng" Style="{DynamicResource BtnMint}" HorizontalAlignment="Left" Margin="0,12,0,0"/>
@@ -6359,7 +6398,7 @@ function Show-KhoManagerDialog {
    <TextBlock Text="Thêm kho mới" FontWeight="ExtraBold"/>
    <DockPanel Margin="0,8,0,16">
     <Button x:Name="BtnAdd" Content="Thêm kho" DockPanel.Dock="Right" Margin="8,0,0,0"/>
-    <TextBox x:Name="AddBox" MaxLength="60" Height="44" AutomationProperties.Name="Tên kho mới"/>
+    <TextBox x:Name="AddBox" MaxLength="60" MinHeight="44" VerticalContentAlignment="Center" AutomationProperties.Name="Tên kho mới"/>
    </DockPanel>
    <StackPanel x:Name="AcctPanel" Visibility="Collapsed" Margin="0,0,0,16">
     <TextBlock Text="Thêm kho cho tài khoản TikTok" FontWeight="ExtraBold"/>
@@ -6393,7 +6432,7 @@ function Show-KhoManagerDialog {
     $c = @{}
     foreach ($name in @('WarnBox', 'Warn', 'KhoChips', 'DetailTitle', 'BtnDelete', 'BtnRename', 'NameBox', 'CaptionBox', 'TagsBox', 'LowBox', 'BtnSaveOpts', 'AddBox', 'BtnAdd',
                         'AcctPanel', 'BtnAddAcct', 'BtnLoadAcct', 'CmbAcct', 'AcctStatus', 'BtnImport', 'BtnImportStop', 'ImportBar', 'ImportText', 'Close', 'Status')) { $c[$name] = $dlg.FindName($name) }
-    $state = @{ Selected = 'default'; Rendering = $false; Job = $null; AcctTask = $null; Fill = $null; Render = $null; Writable = (Test-KhoRegistryWritable); TikTok = (Test-TikTokEnabled) }
+    $state = @{ Selected = $(if ($Kho -and $script:khoKnown.ContainsKey($Kho)) { $Kho } else { 'default' }); Rendering = $false; Job = $null; AcctTask = $null; Fill = $null; Render = $null; Writable = (Test-KhoRegistryWritable); TikTok = (Test-TikTokEnabled) }
 
     # Fill the detail panel for the selected kho and enable/disable the controls.
     $state.Fill = {
@@ -6411,8 +6450,9 @@ function Show-KhoManagerDialog {
         $c.NameBox.IsEnabled = ($w -and -not $isDefault)
         $c.BtnRename.IsEnabled = ($w -and -not $isDefault)
         $c.BtnDelete.IsEnabled = ($w -and -not $isDefault -and -not $importing)
-        $c.BtnDelete.ToolTip = $(if ($isDefault) { 'Kho chung không xóa được' } else { 'Video trong kho này sẽ về Kho chung; không xóa file nào' })
-        $c.NameBox.ToolTip = $(if ($isDefault) { 'Kho chung giữ nguyên tên' } else { $null })
+        $c.BtnRename.ToolTip = $(if ($isDefault) { 'Kho chung luôn có, không đổi tên hay xóa được.' } else { $null })
+        $c.BtnDelete.ToolTip = $(if ($isDefault) { 'Kho chung luôn có, không đổi tên hay xóa được.' } else { 'Video trong kho này sẽ về Kho chung; không xóa file nào' })
+        $c.NameBox.ToolTip = $(if ($isDefault) { 'Kho chung luôn có, không đổi tên hay xóa được.' } else { $null })
         foreach ($ctl in @($c.CaptionBox, $c.TagsBox, $c.LowBox, $c.BtnSaveOpts, $c.AddBox, $c.BtnAdd)) { $ctl.IsEnabled = $w }
         $c.BtnAddAcct.IsEnabled = ($w -and $c.CmbAcct.Items.Count -gt 0)
         $c.BtnImport.IsEnabled = (-not $importing)
@@ -6458,9 +6498,26 @@ function Show-KhoManagerDialog {
     $c.BtnRename.Add_Click({
         try {
             Rename-Kho -Id $state.Selected -Name $c.NameBox.Text
+            Update-GalleryItemsFromMeta -Force   # chip kho trên thẻ đổi theo tên mới (chỉ đọc lại siêu dữ liệu)
             & $afterChange
             $c.Status.Text = 'Đã đổi tên kho.'
         } catch { & $fail $_ }
+    }.GetNewClosure())
+    # Enter: tên = đổi tên, ô thêm = thêm kho, hashtag/ngưỡng = lưu. Esc: đóng hộp thoại.
+    $enterClicks = @{ NameBox = 'BtnRename'; AddBox = 'BtnAdd'; TagsBox = 'BtnSaveOpts'; LowBox = 'BtnSaveOpts' }
+    foreach ($boxName in $enterClicks.Keys) {
+        $target = $c[$enterClicks[$boxName]]
+        $c[$boxName].Add_KeyDown({
+            param($sender, $eventArgs)
+            if ($eventArgs.Key -eq [System.Windows.Input.Key]::Return -and $target.IsEnabled) {
+                $eventArgs.Handled = $true
+                $target.RaiseEvent((New-Object Windows.RoutedEventArgs ([Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+            }
+        }.GetNewClosure())
+    }
+    $dlg.Add_PreviewKeyDown({
+        param($sender, $eventArgs)
+        if ($eventArgs.Key -eq [System.Windows.Input.Key]::Escape -and -not $c.CmbAcct.IsDropDownOpen) { $eventArgs.Handled = $true; $sender.Close() }
     }.GetNewClosure())
     $c.BtnDelete.Add_Click({
         try {
@@ -6577,6 +6634,7 @@ function Show-KhoManagerDialog {
     }
     & $state.Render
     $timer.Start()
+    if ($StartImport) { $dlg.Add_ContentRendered({ if (-not $state.Started) { $state.Started = $true; $c.BtnImport.RaiseEvent((New-Object Windows.RoutedEventArgs ([Windows.Controls.Primitives.ButtonBase]::ClickEvent))) } }.GetNewClosure()) }
     if ($state.TikTok) { & $loadAccounts }
     [void]$dlg.ShowDialog()
 }
@@ -7683,15 +7741,30 @@ $ui.CmbKho.Add_SelectionChanged({
     if (-not $sel) { return }
     $script:filterKho = [string]$sel.Tag
     Apply-GalleryFilter
+    Reset-GalleryScroll
 })
-$ui.TabStAll.Add_Checked({ $script:filterStatus = 'all'; Apply-GalleryFilter })
-$ui.TabStPending.Add_Checked({ $script:filterStatus = 'pending'; Apply-GalleryFilter })
-$ui.TabStHeld.Add_Checked({ $script:filterStatus = 'held'; Apply-GalleryFilter })
-$ui.TabStPosted.Add_Checked({ $script:filterStatus = 'posted'; Apply-GalleryFilter })
-$ui.BtnKhoManage.Add_Click({ Show-KhoManagerDialog })
+$ui.TabStAll.Add_Checked({ $script:filterStatus = 'all'; Apply-GalleryFilter; Reset-GalleryScroll })
+$ui.TabStPending.Add_Checked({ $script:filterStatus = 'pending'; Apply-GalleryFilter; Reset-GalleryScroll })
+$ui.TabStHeld.Add_Checked({ $script:filterStatus = 'held'; Apply-GalleryFilter; Reset-GalleryScroll })
+$ui.TabStPosted.Add_Checked({ $script:filterStatus = 'posted'; Apply-GalleryFilter; Reset-GalleryScroll })
+# Mũi tên trái/phải đổi tab trạng thái.
+$ui.PanelStatusTabs.Add_PreviewKeyDown({
+    param($sender, $e)
+    $dir = switch ($e.Key) { 'Left' { -1 } 'Right' { 1 } default { 0 } }
+    if (-not $dir) { return }
+    $tabs = @($ui.TabStAll, $ui.TabStPending, $ui.TabStHeld, $ui.TabStPosted)
+    $cur = 0; for ($i = 0; $i -lt $tabs.Count; $i++) { if ($tabs[$i].IsChecked) { $cur = $i } }
+    $next = ($cur + $dir + $tabs.Count) % $tabs.Count
+    $tabs[$next].IsChecked = $true; [void]$tabs[$next].Focus()
+    $e.Handled = $true
+})
+$ui.BtnKhoManage.Add_Click({ Show-KhoManagerDialog -Kho $script:filterKho })
+$ui.BtnKhoEmptyImport.Add_Click({ Show-KhoManagerDialog -Kho $script:filterKho -StartImport })
+$ui.BtnKhoEmptyManage.Add_Click({ Show-KhoManagerDialog -Kho $script:filterKho })
+$ui.BtnClearSelection.Add_Click({ Clear-GallerySelection })
 $ui.BtnMoveSelected.Add_Click({
     $picked = @($ui.GalleryList.SelectedItems)
-    if ($picked.Count) { Show-KhoMoveMenu -Target $ui.BtnMoveSelected -Items $picked }
+    if ($picked.Count) { Show-KhoMoveMenu -Target $ui.BtnMoveSelected -Items $picked -Placement ([Windows.Controls.Primitives.PlacementMode]::Top) }
 })
 $ui.CmbDownloadKho.Add_SelectionChanged({
     if ($script:updatingCombo) { return }
@@ -9360,6 +9433,7 @@ $win.Add_PreviewKeyDown({
         if ($focusedCombo -is [System.Windows.Controls.ComboBox] -and $focusedCombo.IsDropDownOpen) { return }
         # "Xem lon" thoat truoc; chi khi khong o che do do moi tinh toi viec dung hang doi.
         if ($script:previewBig) { Set-PreviewBig $false; $e.Handled = $true; return }
+        if ($script:currentPage -eq 'library' -and $ui.GalleryList.SelectedItems.Count -gt 1) { Clear-GallerySelection; $e.Handled = $true; return }
         if (Test-QueueRunning) { Request-Stop -Confirm; $e.Handled = $true; return }
     }
     if ($ctrlOnly) {

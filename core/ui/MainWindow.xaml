@@ -165,7 +165,8 @@
                   </Image>
                 </Grid>
                 <StackPanel x:Name="PanelDownloadKho" Grid.Row="2" Orientation="Horizontal" Margin="0,10,0,0">
-                  <TextBlock Text="Lưu vào kho" FontWeight="ExtraBold" VerticalAlignment="Center" Margin="4,0,12,0"/>
+                  <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Mint}" Width="34" Height="34" CornerRadius="17" Margin="0,0,10,0"><TextBlock Text="&#xE8F1;" Style="{DynamicResource Icon}" FontSize="14"/></Border>
+                  <TextBlock Text="Lưu vào kho" Style="{DynamicResource TextHeading}" FontSize="16" VerticalAlignment="Center" Margin="0,0,12,0"/>
                   <ComboBox x:Name="CmbDownloadKho" Width="320" AutomationProperties.Name="Lưu vào kho" ToolTip="Video tải xong sẽ vào kho này (có thể chuyển kho sau trong trang Kho)"/>
                 </StackPanel>
                 <WrapPanel Grid.Row="0" Margin="0,0,0,12" Orientation="Horizontal">
@@ -659,19 +660,16 @@
               <ComboBoxItem Content="Chọn ngày…"/>
             </ComboBox>
             <ComboBox x:Name="CmbFilterSpecificDate" Width="200" Margin="0,0,10,8" Visibility="Collapsed" AutomationProperties.Name="Ngày cụ thể"/>
-            <ComboBox x:Name="CmbKho" Width="340" Margin="0,0,10,8" AutomationProperties.Name="Chọn kho" ToolTip="Chọn kho video; số liệu: chờ đăng · đã hẹn · đã đăng"/>
+            <ComboBox x:Name="CmbKho" Width="340" MaxWidth="340" Margin="0,0,10,8" AutomationProperties.Name="Chọn kho" ToolTip="Chọn kho video; số liệu: chờ đăng · đã hẹn · đã đăng"/>
             <Button x:Name="BtnKhoManage" Margin="0,0,10,8" ToolTip="Thêm, đổi tên, xóa kho; mẫu caption; thêm video từ thư mục" AutomationProperties.Name="Quản lý kho">
               <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE713;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Quản lý kho" VerticalAlignment="Center"/></StackPanel>
             </Button>
-            <StackPanel x:Name="PanelStatusTabs" Orientation="Horizontal" Margin="0,0,10,8">
+            <StackPanel x:Name="PanelStatusTabs" Orientation="Horizontal" Margin="0,0,10,8" KeyboardNavigation.DirectionalNavigation="Cycle">
               <RadioButton x:Name="TabStAll" Style="{DynamicResource SegButton}" GroupName="StatusTabs" Content="Tất cả" IsChecked="True" AutomationProperties.Name="Tất cả trạng thái"/>
               <RadioButton x:Name="TabStPending" Style="{DynamicResource SegButton}" GroupName="StatusTabs" Content="Chờ đăng" AutomationProperties.Name="Chờ đăng"/>
               <RadioButton x:Name="TabStHeld" Style="{DynamicResource SegButton}" GroupName="StatusTabs" Content="Đã hẹn" AutomationProperties.Name="Đã hẹn"/>
               <RadioButton x:Name="TabStPosted" Style="{DynamicResource SegButton}" GroupName="StatusTabs" Content="Đã đăng" Margin="0" AutomationProperties.Name="Đã đăng"/>
             </StackPanel>
-            <Button x:Name="BtnMoveSelected" Style="{DynamicResource BtnMint}" Visibility="Collapsed" Margin="0,0,10,8" ToolTip="Chuyển các video đang chọn sang kho khác" AutomationProperties.Name="Chuyển video đã chọn sang kho khác">
-              <TextBlock x:Name="TxtMoveSelected" Text="Chuyển sang kho…" VerticalAlignment="Center"/>
-            </Button>
             <Button x:Name="BtnRefreshGallery" Style="{DynamicResource BtnIcon}" Background="{DynamicResource SkySoft}" Content="&#xE72C;" Margin="0,0,0,8"
                     ToolTip="Quét lại thư mục xuất" AutomationProperties.Name="Làm mới kho"/>
           </WrapPanel>
@@ -693,6 +691,18 @@
                           <Image Source="{Binding Thumb}" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality">
                             <Image.Clip><RectangleGeometry Rect="0,0,168,298" RadiusX="10" RadiusY="10"/></Image.Clip>
                           </Image>
+                          <Border HorizontalAlignment="Left" VerticalAlignment="Top" Margin="4,4,0,0" MaxWidth="104" Padding="8,2" CornerRadius="10" IsHitTestVisible="False"
+                                  Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Ink}" BorderThickness="1">
+                            <Border.Style>
+                              <Style TargetType="Border">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                  <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType=ListView}}" Value="all"><Setter Property="Visibility" Value="Visible"/></DataTrigger>
+                                </Style.Triggers>
+                              </Style>
+                            </Border.Style>
+                            <TextBlock Text="{Binding KhoName}" FontSize="12" FontWeight="ExtraBold" TextTrimming="CharacterEllipsis"/>
+                          </Border>
                           <Button x:Name="BtnCardMore" Tag="more" Style="{DynamicResource BtnCardMore}" Content="&#xE712;" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,2,2,0"
                                   ToolTip="Hành động: sao chép để đăng, mở thư mục, ghi âm lại, xóa" AutomationProperties.Name="Thêm hành động"/>
                           <Button Tag="tiktok" Style="{DynamicResource BtnTikTok}" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="2,0,0,0" MaxWidth="168" Padding="8,0"
@@ -741,6 +751,19 @@
                 </DataTemplate>
               </ListView.ItemTemplate>
             </ListView>
+            <!-- thanh chọn nhiều: lớp phủ ở đáy lưới (không đẩy lưới), hiện khi chọn từ 2 video -->
+            <Border x:Name="PanelSelBar" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,14" Padding="14,6" CornerRadius="26"
+                    Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource Ink}" BorderThickness="2">
+              <StackPanel Orientation="Horizontal">
+                <TextBlock x:Name="TxtSelCount" Text="Đã chọn 2 video" FontWeight="ExtraBold" VerticalAlignment="Center" Margin="4,0,14,0"/>
+                <Button x:Name="BtnMoveSelected" Style="{DynamicResource BtnMint}" Margin="0,0,8,0" ToolTip="Chuyển các video đang chọn sang kho khác" AutomationProperties.Name="Chuyển video đã chọn sang kho khác">
+                  <TextBlock x:Name="TxtMoveSelected" Text="Chuyển sang kho…" VerticalAlignment="Center"/>
+                </Button>
+                <Button x:Name="BtnClearSelection" Style="{DynamicResource BtnGhost}" ToolTip="Bỏ chọn tất cả (Esc)" AutomationProperties.Name="Bỏ chọn">
+                  <TextBlock Text="Bỏ chọn" VerticalAlignment="Center"/>
+                </Button>
+              </StackPanel>
+            </Border>
             <Viewbox x:Name="GalleryState" StretchDirection="DownOnly" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="24" Visibility="Collapsed">
               <StackPanel>
                 <Image x:Name="ImgGalleryMascot" Source="{DynamicResource MascotCloud}" Width="132" Height="104"/>
@@ -750,6 +773,14 @@
                 </Border>
                 <TextBlock x:Name="TxtGalleryStateTitle" Text="Kho trống" Style="{DynamicResource TextHeading}" FontSize="24" HorizontalAlignment="Center" Margin="0,10,0,4"/>
                 <TextBlock x:Name="TxtGalleryStateText" Text="Chưa có video nào — dán link ở trang Nguồn nhé!" Style="{DynamicResource TextMutedStyle}" FontSize="15" HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="440"/>
+                <StackPanel x:Name="PanelKhoEmptyActions" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,14,0,0" Visibility="Collapsed">
+                  <Button x:Name="BtnKhoEmptyImport" Style="{DynamicResource BtnMint}" Margin="0,0,10,0" AutomationProperties.Name="Thêm video từ thư mục vào kho này">
+                    <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8B7;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Thêm video từ thư mục…" VerticalAlignment="Center"/></StackPanel>
+                  </Button>
+                  <Button x:Name="BtnKhoEmptyManage" AutomationProperties.Name="Quản lý kho">
+                    <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE713;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Quản lý kho" VerticalAlignment="Center"/></StackPanel>
+                  </Button>
+                </StackPanel>
                 <Button x:Name="BtnGalleryRetry" Style="{DynamicResource BtnButter}" HorizontalAlignment="Center" Margin="0,14,0,0" Visibility="Collapsed" AutomationProperties.Name="Thử quét lại kho">
                   <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE72C;" Style="{DynamicResource Icon}" FontSize="15" Margin="0,0,8,0"/><TextBlock Text="Thử lại" VerticalAlignment="Center"/></StackPanel>
                 </Button>
