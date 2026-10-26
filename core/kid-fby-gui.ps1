@@ -2471,7 +2471,7 @@ function Remove-KhoWithVideos {
         foreach ($v in $videos) {
             $vid = Get-KhoVideoKey $v.Name
             $why = Get-KhoVideoBlock $khoRoot $vid $groups
-            if ($why) { $result.Why = "$(Get-ReelLabel $vid): $why"; return $result }
+            if ($why) { $result.Why = "$(if ($vid -match '^\d+$') { "Video #$vid" } else { Get-ReelLabel $vid }): $why"; return $result }
         }
         # A job without a readable video blocks the folder even when it has no video of its own.
         foreach ($req in $groups.Keys) { if ($groups[$req].Live -and -not $groups[$req].VideoId) { $result.Why = 'Thư mục có lệnh đăng không rõ thuộc video nào — xử lý trước.'; return $result } }
