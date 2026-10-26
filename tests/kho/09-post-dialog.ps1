@@ -100,24 +100,24 @@ Test-Case 'hashtags file: accounts round-trips; add increments chosen account on
 }
 
 # ---------------- caption template ----------------
-function New-Lib { param([string]$Id, [string]$Caption, [string[]]$Tags) return [pscustomobject]@{ id = $Id; caption = $Caption; hashtags = $Tags } }
-Test-Case 'template: account kho = caption + #tags (adds missing #, trims)' {
-    $libs = @((New-Lib 'default' '' @()), (New-Lib 'acct:anna' ' Xem ngay ' @('hai', '#vui', ' ')), (New-Lib 'c-0123456789abcdef0123456789abcdef' 'custom' @('#c')))
-    Assert-Equal (Get-TikTokCaptionTemplate -Account '@Anna' -VideoKhoId 'default' -Libraries $libs) 'Xem ngay #hai #vui'
+function New-Lib { param([string]$Id, [string]$Caption, [string[]]$Tags, [string]$Account = '') return [pscustomobject]@{ id = $Id; caption = $Caption; hashtags = $Tags; account = $Account } }
+$k1 = 'k-11111111111111111111111111111111'; $k2 = 'k-22222222222222222222222222222222'; $k3 = 'k-33333333333333333333333333333333'
+Test-Case 'template: the kho assigned to the account = caption + #tags (adds missing #, trims)' {
+    $libs = @((New-Lib $k1 '' @()), (New-Lib $k2 ' Xem ngay ' @('hai', '#vui', ' ') 'Anna'), (New-Lib $k3 'custom' @('#c')))
+    Assert-Equal (Get-TikTokCaptionTemplate -Account '@Anna' -VideoKhoId $k1 -Libraries $libs) 'Xem ngay #hai #vui'
 }
-Test-Case 'template: no account kho -> video custom kho; default / other account kho / unknown -> empty' {
-    $c = 'c-0123456789abcdef0123456789abcdef'
-    $libs = @((New-Lib 'default' 'D' @('#d')), (New-Lib 'acct:bob' 'B' @()), (New-Lib $c 'custom' @('#c')))
-    Assert-Equal (Get-TikTokCaptionTemplate -Account 'anna' -VideoKhoId $c -Libraries $libs) 'custom #c'
-    Assert-Equal (Get-TikTokCaptionTemplate -Account 'anna' -VideoKhoId 'default' -Libraries $libs) ''
-    Assert-Equal (Get-TikTokCaptionTemplate -Account 'anna' -VideoKhoId 'acct:bob' -Libraries $libs) ''
-    Assert-Equal (Get-TikTokCaptionTemplate -Account 'anna' -VideoKhoId 'c-ffffffffffffffffffffffffffffffff' -Libraries $libs) ''
-    Assert-Equal (Get-TikTokCaptionTemplate -Account 'anna' -VideoKhoId $c -Libraries @()) ''
+Test-Case 'template: no kho for the account -> the (account-less) kho the video is in; a kho of another account / unknown id / no libraries -> empty' {
+    $libs = @((New-Lib $k1 'D' @('#d')), (New-Lib $k2 'B' @() 'bob'), (New-Lib $k3 'custom' @('#c')))
+    Assert-Equal (Get-TikTokCaptionTemplate -Account 'anna' -VideoKhoId $k3 -Libraries $libs) 'custom #c'
+    Assert-Equal (Get-TikTokCaptionTemplate -Account 'anna' -VideoKhoId $k1 -Libraries $libs) 'D #d' 'account-less kho the video is in'
+    Assert-Equal (Get-TikTokCaptionTemplate -Account 'anna' -VideoKhoId $k2 -Libraries $libs) '' 'video in bob''s kho: not anna''s template'
+    Assert-Equal (Get-TikTokCaptionTemplate -Account 'anna' -VideoKhoId 'k-ffffffffffffffffffffffffffffffff' -Libraries $libs) ''
+    Assert-Equal (Get-TikTokCaptionTemplate -Account 'anna' -VideoKhoId $k3 -Libraries @()) ''
 }
 Test-Case 'template: Vietnamese text survives' {
     $cap = & $vi 0x58, 0x65, 0x6D, 0x20, 0x68, 0xE0, 0x69   # "Xem hai" with a-grave
-    $libs = @((New-Lib 'acct:anna' $cap @('vui')))
-    Assert-Equal (Get-TikTokCaptionTemplate -Account 'anna' -VideoKhoId 'default' -Libraries $libs) ($cap + ' #vui')
+    $libs = @((New-Lib $k1 $cap @('vui') 'anna'))
+    Assert-Equal (Get-TikTokCaptionTemplate -Account 'anna' -VideoKhoId $k2 -Libraries $libs) ($cap + ' #vui')
 }
 
 # ---------------- repost warning ----------------
@@ -182,8 +182,8 @@ Test-Case 'slot: no favourites / garbage favourites -> $null' {
     Assert-True ($null -eq (Get-NextFreeTikTokSlot -Favorites @('25:00', 'abc') -Busy @() -Now $now)) 'garbage'
 }
 Test-Case 'busy: UTC strings -> local; only this account; statuses; planned_for fallback; past succeeded ignored' {
-    $now = Local '2026-10-26 10:00'
-    function Ent { param($User, $Status, $Sched = '', $Planned = '') $x = New-TestHistoryEntry 'q' $User $Status; $x.tiktok_schedule_time = $Sched; $x.planned_for = $Planned; return $x }
+    $now = Local '2026-10-26 10:00'; $script:entN = 0
+    function Ent { param($User, $Status, $Sched = '', $Planned = '') $script:entN++; $x = New-TestHistoryEntry ("q$($script:entN)") $User $Status; $x.tiktok_schedule_time = $Sched; $x.planned_for = $Planned; return $x }
     $meta = [pscustomobject]@{
         '111' = [pscustomobject]@{ Posted = $false; Date = ''; History = @((Ent 'Anna' 'succeeded' (Utc (Local '2026-10-27 12:00'))), (Ent 'anna' 'pending' '' (Utc (Local '2026-10-27 19:00')))) }
         '222' = [pscustomobject]@{ Posted = $false; Date = ''; History = @((Ent 'anna' 'failed' (Utc (Local '2026-10-28 08:00'))), (Ent 'bob' 'pending' (Utc (Local '2026-10-28 09:00'))),

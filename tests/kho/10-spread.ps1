@@ -119,16 +119,16 @@ Test-Case 'times: re-planning clears old times first' {
 # ---------------- auto-schedule candidates ----------------
 Test-Case 'auto items: only this kho, Chờ đăng, no history at all, oldest file first' {
     $dir = Join-Path $tmp 'auto'; [void][IO.Directory]::CreateDirectory($dir)
-    function Mk { param($id, $kho, $age, $posted = $false, $held = $null) $p = Join-Path $dir "$id-3-hoan-chinh.mp4"; [IO.File]::WriteAllText($p, 'x'); (Get-Item -LiteralPath $p).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-$age); return [pscustomobject]@{ Id = $id; Path = $p; Kho = $kho; Posted = $posted; HeldUntil = $held } }
+    function Mk { param($id, $kho, $age, $posted = $false, $held = $null) $p = Join-Path $dir "$id-3-hoan-chinh.mp4"; [IO.File]::WriteAllText($p, 'x'); (Get-Item -LiteralPath $p).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-$age); return [pscustomobject]@{ Id = $id; Path = $p; Kho = $kho; Root = $dir; Posted = $posted; HeldUntil = $held } }
     $items = @((Mk '11' 'acct:anna' 1), (Mk '12' 'acct:anna' 5), (Mk '13' 'acct:anna' 3), (Mk '14' 'acct:bob' 9), (Mk '15' 'acct:anna' 7 $true),
                (Mk '16' 'acct:anna' 8), (Mk '17' 'acct:anna' 2 $false ([DateTime]::UtcNow.AddHours(5))), (Mk '18' 'acct:anna' 4))
     $meta = [pscustomobject]@{
         '16' = [pscustomobject]@{ Posted = $false; Date = ''; History = @((Ent 'anna' 'failed')) }     # has a history entry -> excluded
         '18' = [pscustomobject]@{ Posted = $false; Date = ''; History = @() }                          # empty history -> still a candidate
     }
-    Assert-Equal ((Get-TikTokAutoScheduleItems -Items $items -KhoId 'acct:anna' -Metadata $meta | ForEach-Object { $_.Id }) -join ',') '12,18,13,11'
-    Assert-Equal @(Get-TikTokAutoScheduleItems -Items $items -KhoId 'acct:zed' -Metadata $meta).Count 0
-    Assert-Equal ((Get-TikTokAutoScheduleItems -Items $items -KhoId 'acct:anna' -Metadata $null | ForEach-Object { $_.Id }) -join ',') '16,12,18,13,11'
+    Assert-Equal ((Get-TikTokAutoScheduleItems -Items $items -KhoId 'acct:anna' -MetaByRoot @{ $dir = $meta } | ForEach-Object { $_.Id }) -join ',') '12,18,13,11'
+    Assert-Equal @(Get-TikTokAutoScheduleItems -Items $items -KhoId 'acct:zed' -MetaByRoot @{ $dir = $meta }).Count 0
+    Assert-Equal ((Get-TikTokAutoScheduleItems -Items $items -KhoId 'acct:anna' -MetaByRoot $null | ForEach-Object { $_.Id }) -join ',') '16,12,18,13,11'
 }
 
 # ---------------- job shape ----------------

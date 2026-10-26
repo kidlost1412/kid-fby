@@ -49,23 +49,23 @@ foreach ($id in 'old1','recent','uncertain','failed','schedFut','schedOld','mixe
 MkFiles -Dir $out -Id 'legacyOld' -Legacy
 MkFiles -Dir $out -Id 'noFiles'
 $items = foreach ($id in 'old1','recent','uncertain','failed','schedFut','schedOld','mixed','manualOld','manualNew','manualFut','legacyOld','noTime','noFiles','other') {
-    [pscustomobject]@{ Id = $id; Path = (Join-Path $out "$id-3-hoan-chinh.mp4"); Kho = $(if ($id -eq 'other') { 'k2' } else { 'default' }) }
+    [pscustomobject]@{ Id = $id; Path = (Join-Path $out "$id-3-hoan-chinh.mp4"); Kho = $(if ($id -eq 'other') { 'k2' } else { 'default' }); Root = $out }
 }
 
 Test-Case 'candidates: exactly the old confirmed / manual / legacy videos that still have -1/-2' {
-    $c = Get-KhoCleanupCandidates -Items $items -Metadata $meta -Days 30 -Now $now -OutDir $out
+    $c = Get-KhoCleanupCandidates -Items $items -MetaByRoot @{ $out = $meta } -Days 30 -Now $now -OutDir $out
     Assert-Equal (Ids $c) 'legacyOld,manualFut,manualOld,old1,other,schedOld'
 }
 Test-Case 'candidates: 20-day-old post excluded at 30 days, included at 7 days; 40-day-old excluded at 60' {
-    Assert-True (@(Get-KhoCleanupCandidates -Items $items -Metadata $meta -Days 7 -Now $now -OutDir $out | Where-Object Id -eq 'recent').Count -eq 1)
-    Assert-Equal @(Get-KhoCleanupCandidates -Items $items -Metadata $meta -Days 60 -Now $now -OutDir $out | Where-Object Id -eq 'old1').Count 0
+    Assert-True (@(Get-KhoCleanupCandidates -Items $items -MetaByRoot @{ $out = $meta } -Days 7 -Now $now | Where-Object Id -eq 'recent').Count -eq 1)
+    Assert-Equal @(Get-KhoCleanupCandidates -Items $items -MetaByRoot @{ $out = $meta } -Days 60 -Now $now | Where-Object Id -eq 'old1').Count 0
 }
 Test-Case 'uncertain, failed, future schedule, mixed(newest recent), unknown time are never candidates' {
-    $c = Ids (Get-KhoCleanupCandidates -Items $items -Metadata $meta -Days 30 -Now $now -OutDir $out)
+    $c = Ids (Get-KhoCleanupCandidates -Items $items -MetaByRoot @{ $out = $meta } -Days 30 -Now $now)
     foreach ($bad in 'uncertain','failed','schedFut','mixed','noTime','noFiles','recent','manualNew') { Assert-True ($c -notmatch "(^|,)$bad(,|$)") "$bad must not be a candidate" }
 }
 Test-Case 'schedule time wins over accepted_at (accepted 20d ago but scheduled 35d ago -> candidate)' {
-    Assert-True (@(Get-KhoCleanupCandidates -Items $items -Metadata $meta -Days 30 -Now $now -OutDir $out | Where-Object Id -eq 'schedOld').Count -eq 1)
+    Assert-True (@(Get-KhoCleanupCandidates -Items $items -MetaByRoot @{ $out = $meta } -Days 30 -Now $now | Where-Object Id -eq 'schedOld').Count -eq 1)
 }
 Test-Case 'manual date without year: future date this year resolves to last year' {
     $d = ConvertFrom-ManualPostedDate -Text '27/12 09:00' -Now $now
@@ -75,7 +75,7 @@ Test-Case 'manual date without year: future date this year resolves to last year
     Assert-True ($null -eq (ConvertFrom-ManualPostedDate -Text '31/02 10:00' -Now $now))
 }
 Test-Case 'legacy root files counted; cache + root both listed; bytes = sum of existing -1/-2 only' {
-    $c = Get-KhoCleanupCandidates -Items $items -Metadata $meta -Days 30 -Now $now -OutDir $out
+    $c = Get-KhoCleanupCandidates -Items $items -MetaByRoot @{ $out = $meta } -Days 30 -Now $now -OutDir $out
     $l = $c | Where-Object Id -eq 'legacyOld'
     Assert-Equal $l.Files.Count 2; Assert-Equal $l.Bytes 2000
     $o = $c | Where-Object Id -eq 'old1'
@@ -83,13 +83,13 @@ Test-Case 'legacy root files counted; cache + root both listed; bytes = sum of e
     Assert-True (-not ($c.Files.Leaf -match '-3-hoan-chinh'))
 }
 Test-Case 'scope: kho filter keeps only that kho; all keeps both' {
-    Assert-Equal (Ids (Get-KhoCleanupCandidates -Items $items -Metadata $meta -Days 30 -Now $now -OutDir $out -KhoId 'k2')) 'other'
-    Assert-True ((Ids (Get-KhoCleanupCandidates -Items $items -Metadata $meta -Days 30 -Now $now -OutDir $out -KhoId 'all')) -match 'other')
-    Assert-True ((Ids (Get-KhoCleanupCandidates -Items $items -Metadata $meta -Days 30 -Now $now -OutDir $out -KhoId 'default')) -notmatch 'other')
+    Assert-Equal (Ids (Get-KhoCleanupCandidates -Items $items -MetaByRoot @{ $out = $meta } -Days 30 -Now $now -KhoId 'k2')) 'other'
+    Assert-True ((Ids (Get-KhoCleanupCandidates -Items $items -MetaByRoot @{ $out = $meta } -Days 30 -Now $now -KhoId 'all')) -match 'other')
+    Assert-True ((Ids (Get-KhoCleanupCandidates -Items $items -MetaByRoot @{ $out = $meta } -Days 30 -Now $now -KhoId 'default')) -notmatch 'other')
 }
 Test-Case 'empty items / null metadata -> empty' {
-    Assert-Equal @(Get-KhoCleanupCandidates -Items @() -Metadata $meta -Days 30 -Now $now -OutDir $out).Count 0
-    Assert-Equal @(Get-KhoCleanupCandidates -Items $items -Metadata $null -Days 30 -Now $now -OutDir $out).Count 0
+    Assert-Equal @(Get-KhoCleanupCandidates -Items @() -MetaByRoot @{ $out = $meta } -Days 30 -Now $now).Count 0
+    Assert-Equal @(Get-KhoCleanupCandidates -Items $items -MetaByRoot $null -Days 30 -Now $now).Count 0
 }
 
 # ---------------- end-to-end delete in a temp folder ----------------
@@ -98,7 +98,7 @@ Test-Case 'delete: removes exactly the -1/-2 of candidates; -3, thumbs, publish 
     [IO.File]::WriteAllBytes((Join-Path $thumbs 'old1.jpg'), (New-Object byte[] 5))
     $pub = Join-Path $out '.kidfby-publish-abc'; [void][IO.Directory]::CreateDirectory($pub); [IO.File]::WriteAllBytes((Join-Path $pub 'old1-3-hoan-chinh.mp4.stage'), (New-Object byte[] 5))
     $before = @(Get-ChildItem -LiteralPath $out -Recurse -Force -File | ForEach-Object { $_.FullName.Substring($out.Length) })
-    $c = Get-KhoCleanupCandidates -Items $items -Metadata $meta -Days 30 -Now $now -OutDir $out
+    $c = Get-KhoCleanupCandidates -Items $items -MetaByRoot @{ $out = $meta } -Days 30 -Now $now -OutDir $out
     $expectedGone = @($c | ForEach-Object { $_.Files.Path | ForEach-Object { $_.Substring($out.Length) } })
     Assert-Equal $expectedGone.Count 12      # 6 candidates x 2 files
     $r = Remove-KhoCleanupFiles -Candidates $c
@@ -110,13 +110,13 @@ Test-Case 'delete: removes exactly the -1/-2 of candidates; -3, thumbs, publish 
     Assert-True ([IO.File]::Exists((Join-Path $thumbs 'old1.jpg')))
     Assert-True ([IO.File]::Exists((Join-Path $pub 'old1-3-hoan-chinh.mp4.stage')))
     Assert-True ([IO.File]::Exists((Join-Path $out '.cache\recent-1-video-goc.mp4')))
-    Assert-Equal @(Get-KhoCleanupCandidates -Items $items -Metadata $meta -Days 30 -Now $now -OutDir $out).Count 0
+    Assert-Equal @(Get-KhoCleanupCandidates -Items $items -MetaByRoot @{ $out = $meta } -Days 30 -Now $now).Count 0
 }
 Test-Case 'delete: a locked file is reported as an error and the rest still go; active transfer skips the video' {
     $d2 = Join-Path $tmp 'two'; MkFiles -Dir $d2 -Id 'a' -Cache; MkFiles -Dir $d2 -Id 'b' -Cache
-    $its = @('a','b') | ForEach-Object { [pscustomobject]@{ Id = $_; Path = (Join-Path $d2 "$_-3-hoan-chinh.mp4"); Kho = 'default' } }
+    $its = @('a','b') | ForEach-Object { [pscustomobject]@{ Id = $_; Path = (Join-Path $d2 "$_-3-hoan-chinh.mp4"); Kho = 'default'; Root = $d2 } }
     $m2 = [pscustomobject]@{ a = Entry @(Hist -Accepted $old); b = Entry @(Hist -Accepted $old) }
-    $c = Get-KhoCleanupCandidates -Items $its -Metadata $m2 -Days 30 -Now $now -OutDir $d2
+    $c = Get-KhoCleanupCandidates -Items $its -MetaByRoot @{ $d2 = $m2 } -Days 30 -Now $now -OutDir $d2
     $fs = [IO.File]::Open((Join-Path $d2 '.cache\a-1-video-goc.mp4'), 'Open', 'Read', 'None')
     try { $r = Remove-KhoCleanupFiles -Candidates $c } finally { $fs.Dispose() }
     Assert-Equal $r.Failed 1; Assert-Equal $r.Deleted 3
@@ -124,7 +124,7 @@ Test-Case 'delete: a locked file is reported as an error and the rest still go; 
     Assert-True (-not [IO.File]::Exists((Join-Path $d2 '.cache\a-2-am-thanh-tho.m4a')))
     MkFiles -Dir $d2 -Id 'b' -Cache
     function Test-TikTokTransferActive { param([string]$FilePath) return ($FilePath -like '*\b-3-*') }
-    $c = Get-KhoCleanupCandidates -Items $its -Metadata $m2 -Days 30 -Now $now -OutDir $d2
+    $c = Get-KhoCleanupCandidates -Items $its -MetaByRoot @{ $d2 = $m2 } -Days 30 -Now $now -OutDir $d2
     $r = Remove-KhoCleanupFiles -Candidates $c
     Assert-Equal $r.Skipped 1
     Assert-True ([IO.File]::Exists((Join-Path $d2 '.cache\b-1-video-goc.mp4')))
