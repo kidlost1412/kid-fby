@@ -198,4 +198,10 @@ Test-Case 'g: when the -3 cannot be recycled nothing else is touched (-1/-2, rec
     Assert-Equal $r.Success $false; Assert-Equal @($r.Recycled).Count 0 'nothing recycled'
     Assert-Equal (Get-TestTree $w.A.path) $before 'folder byte-identical'
 }
+Test-Case 'script header: the GUI file declares param([switch]$SelfTest, [string]$TikTokJobFile) (the background TikTok worker and -SelfTest depend on it)' {
+    $t = $null; $e = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $script:RepoRoot 'core\kid-fby-gui.ps1'), [ref]$t, [ref]$e)
+    $names = @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+    Assert-Equal ($names -join ',') 'SelfTest,TikTokJobFile'
+}
 Complete-Tests

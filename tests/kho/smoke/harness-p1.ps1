@@ -2,12 +2,12 @@
 # Phase main: Kho page lists 2 khos, manager dialog (create / rename / caption), download combo, multi-select move, card-menu move,
 # delete a video (Recycle Bin), delete a kho. Phase recovery: the app starts with a fabricated mid-phase journal.
 $utf8 = New-Object System.Text.UTF8Encoding($false)
-$script:H = @{ Step = 0; Log = New-Object System.Collections.Generic.List[string]; Wait = 0; Data = @{}; Fail = 0 }
+$global:H = @{ Step = 0; Log = New-Object System.Collections.Generic.List[string]; Wait = 0; Data = @{}; Fail = 0 }
 $script:HOut = $env:KHO_HARNESS_OUT
 $script:HShots = $env:KHO_SHOTS
 $script:HPhase = $env:KHO_PHASE
 $script:HDir = $env:KHO_SMOKE_DIR     # folder with khoA / khoB
-function HLog { param([string]$m) $script:H.Log.Add(('[{0:HH:mm:ss.fff}] {1}' -f (Get-Date), $m)); [IO.File]::WriteAllText($script:HOut, ($script:H.Log -join "`r`n"), $utf8) }
+function HLog { param([string]$m) $global:H.Log.Add(('[{0:HH:mm:ss.fff}] {1}' -f (Get-Date), $m)); [IO.File]::WriteAllText($script:HOut, ($global:H.Log -join "`r`n"), $utf8) }
 function HShot {
     param([string]$Name, $Visual = $win)
     try {
@@ -21,7 +21,7 @@ function HShot {
         HLog "shot $Name ${w}x$hgt"
     } catch { HLog "SHOT FAIL $Name $($_.Exception.Message)" }
 }
-function Expect { param($Name, $Actual, $Expected) $ok = ([string]$Actual -ceq [string]$Expected); if (-not $ok) { $script:H.Fail++ }; HLog ('{0} {1}: actual={2} expected={3}' -f $(if ($ok) { 'PASS' } else { 'FAIL' }), $Name, $Actual, $Expected) }
+function Expect { param($Name, $Actual, $Expected) $ok = ([string]$Actual -ceq [string]$Expected); if (-not $ok) { $global:H.Fail++ }; HLog ('{0} {1}: actual={2} expected={3}' -f $(if ($ok) { 'PASS' } else { 'FAIL' }), $Name, $Actual, $Expected) }
 function Pump { $f = New-Object Windows.Threading.DispatcherFrame; [void][Windows.Threading.Dispatcher]::CurrentDispatcher.BeginInvoke([Windows.Threading.DispatcherPriority]::Background, [Action]{ $f.Continue = $false }); [Windows.Threading.Dispatcher]::PushFrame($f) }
 function Click-Item { param($Mi) $peer = [Windows.Automation.Peers.UIElementAutomationPeer]::CreatePeerForElement($Mi); $peer.GetPattern([Windows.Automation.Peers.PatternInterface]::Invoke).Invoke(); Pump; Pump }
 function Click-Btn { param($B) $B.RaiseEvent((New-Object Windows.RoutedEventArgs ([Windows.Controls.Primitives.ButtonBase]::ClickEvent))); Pump; Pump }
@@ -44,7 +44,7 @@ function RunDialog {
     $script:HTimer.Stop()
     $sb = $Script
     $dt = New-Object Windows.Threading.DispatcherTimer; $dt.Interval = [TimeSpan]::FromMilliseconds(900)
-    $dt.Add_Tick({ $dt.Stop(); try { $d = @($win.OwnedWindows)[0]; & $sb $d; try { $d.Close() } catch { } } catch { $script:H.Fail++; HLog "DIALOG SCRIPT ERROR: $($_.Exception.Message) $($_.ScriptStackTrace)"; try { @($win.OwnedWindows)[0].Close() } catch { } } }.GetNewClosure())
+    $dt.Add_Tick({ $dt.Stop(); try { $d = @($win.OwnedWindows)[0]; & $sb $d; try { $d.Close() } catch { } } catch { $global:H.Fail++; HLog "DIALOG SCRIPT ERROR: $($_.Exception.Message) $($_.ScriptStackTrace)"; try { @($win.OwnedWindows)[0].Close() } catch { } } }.GetNewClosure())
     $dt.Start()
     Show-KhoManagerDialog -Kho $Kho
     $script:HTimer.Start()
@@ -118,7 +118,7 @@ $script:HTimer.Add_Tick({
                     Expect 'dialog: kho created in registry' ($null -ne $g) $true
                     Expect 'dialog: kho folder created on disk' ([IO.Directory]::Exists([string]$g.path)) $true
                     Expect 'dialog: folder is next to the download kho' ([IO.Path]::GetDirectoryName([string]$g.path)) ([IO.Path]::GetDirectoryName((KhoByName 'Kho Alpha').path))
-                    $script:H.Data.GammaId = [string]$g.id; $script:H.Data.GammaPath = [string]$g.path
+                    $global:H.Data.GammaId = [string]$g.id; $global:H.Data.GammaPath = [string]$g.path
                     Select-DialogKho $d $g.id
                     $d.FindName('NameBox').Text = 'Kho Delta'
                     Click-Btn $d.FindName('BtnRename')
@@ -191,7 +191,7 @@ $script:HTimer.Add_Tick({
             }
             7 {
                 if ($script:galleryState -ne 'ready') { return }
-                $G = $script:H.Data.GammaPath
+                $G = $global:H.Data.GammaPath
                 Expect 'card-move: -3 in Delta folder' (F $G '1000000000201-3-hoan-chinh.mp4') $true
                 Expect 'card-move: -3 left Beta' (F $B '1000000000201-3-hoan-chinh.mp4') $false
                 Expect 'card-move: thumb/companion in Delta' (F $G '.cache\1000000000201-1-video-goc.mp4') $true
@@ -229,17 +229,17 @@ $script:HTimer.Add_Tick({
             10 {
                 # delete the kho Delta (holds video 201) from the manager dialog
                 $script:confirmDialogAutoAnswer = $true
-                $script:H.Data.Bin201 = InBin '1000000000201-3-hoan-chinh*'
-                $id = $script:H.Data.GammaId
+                $global:H.Data.Bin201 = InBin '1000000000201-3-hoan-chinh*'
+                $id = $global:H.Data.GammaId
                 RunDialog $id {
                     param($d)
                     Select-DialogKho $d $id
                     HShot 'p1-10-manager-delete' $d
                     Click-Btn $d.FindName('BtnDelete')
                     Expect 'kho delete: removed from the registry' ($null -eq (Get-KhoById $id)) $true
-                    Expect 'kho delete: its video left the folder' (F $script:H.Data.GammaPath '1000000000201-3-hoan-chinh.mp4') $false
-                    Expect 'kho delete: one more copy in the Recycle Bin' ((InBin '1000000000201-3-hoan-chinh*') - $script:H.Data.Bin201) 1
-                    Expect 'kho delete: app-made folder recycled' ([IO.Directory]::Exists($script:H.Data.GammaPath)) $false
+                    Expect 'kho delete: its video left the folder' (F $global:H.Data.GammaPath '1000000000201-3-hoan-chinh.mp4') $false
+                    Expect 'kho delete: one more copy in the Recycle Bin' ((InBin '1000000000201-3-hoan-chinh*') - $global:H.Data.Bin201) 1
+                    Expect 'kho delete: app-made folder recycled' ([IO.Directory]::Exists($global:H.Data.GammaPath)) $false
                     Expect 'kho delete: saved registry no longer lists it' (@((Get-Content -LiteralPath (Join-Path $root 'data\kho.json') -Raw -Encoding UTF8 | ConvertFrom-Json).libraries | Where-Object { $_.id -eq $id }).Count) 0
                 }
                 $h.Wait = 3; $h.Step = 11
@@ -254,6 +254,6 @@ $script:HTimer.Add_Tick({
                 $script:HTimer.Stop(); $win.Close()
             }
         }
-    } catch { $script:H.Fail++; HLog ("HARNESS ERROR step=$($script:H.Step): $($_.Exception.Message)`n$($_.ScriptStackTrace)"); $script:HTimer.Stop(); $win.Close() }
+    } catch { $global:H.Fail++; HLog ("HARNESS ERROR step=$($global:H.Step): $($_.Exception.Message)`n$($_.ScriptStackTrace)"); $script:HTimer.Stop(); $win.Close() }
 })
 $script:HTimer.Start()

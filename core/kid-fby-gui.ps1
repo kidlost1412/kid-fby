@@ -1,4 +1,11 @@
-﻿if($TikTokJobFile){
+﻿#Requires -Version 5.1
+<#
+  Kid FB.Y - WPF interface hosted by Windows PowerShell.
+  Runtime flow and source map: BAN-GIAO.md. Run Kid-FB.Y.exe for the interface.
+#>
+param([switch]$SelfTest, [string]$TikTokJobFile='')
+
+if($TikTokJobFile){
     # A separate OS process owns file transfer, so closing the GUI cannot cancel a submitted job.
     $ErrorActionPreference='Stop'
     if([IO.Path]::GetFileName($TikTokJobFile) -notmatch '^[a-f0-9]{32}\.job$' -or [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($TikTokJobFile)) -ne 'tiktok-posts'){throw 'Invalid TikTok job file.'}
@@ -7603,9 +7610,9 @@ $script:band = $null
 $script:tBand = $null
 
 function Get-BandPointer {
-    # Pointer in panel coordinates. $script:bandPointerOverride is a test seam (the WPF smoke injects the pointer; real use leaves it $null).
+    # Pointer in panel coordinates. $global:KhoBandPointerOverride is a test seam (the WPF smoke injects the pointer; real use leaves it $null).
     param($Panel)
-    if ($null -ne $script:bandPointerOverride) { return $script:bandPointerOverride }
+    if ($null -ne $global:KhoBandPointerOverride) { return $global:KhoBandPointerOverride }
     return [Windows.Input.Mouse]::GetPosition($Panel)
 }
 
@@ -8241,6 +8248,16 @@ function Show-KhoManagerDialog {
     $firstKho = @(Get-KhoList)[0]
     $state = @{ Selected = $(if ($Kho -and (Get-KhoById $Kho)) { $Kho } else { [string]$firstKho.id }); Rendering = $false; Job = $null; AcctTask = $null; Fill = $null; Render = $null; Writable = (Test-KhoRegistryWritable); TikTok = (Test-TikTokEnabled) }
 
+    # Handler defined at the dialog's top level: a closure made INSIDE another closure loses $c / $state.
+    $slotRemove = {
+                param($sender, $eventArgs)
+                try {
+                    $cur = Get-KhoById $state.Selected
+                    Set-KhoOptions -Id $state.Selected -Slots (Get-KhoSlotsWithout -Slots @($cur.slots) -Slot ([string]$sender.Tag))
+                    & $state.RenderSlots
+                    $c.Status.Text = 'Đã xóa khung giờ ' + [string]$sender.Tag + '.'
+                } catch { $c.Status.Text = (Get-FriendlyError $_.Exception.Message); Write-FileLog "WARN Quản lý kho (xóa giờ): $($_.Exception.Message)" }
+    }.GetNewClosure()
     # D10: khung giờ đăng của kho = các chip (bấm để xóa) + ô thêm HH:mm; lưu ngay vào kho.slots.
     $state.RenderSlots = {
         $lib = Get-KhoById $state.Selected
@@ -8251,15 +8268,7 @@ function Show-KhoManagerDialog {
             $b = New-Object Windows.Controls.Button; $b.Content = ([string]$s + '  ×'); $b.Tag = [string]$s; $b.Margin = [Windows.Thickness]::new(0, 0, 6, 6); $b.MinHeight = 36; $b.IsEnabled = $state.Writable
             $b.ToolTip = 'Bấm để xóa khung giờ này'
             [Windows.Automation.AutomationProperties]::SetName($b, 'Xóa khung giờ ' + [string]$s)
-            $b.Add_Click({
-                param($sender, $eventArgs)
-                try {
-                    $cur = Get-KhoById $state.Selected
-                    Set-KhoOptions -Id $state.Selected -Slots (Get-KhoSlotsWithout -Slots @($cur.slots) -Slot ([string]$sender.Tag))
-                    & $state.RenderSlots
-                    $c.Status.Text = 'Đã xóa khung giờ ' + [string]$sender.Tag + '.'
-                } catch { $c.Status.Text = (Get-FriendlyError $_.Exception.Message); Write-FileLog "WARN Quản lý kho (xóa giờ): $($_.Exception.Message)" }
-            }.GetNewClosure())
+            $b.Add_Click($slotRemove)
             [void]$c.SlotChips.Children.Add($b)
         }
     }.GetNewClosure()

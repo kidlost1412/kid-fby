@@ -1,4 +1,4 @@
-# Local FAKE TikTok backend for the WPF smoke (never the real one). State file JSON: { "rows": { "<wire reel id>": [history entries] } }.
+﻿# Local FAKE TikTok backend for the WPF smoke (never the real one). State file JSON: { "rows": { "<wire reel id>": [history entries] } }.
 # Logs every accepted job creation to "<state>.creates" as: request_id|reel_id|scheduled_for|title (one line per job).
 # A job whose caption contains FAILME is answered with HTTP 500 (a failed transfer). Quit with GET /quit.
 param([int]$Port, [string]$State)
