@@ -359,13 +359,13 @@ Vì sao: chủ dự án đăng TikTok bằng 3–5 tài khoản. Kho là một t
 
 ### Kiểm thử
 
-- `tests\khoun-all.ps1` (PowerShell 5.1 -STA): registry, luật thư mục, chuyển kho, nhật ký/khôi phục, xóa (Thùng rác thật), nhiều thư mục, hiệu năng 5 kho × 500 video. `tests\kho\smokeun-smoke.ps1 -Phase main|recovery`: chạy WPF thật trên bản sao tạm của ứng dụng.
+- `tests\khoun-all.ps1` (PowerShell 5.1 -STA, mỗi file một tiến trình): registry, luật thư mục, chuyển kho, nhật ký/khôi phục, xóa (Thùng rác thật), nhiều thư mục, hiệu năng 5 kho × 500 video, rải lịch nền/dòng sửa được, khung kéo chọn (hàm thuần), video ngoài (`19`), sửa lỗi QA (`20`: không tạo registry trước khi nạp cài đặt, nhật ký kẹt chỉ khóa hai kho, xóa bị chặn bởi nhật ký, tự chuyển khi bận, ổ không Thùng rác dùng ổ `subst` thật, header script), Hẹn lại (`21`). `tests\kho\smokeun-smoke.ps1 -Phase main|recovery` và `run-smoke-p3.ps1`: WPF thật trên bản sao tạm của ứng dụng, backend TikTok GIẢ (`smoke-fake-backend.ps1`, 127.0.0.1), ffmpeg thật; P3 kiểm khung kéo chọn (con trỏ được tiêm), thả `.MOV` ngoài vào kho rồi chuyển và xóa, chip khung giờ, rải lịch nền (hộp thoại đóng, thanh trạng thái, toast cuối).
 
 ### Giao diện (`core/kid-fby-gui.ps1`, `core/ui/*.xaml`)
 
 - Chọn kho và đếm (`Update-GalleryKhoSelector`, `Format-KhoCounts`): "Tất cả" và từng kho, đếm Chờ đăng / Đã hẹn / Đã đăng. Tab trạng thái lọc trong bộ nhớ (`Apply-GalleryFilter`, từ `$script:galleryAll`), không quét ổ và không băm lại.
 - Chọn nhiều (Ctrl/Shift, `Select-GalleryItems`): thanh dưới lưới có "Chuyển N video sang kho…" và "Rải lịch…". Menu chuyển kho (`Show-KhoMoveMenu`) là menu phẳng, không có menu con (Theme không có popup con).
-- Quản lý kho (`Show-KhoManagerDialog`): thêm kho; thêm kho tài khoản (danh sách từ `/api/accounts` khi TikTok bật); đổi tên (`Rename-Kho`); xóa (`Confirm-KhoDelete`; hộp xác nhận nói video về Kho chung, không xóa file); caption và hashtag mặc định; ngưỡng "sắp hết" (mặc định 3); nhập thư mục.
+- Quản lý kho (`Show-KhoManagerDialog`): thêm kho (thư mục, mặc định `Kho <tên>` cạnh kho tải về); thêm kho tài khoản (danh sách từ `/api/accounts` khi TikTok bật); đổi tên (`Rename-Kho`); xóa (`Confirm-KhoDelete`: xóa video và kho vào Thùng rác; ổ không có Thùng rác thì hỏi riêng "xóa vĩnh viễn?"); caption và hashtag mặc định; khung giờ đăng của kho (chip, `Set-KhoOptions`); ngưỡng "sắp hết" (mặc định 3); nhập thư mục. Banner "Có lần chuyển kho dở dang" (khi còn nhật ký trong `data\kho-moves`) có "Thử hoàn tất" (`Resume-KhoMoves`) và "Bỏ qua (giữ file tại chỗ)" (sau xác nhận, nhật ký chuyển sang `data\kho-movesbandoned\`, file không bị đụng; `Move-KhoJournalAside`).
 - Cảnh báo sắp hết (`Test-KhoLowStock`): mỗi kho tài khoản một lần mỗi phiên, khi Chờ đăng dưới ngưỡng.
 - Đã hẹn sang Đã đăng: `Update-GalleryHeldExpired` chạy mỗi 60 giây (`$tGalleryHeld`), chỉ đọc bộ nhớ, không gọi mạng.
 - Nút "Tự hẹn lịch" trong kho tài khoản (`Get-TikTokAutoScheduleItems`): lấy video Chờ đăng chưa có lịch sử, cũ nhất trước, rồi mở hộp Rải lịch để xem trước. Không gửi khi chưa bấm xác nhận.
@@ -388,9 +388,25 @@ Vì sao: chủ dự án đăng TikTok bằng 3–5 tài khoản. Kho là một t
 
 ### Dọn ổ (Cài đặt › Lưu trữ, `Invoke-KhoCleanup`)
 
-- Ứng viên: video đã đăng (xác nhận hoặc đánh dấu tay) có ngày đăng cũ hơn N ngày (ô nhập 7–365) và còn `-1`/`-2`. Ngày đăng là giờ hẹn TikTok nếu có, không thì ngày chấp nhận; không xác định được ngày thì bỏ qua. Phạm vi: kho đang chọn hoặc tất cả.
+- Ứng viên: video do app tạo, đã đăng (xác nhận hoặc đánh dấu tay), ngày đăng cũ hơn N ngày (ô nhập 7–365) và còn `-1`/`-2`. Ngày đăng là giờ hẹn TikTok nếu có, không thì ngày chấp nhận; không xác định được ngày thì bỏ qua. Phạm vi: kho đang chọn hoặc tất cả. Video ngoài (khóa `f:`) không có `-1`/`-2` nên không bao giờ là ứng viên.
 - Chỉ xóa `-1-video-goc.mp4` và `-2-am-thanh-tho.m4a` (trong `.cache` và file cũ ở gốc thư mục xuất), sau xác nhận. Không xóa `-3`, ảnh thu nhỏ, `.kidfby-publish-*`, và bỏ qua video đang có lượt chuyển TikTok.
 - Đây là ngoại lệ có chủ đích cho quy tắc "-1/-2 không xóa theo tuổi" trong `AGENTS.md`: xét theo ngày đăng, không theo tuổi file.
+
+### Video ngoài (D12) và Hẹn lại (D13)
+
+- Video trong kho là MỌI file `.mp4 .mov .m4v .mkv .webm .avi` (không phân biệt hoa/thường, không đệ quy; bỏ file ẩn bắt đầu bằng `.`, `*.part`, `*.tmp`). Video do app tạo giữ khóa là ID số; video ngoài có khóa `f:` + tên file nguyên văn (`Get-KhoVideoKey`, `Test-KhoVideoKey`, `Get-KhoVideoPath`). Khóa này là tên mục `reup-status.json`, `VideoId` của biên nhận, id nhật ký chuyển kho. Ảnh thu nhỏ: `.cache	humbs_<SHA1 tên file>` (`Get-KhoThumbKey`).
+- Backend: video ngoài gửi `reel_id` rỗng (lịch sử khớp theo sha256, `Get-TikTokWireReelId`); worker đồng bộ đổi khóa thành mã ngắn `f_<sha1>` khi hỏi `/api/history/lookup` và đổi ngược khi nhận. Bản sạch cho TikTok (`Get-TikTokCleanPlan`): `copy` (đóng gói lại) khi hình H.264/HEVC và âm AAC hoặc không âm; `audio` khi âm khác AAC; `video` (H.264 + AAC) khi codec hình khác; không có luồng hình hoặc ffprobe lỗi thì từ chối kèm lý do.
+- Ghi âm lại, Lồng tiếng/sửa logo-GIF tắt với video ngoài (tooltip "Chỉ dùng cho video do app tạo"); chuyển kho chỉ mang ảnh thu nhỏ và biên nhận đã xong; thẻ hiển thị tên file bỏ đuôi; video ngoài không bao giờ là "trùng khi tải".
+- Thả file từ Explorer lên trang Kho (`Invoke-KhoDrop`, `Copy-KhoExternalFiles`): chép vào kho đang chọn (không phải "Tất cả kho") qua `<tên>.part` rồi đổi tên, không ghi đè file cùng tên; bị từ chối khi `Test-KhoQuiet` khác rỗng.
+- Hẹn lại (`Get-TikTokRescheduleSeed`): thẻ có mục "Hẹn lại" khi mục TikTok MỚI NHẤT của video là lịch gốc bị TikTok từ chối (`status=failed`, `schedule_mode=native`). Mở hộp đăng với cùng tài khoản, caption đọc từ trường `Caption` của biên nhận (biên nhận cũ không có thì dùng mẫu của kho) và giờ là "giờ trống kế tiếp". Phần hộp thoại WPF chưa có kiểm tự động (unverified); hàm chọn và cờ trên thẻ có test (`21`).
+
+### Sửa lỗi sau QA độc lập (26/10/2026)
+
+- Registry chỉ được tạo/lưu sau khi `settings.json` đã nạp (`$script:khoSettingsLoaded`); trước đó `Get-KhoRegistry` trả kho tạm không lưu. Cài đặt bị khóa thì kho tạm chỉ ở bộ nhớ (`khoRegistryReady=$false`).
+- `Invoke-KhoMove` không còn từ chối toàn cục khi có nhật ký kẹt; chỉ hai thư mục của nhật ký bị khóa (`Move-KhoVideos`). `Remove-ReelFiles` từ chối khi nhật ký khóa thư mục. Tự chuyển kiểm "yên" và nhật ký trước khi đọc metadata; khi bận thì chờ lần chuyển bận → yên (`khoAutoMoveDeferred`) thay vì thử mỗi giây.
+- Ổ không có Thùng rác (UNC, không phải ổ cố định, `subst`; `Test-KhoRecycleBin`): xóa bị từ chối trừ khi chủ chọn "xóa vĩnh viễn" (`-AllowPermanent`). Thùng rác lỗi ở `-3` thì dừng, `-1/-2`/biên nhận giữ nguyên.
+- Biến `$Root`/`foreach ($root …)` che biến `$root` của app (không phân biệt hoa/thường): các tham số kho đổi thành `$KhoRoot` (giữ bí danh `-Root`), vòng lặp thành `$khoRoot`, hàm cấp app dùng `$script:root`.
+- Đã khôi phục phần đầu script (`#Requires`, `param([switch]$SelfTest, [string]$TikTokJobFile)`) bị mất trong một commit WIP; có test so với v3.0.1. Closure lồng trong closure làm mất `$c`/`$state` (chip khung giờ) đã sửa.
 
 ### Giới hạn đã biết
 
