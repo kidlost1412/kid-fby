@@ -272,7 +272,10 @@ public class KidWrapPanel : VirtualizingPanel, IScrollInfo
             case NotifyCollectionChangedAction.Remove:
             case NotifyCollectionChangedAction.Replace:
             case NotifyCollectionChangedAction.Move:
-                RemoveInternalChildRange(args.Position.Index, args.ItemUICount);
+                // A move between khos removes, replaces and inserts several cards in one sync; patching InternalChildren by position then
+                // leaves a stale child and CleanUp throws a NullReferenceException inside ItemContainerGenerator.Remove (crash log, Dispatcher).
+                // Dropping every realized container is cheap (only the visible cards are generated again) and always consistent.
+                RemoveAllChildren();
                 break;
             case NotifyCollectionChangedAction.Reset:
                 _offset.Y = 0;
