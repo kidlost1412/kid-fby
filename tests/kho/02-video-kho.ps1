@@ -104,7 +104,7 @@ Test-Case 'a corrupt reup-status.json is never overwritten by Set-VideoKho' {
     Assert-Equal ([IO.File]::ReadAllText((Join-Path $out 'reup-status.json'))) '{ broken'
 }
 
-Test-Case 'delete custom kho: its videos lose Kho (and KhoManual), others byte-identical, registry updated' {
+Test-Case 'delete custom kho: its videos lose Kho; KhoManual kept only when confirmed-posted; others byte-identical, registry updated' {
     Reset-Kho
     $root = New-TestDir
     $out = New-OutDir
@@ -114,16 +114,44 @@ Test-Case 'delete custom kho: its videos lose Kho (and KhoManual), others byte-i
         '1' = [ordered]@{ Posted = $false; Date = ''; Kho = $k.id; KhoManual = $true }
         '2' = [ordered]@{ Posted = $false; Date = ''; Kho = $k.id }
         '3' = [ordered]@{ Posted = $false; Date = ''; Kho = $other.id; KhoManual = $true }
+        '5' = [ordered]@{ Posted = $true; Date = 'x'; Source = 'autotok-history'; History = @((New-TestHistoryEntry -Request 'r5' -User 'anna')); Kho = $k.id }
+        '6' = [ordered]@{ Posted = $true; Date = 'x'; Source = 'autotok-history'; History = @((New-TestHistoryEntry -Request 'r6' -User 'anna' -Uncertain $true)); Kho = $k.id; KhoManual = $true }
         '4' = [ordered]@{ Posted = $true; Date = 'x' }
     }
     $before = & $statusOf $out
     $moved = Remove-Kho -Id $k.id -OutDir $out
-    Assert-Equal $moved 2 'moved count'
+    Assert-Equal $moved 4 'moved count'
     $m = & $statusOf $out
     foreach ($id in '1', '2') { Assert-True ($null -eq $m.$id.PSObject.Properties['Kho'] -and $null -eq $m.$id.PSObject.Properties['KhoManual']) "video $id back to default" }
     foreach ($id in '3', '4') { Assert-Equal (ConvertTo-Json $m.$id -Compress) (ConvertTo-Json $before.$id -Compress) "video $id untouched" }
     Assert-True (@((Get-KhoRegistry).libraries | Where-Object { $_.id -eq $k.id }).Count -eq 0) 'registry'
     Assert-Equal (Get-KhoEffectiveId $m.'1') 'default'
+    Assert-True ($null -eq $m.'5'.PSObject.Properties['Kho'] -and $m.'5'.KhoManual -eq $true) 'confirmed-posted video is pinned in the default kho'
+    Assert-True ($null -eq $m.'6'.PSObject.Properties['Kho'] -and $null -eq $m.'6'.PSObject.Properties['KhoManual']) 'uncertain post is not a confirmed post: no pin'
+}
+
+Test-Case 'dangling kho id counts as default (known-ids set), acct ids always stand' {
+    $known = @{ default = $true; 'c-0123456789abcdef0123456789abcdef' = $true }
+    Assert-Equal (Get-KhoEffectiveId ([pscustomobject]@{ Kho = 'c-ffffffffffffffffffffffffffffffff' }) $known) 'default'
+    Assert-Equal (Get-KhoEffectiveId ([pscustomobject]@{ Kho = 'c-0123456789abcdef0123456789abcdef' }) $known) 'c-0123456789abcdef0123456789abcdef'
+    Assert-Equal (Get-KhoEffectiveId ([pscustomobject]@{ Kho = 'acct:zed' }) $known) 'acct:zed'
+    Assert-Equal (Get-KhoEffectiveId ([pscustomobject]@{ Kho = 'c-ffffffffffffffffffffffffffffffff' })) 'c-ffffffffffffffffffffffffffffffff' 'without a known set nothing is remapped'
+}
+
+Test-Case 'Remove-Kho refuses while the running queue saves into that kho; Add-QueueVideoToKho skips an unregistered kho' {
+    Reset-Kho
+    $out = New-OutDir
+    $k = New-Kho -Name 'Đang tải'
+    Write-TestMetadata $out @{ '1' = [ordered]@{ Posted = $false; Date = ''; Kho = $k.id } }
+    $script:queueKhoId = $k.id; $script:ps = $true
+    $err = ''; try { [void](Remove-Kho -Id $k.id -OutDir $out) } catch { $err = $_.Exception.Message }
+    Assert-True ($err -like '*Hàng đợi đang tải*') "refused: $err"
+    Assert-True (@((Get-KhoRegistry).libraries | Where-Object { $_.id -eq $k.id }).Count -eq 1) 'kho still registered'
+    $script:ps = $null
+    $script:queueKhoId = 'c-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+    Add-QueueVideoToKho -VideoPath (Join-Path $out '9-3-hoan-chinh.mp4')
+    Assert-True ($null -eq (& $statusOf $out).PSObject.Properties['9']) 'no entry created for an unregistered kho'
+    $script:queueKhoId = $null
 }
 
 Test-Case 'delete account kho: videos get KhoManual and stay in the default kho; another confirmed video re-creates the kho' {

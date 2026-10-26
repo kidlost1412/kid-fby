@@ -23,7 +23,8 @@ function Start-Engine { throw 'Start-Engine must not run in these tests' }
 $script:runLog = New-Object System.Collections.ArrayList
 
 function Reset-State {
-    $script:khoRegistry = $null; $script:khoRegistryReady = $true; $script:khoDownloadTarget = 'default'; $script:importBusy = $false
+    $script:khoRegistry = New-KhoRegistryObject; $script:khoRegistry.libraries = @($script:khoRegistry.libraries) + (New-KhoLibrary -Id $guid -Name 'Test')   # the target kho is registered (unregistered ids are skipped)
+    $script:khoRegistryReady = $true; $script:khoDownloadTarget = 'default'; $script:importBusy = $false
     $script:queueKhoId = $null; $script:queue = @(); $script:idx = 0; $script:ps = $null; $script:stopping = $false; $script:cancelRequested = $false
     $script:giu = 0; $script:bo = 0; $script:loi = 0; $script:chuaXN = 0; $script:boTruoc = 0; $script:failedLinks = @(); $script:currentResult = $null
     $script:redoRestoreOutDir = $null; $script:lastOut = ''; $script:settingsLoading = $false; $script:lastCompletedOut = ''
@@ -88,7 +89,7 @@ Test-Case 'never overrides an account kho, a manual choice or the manual-default
 Test-Case 'normal queue then redo: the redo does not touch the kho; a re-download never overrides' {
     Reset-State; $out = New-Out
     Set-KhoDownloadTarget -Id (New-Kho -Name 'Đích').id
-    $first = (Get-KhoRegistry).libraries[1].id
+    $first = @((Get-KhoRegistry).libraries)[-1].id
     $script:queue = @(); $script:ps = $null
     Start-QueueFromLinks -Links @('https://www.facebook.com/reel/333/') -SkipExisting $true
     Assert-Equal $script:queueKhoId $first 'normal queue captures the combo value'

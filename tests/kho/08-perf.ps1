@@ -23,7 +23,7 @@ Write-Output $new.Line
 $old = $null
 if ($baseFile) { $old = Invoke-PerfChild $baseFile 'baseline-v3.0.1'; Write-Output $old.Line }
 
-Test-Case 'warm passes with nothing changed: under 2 s each, no hashing (all files were locked), nothing rewritten' {
+Test-Case 'warm passes with nothing changed: restart < 10 s and steady < 2.6 s (the 2 s target is NOT asserted), no hashing (all files were locked), nothing rewritten' {
     $s = $new.Summary
     Assert-True ($s.warmRestartMs -lt 10000) "warm restart (spec 2000 ms NOT met; one-time pass after start) took $($s.warmRestartMs) ms"
     Assert-True ($s.steadyMs -lt 2600) "steady (spec 2000 ms; measured ~2100) pass took $($s.steadyMs) ms"
@@ -56,7 +56,7 @@ if ($old) {
     }
 } else { Skip-Case 'A7 baseline comparison' 'git / baseline commit not available' }
 
-Test-Case 'kho helpers on 2,500 stored entries: Get-KhoList, auto-assign (idempotent) and effective-id scan stay cheap' {
+Test-Case 'kho helpers on 2,500 stored entries: Get-KhoList, auto-assign (idempotent) and effective-id scan stay within 400 / 250 / 250 ms' {
     $root = New-TestDir
     $meta = Get-ReupMetadata -OutDir $new.Out
     $t1 = (Measure-Command { $list = @(Get-KhoList -Metadata $meta) }).TotalMilliseconds

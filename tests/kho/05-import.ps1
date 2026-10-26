@@ -81,7 +81,7 @@ Test-Case 'metadata failure: files stay, nothing is reported added, the retry fi
     Assert-Equal ([IO.File]::ReadAllText((Join-Path $out 'reup-status.json'))) '{ broken' 'corrupt metadata untouched'
     [IO.File]::Delete((Join-Path $out 'reup-status.json'))                           # the owner fixed the cause
     $r2 = Import-KhoFolder -SourceDir $src -KhoId $guid -OutDir $out
-    Assert-Equal $r2.Added 3 'run 2 added'; Assert-Equal $r2.Skipped 0 'identical files are not "skipped"'; Assert-Equal $r2.Failed 0
+    Assert-Equal $r2.Added 0 'run 2: files were copied by run 1, so none is newly added'; Assert-Equal $r2.Skipped 3 'identical files already present count as already present'; Assert-Equal $r2.Failed 0
     $m = Read-TestJson (Join-Path $out 'reup-status.json')
     Assert-Equal $m.'111'.Kho $guid; Assert-Equal @($m.'111'.History).Count 2
     $hash = Get-Sha (Join-Path $out 'reup-status.json'); $stamp = (Get-Item (Join-Path $out 'reup-status.json')).LastWriteTimeUtc
@@ -106,7 +106,7 @@ Test-Case 'history union by key (our entry wins), ManualPosted kept, KhoManual /
         '333' = [ordered]@{ Posted = $false; Date = '' }
     }
     $r = Import-KhoFolder -SourceDir $src -KhoId $guid -OutDir $out
-    Assert-Equal $r.Added 3 'all three (identical copies) get the metadata step'; Assert-Equal $r.Failed 0
+    Assert-Equal $r.Added 0 'identical copies are not newly added'; Assert-Equal $r.Skipped 3 'they count as already present'; Assert-Equal $r.Failed 0
     $m = Read-TestJson (Join-Path $out 'reup-status.json')
     $keys = @($m.'111'.History | ForEach-Object { $_.key })
     Assert-Equal ($keys -join ',') 'request:k3,request:k2,request:k1' 'union sorted by created_at desc'
