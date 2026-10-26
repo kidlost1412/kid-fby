@@ -3193,7 +3193,12 @@ function Read-TikTokHashtags {
                 $key = $tag.ToLowerInvariant(); if ($seen.ContainsKey($key)) { continue }
                 $seen[$key] = 1
                 $count = 0; if (-not [int]::TryParse([string]$t.count, [ref]$count) -or $count -lt 1) { $count = 1 }
-                $result.Add([pscustomobject]@{ tag = $tag; count = $count; lastUsed = [string]$t.lastUsed })
+                # accounts (tuy chon, ban cu khong co): username viet thuong -> so lan dung.
+                $acc = [ordered]@{}
+                if ($null -ne $t.PSObject.Properties['accounts'] -and $t.accounts -is [pscustomobject]) {
+                    foreach ($ap in $t.accounts.PSObject.Properties) { $n = 0; if ([int]::TryParse([string]$ap.Value, [ref]$n) -and $n -ge 1) { $acc[([string]$ap.Name).ToLowerInvariant()] = $n } }
+                }
+                $result.Add([pscustomobject]@{ tag = $tag; count = $count; lastUsed = [string]$t.lastUsed; accounts = $acc })
             }
         } catch {
             $err = $_.Exception.Message
@@ -3211,12 +3216,16 @@ function Save-TikTokHashtags {
     # Ghi nguyen tu (dung Write-KidSettings), toi da 300 muc: bo muc dung lau nhat.
     param([object[]]$Tags, [string]$Path = (Get-TikTokHashtagPath))
     $keep = @($Tags | Sort-Object -Property @{ Expression = { [string]$_.lastUsed }; Descending = $true }, @{ Expression = { [int]$_.count }; Descending = $true } | Select-Object -First 300)
-    Write-KidSettings -Path $Path -Data ([ordered]@{ version = 1; tags = @($keep | ForEach-Object { [ordered]@{ tag = [string]$_.tag; count = [int]$_.count; lastUsed = [string]$_.lastUsed } }) })
+    Write-KidSettings -Path $Path -Data ([ordered]@{ version = 1; tags = @($keep | ForEach-Object {
+        $o = [ordered]@{ tag = [string]$_.tag; count = [int]$_.count; lastUsed = [string]$_.lastUsed }
+        if ($null -ne $_.PSObject.Properties['accounts'] -and $_.accounts -and @($_.accounts.Keys).Count) { $o.accounts = $_.accounts }
+        $o }) })
 }
 
 function Add-TikTokHashtagsFromCaption {
     # Hoc hashtag tu caption da dang: count++ va lastUsed = bay gio. Nguoi goi phai bat loi (khong duoc lam hong viec dang).
-    param([string]$Caption, [string]$Path = (Get-TikTokHashtagPath))
+    param([string]$Caption, [string]$Path = (Get-TikTokHashtagPath), [string]$Account = '')
+    $acct = ([string]$Account).Trim().TrimStart('@').ToLowerInvariant()
     $found = @(Get-TikTokHashtagsFromText $Caption)
     if (-not $found.Count) { return }
     $now = [DateTime]::UtcNow.ToString('o')
@@ -3226,7 +3235,11 @@ function Add-TikTokHashtagsFromCaption {
     foreach ($tag in $found) {
         $key = $tag.ToLowerInvariant()
         if ($index.ContainsKey($key)) { $e = $index[$key]; $e.count = [int]$e.count + 1; $e.lastUsed = $now }
-        else { $e = [pscustomobject]@{ tag = $tag; count = 1; lastUsed = $now }; $index[$key] = $e; $items.Add($e) }
+        else { $e = [pscustomobject]@{ tag = $tag; count = 1; lastUsed = $now; accounts = [ordered]@{} }; $index[$key] = $e; $items.Add($e) }
+        if ($acct) {
+            if ($null -eq $e.PSObject.Properties['accounts'] -or $null -eq $e.accounts) { $e | Add-Member -NotePropertyName accounts -NotePropertyValue ([ordered]@{}) -Force }
+            $e.accounts[$acct] = [int]$(if ($e.accounts.Contains($acct)) { $e.accounts[$acct] } else { 0 }) + 1
+        }
     }
     if ($unreadable) { return }
     Save-TikTokHashtags -Tags $items.ToArray() -Path $Path
@@ -3254,14 +3267,17 @@ function Get-TikTokHashtagToken {
 
 function Get-TikTokHashtagSuggestions {
     # Tag goi y (chuoi): bo tag da co trong caption, loc theo phan dang go, xep theo count giam roi lastUsed giam.
-    param([object[]]$Tags, [string]$Text, [int]$Caret, [int]$Max = 20)
+    param([object[]]$Tags, [string]$Text, [int]$Caret, [int]$Max = 20, [string]$Account = '')
     if ($null -eq $Text) { $Text = '' }
+    $acct = ([string]$Account).Trim().TrimStart('@').ToLowerInvariant()
+    # So lan tai khoan nay da dung tag; tag cua tai khoan xep truoc (theo so lan roi lastUsed), con lai xep theo count chung roi lastUsed.
+    $accCount = { $n = 0; if ($acct -and $null -ne $_.PSObject.Properties['accounts'] -and $_.accounts -and $_.accounts.Contains($acct)) { $n = [int]$_.accounts[$acct] }; $n }
     $tok = Get-TikTokHashtagToken -Text $Text -Caret $Caret
     $rest = $Text; $prefix = ''
     if ($tok) { $rest = $Text.Remove($tok.Start, $tok.End - $tok.Start); $prefix = '#' + $tok.Prefix }
     $have = @{}; foreach ($t in @(Get-TikTokHashtagsFromText $rest)) { $have[$t.ToLowerInvariant()] = 1 }
     $pick = @($Tags | Where-Object { $null -ne $_ -and -not $have.ContainsKey(([string]$_.tag).ToLowerInvariant()) -and ($prefix.Length -le 1 -or ([string]$_.tag).StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) } |
-        Sort-Object -Property @{ Expression = { [int]$_.count }; Descending = $true }, @{ Expression = { [string]$_.lastUsed }; Descending = $true } | Select-Object -First $Max)
+        Sort-Object -Property @{ Expression = $accCount; Descending = $true }, @{ Expression = { if ((& $accCount) -gt 0) { 0 } else { [int]$_.count } }; Descending = $true }, @{ Expression = { [string]$_.lastUsed }; Descending = $true } | Select-Object -First $Max)
     return @($pick | ForEach-Object { [string]$_.tag })
 }
 
@@ -3283,6 +3299,169 @@ function Add-TikTokHashtagToCaption {
     # Chen o cuoi caption: them dau cach de con tro khong dinh vao tag vua chen (neu khong se bi coi la dang go do tag do).
     if ($pos -eq $new.Length -and ($MaxLength -le 0 -or $new.Length -lt $MaxLength)) { $new += ' '; $pos++ }
     return [pscustomobject]@{ Ok = $true; Text = $new; Caret = $pos; Reason = '' }
+}
+
+function Get-TikTokPrefsPath { return (Join-Path $root 'data\tiktok-prefs.json') }
+
+function Read-TikTokPrefs {
+    # @{ lastAccount; times = @{ <user lower> = @{ 'HH:mm' = count } } }. Thieu file -> rong. Hong -> doi ten .corrupt-<ts> roi coi nhu rong.
+    # $Unreadable: $true khi file ton tai nhung khong doc duoc (khoa) -> nguoi goi KHONG duoc ghi de. Khong bao gio nem loi.
+    param([string]$Path = (Get-TikTokPrefsPath), [ref]$Unreadable)
+    $prefs = @{ lastAccount = ''; times = @{} }
+    if ($null -ne $Unreadable) { $Unreadable.Value = $false }
+    try {
+        if (-not [System.IO.File]::Exists($Path)) { return $prefs }
+        $json = $null; $readErr = $null
+        for ($try = 1; $try -le 3; $try++) {
+            try { $json = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8); $readErr = $null; break }
+            catch { $readErr = $_.Exception.Message; if ($try -lt 3) { Start-Sleep -Milliseconds 100 } }
+        }
+        if ($null -ne $readErr) {
+            Write-FileLog "WARN Không đọc được tiktok-prefs.json (đang bị khóa?), giữ nguyên file: $readErr"
+            if ($null -ne $Unreadable) { $Unreadable.Value = $true }
+            return $prefs
+        }
+        try {
+            if ([string]::IsNullOrWhiteSpace($json) -or -not $json.TrimStart().StartsWith('{')) { throw 'Không phải đối tượng JSON.' }
+            $obj = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+            if ($null -eq $obj -or $obj -isnot [pscustomobject]) { throw 'Không phải đối tượng JSON.' }
+            $p = @{ lastAccount = ''; times = @{} }
+            if ($null -ne $obj.PSObject.Properties['lastAccount']) { $p.lastAccount = ([string]$obj.lastAccount).Trim().TrimStart('@').ToLowerInvariant() }
+            if ($null -ne $obj.PSObject.Properties['times'] -and $obj.times -is [pscustomobject]) {
+                foreach ($u in $obj.times.PSObject.Properties) {
+                    if ($u.Value -isnot [pscustomobject]) { continue }
+                    $m = @{}
+                    foreach ($tp in $u.Value.PSObject.Properties) {
+                        $n = 0
+                        if ($tp.Name -match '^([01]\d|2[0-3]):[0-5]\d$' -and [int]::TryParse([string]$tp.Value, [ref]$n) -and $n -ge 1) { $m[$tp.Name] = $n }
+                    }
+                    if ($m.Count) { $p.times[([string]$u.Name).ToLowerInvariant()] = $m }
+                }
+            }
+            $prefs = $p
+        } catch {
+            $err = $_.Exception.Message
+            $bad = $Path + '.corrupt-' + (Get-Date).ToString('yyyyMMdd-HHmmss')
+            if ([System.IO.File]::Exists($bad)) { $bad += '-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) }
+            try { [System.IO.File]::Move($Path, $bad); Write-FileLog "WARN tiktok-prefs.json bị hỏng ($err); đã đổi tên thành '$bad'." }
+            catch { Write-FileLog "WARN tiktok-prefs.json bị hỏng ($err) và không đổi tên được: $($_.Exception.Message)" }
+            $prefs = @{ lastAccount = ''; times = @{} }
+        }
+    } catch { Write-FileLog "WARN Đọc tiktok-prefs.json lỗi: $($_.Exception.Message)" }
+    return $prefs
+}
+
+function Save-TikTokPrefs {
+    param($Prefs, [string]$Path = (Get-TikTokPrefsPath))
+    $times = [ordered]@{}
+    foreach ($u in @($Prefs.times.Keys | Sort-Object)) {
+        $m = [ordered]@{}; foreach ($t in @($Prefs.times[$u].Keys | Sort-Object)) { $m[$t] = [int]$Prefs.times[$u][$t] }
+        $times[$u] = $m
+    }
+    Write-KidSettings -Path $Path -Data ([ordered]@{ version = 1; lastAccount = [string]$Prefs.lastAccount; times = $times })
+}
+
+function Register-TikTokPrefsSubmit {
+    # Sau khi giao viec dang thanh cong: nho tai khoan cuoi; neu hen gio thi them 1 vao times[user]['HH:mm']. Nguoi goi phai bat loi.
+    param([string]$Username, [string]$Time = '', [string]$Path = (Get-TikTokPrefsPath))
+    $u = ([string]$Username).Trim().TrimStart('@').ToLowerInvariant()
+    if (-not $u) { return }
+    $unreadable = $false
+    $prefs = Read-TikTokPrefs -Path $Path -Unreadable ([ref]$unreadable)
+    if ($unreadable) { return }
+    $prefs.lastAccount = $u
+    if ($Time -match '^([01]\d|2[0-3]):[0-5]\d$') {
+        if (-not $prefs.times.ContainsKey($u)) { $prefs.times[$u] = @{} }
+        $prefs.times[$u][$Time] = [int]$(if ($prefs.times[$u].ContainsKey($Time)) { $prefs.times[$u][$Time] } else { 0 }) + 1
+    }
+    Save-TikTokPrefs -Prefs $prefs -Path $Path
+}
+
+function Get-TikTokTimeChips {
+    # Toi da 4 gio: hay dung nhat cua tai khoan (count giam, bang nhau thi gio som truoc), thieu thi bo sung 08:00/12:00/19:00/21:00; tra ve theo thu tu gio.
+    param($Times, [int]$Count = 4)
+    $fallback = @('08:00', '12:00', '19:00', '21:00')
+    $pick = New-Object 'System.Collections.Generic.List[string]'
+    if ($Times) {
+        foreach ($k in @($Times.Keys | Sort-Object -Property @{ Expression = { [int]$Times[$_] }; Descending = $true }, @{ Expression = { [string]$_ }; Descending = $false })) {
+            if ($pick.Count -lt $Count) { $pick.Add([string]$k) }
+        }
+    }
+    foreach ($f in $fallback) { if ($pick.Count -lt $Count -and -not $pick.Contains($f)) { $pick.Add($f) } }
+    return @($pick | Sort-Object)
+}
+
+function Get-TikTokCaptionTemplate {
+    # Caption + hashtag mau cua kho dich: kho tai khoan (acct:<u>) neu da dang ky, neu khong thi kho tuy chinh hien tai cua video. '' neu khong co.
+    param([string]$Account, [string]$VideoKhoId, [object[]]$Libraries)
+    $u = ([string]$Account).Trim().TrimStart('@').ToLowerInvariant()
+    $target = $null
+    if ($u) { $target = @($Libraries | Where-Object { $_ -and [string]$_.id -ceq ('acct:' + $u) }) | Select-Object -First 1 }
+    if (-not $target -and $VideoKhoId -and -not $VideoKhoId.StartsWith('acct:') -and $VideoKhoId -ne 'default') {
+        $target = @($Libraries | Where-Object { $_ -and [string]$_.id -ceq $VideoKhoId }) | Select-Object -First 1
+    }
+    if (-not $target) { return '' }
+    $parts = New-Object 'System.Collections.Generic.List[string]'
+    if (([string]$target.caption).Trim()) { $parts.Add(([string]$target.caption).Trim()) }
+    foreach ($h in @($target.hashtags)) { $t = ([string]$h).Trim().TrimStart('#'); if ($t) { $parts.Add('#' + $t) } }
+    return ($parts -join ' ')
+}
+
+function ConvertTo-TikTokLocalTime {
+    # Chuoi ISO/UTC -> gio may; $null neu rong hoac khong doc duoc.
+    param([string]$Value)
+    if (-not $Value) { return $null }
+    $o = [DateTimeOffset]::MinValue
+    if ([DateTimeOffset]::TryParse($Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$o)) { return $o.LocalDateTime }
+    return $null
+}
+
+function Get-TikTokRepostWarning {
+    # Bai da dang xac nhan (succeeded, khong publish_uncertain) tren tai khoan KHAC tai khoan dang chon: @{ Username; When(gio may) } hoac $null. Lay bai moi nhat.
+    param([object[]]$Entries, [string]$Account)
+    $u = ([string]$Account).Trim().TrimStart('@')
+    $hit = @(@($Entries) | Where-Object { $_ -and [string]$_.status -eq 'succeeded' -and $_.publish_uncertain -ne $true -and [string]$_.username -and [string]$_.username -ine $u } |
+        Sort-Object { Get-TikTokSortKey ([string]$_.accepted_at) } -Descending)
+    if (-not $hit.Count) { return $null }
+    return @{ Username = [string]$hit[0].username; When = (ConvertTo-TikTokLocalTime ([string]$hit[0].accepted_at)) }
+}
+
+function Get-TikTokBusyTimes {
+    # Gio (gio may) cua cac muc DA HEN/DANG CHO cua tai khoan nay tren moi video trong $Metadata (reup-status.json) va $ExtraEntries.
+    param($Metadata, [string]$Account, [DateTime]$Now = [DateTime]::Now, [object[]]$ExtraEntries = @())
+    $u = ([string]$Account).Trim().TrimStart('@')
+    $active = @('pending', 'queued', 'running', 'preparing')
+    $all = New-Object 'System.Collections.Generic.List[object]'
+    if ($Metadata) { foreach ($p in $Metadata.PSObject.Properties) { foreach ($h in @($p.Value.History)) { if ($h) { $all.Add($h) } } } }
+    foreach ($h in @($ExtraEntries)) { if ($h) { $all.Add($h) } }
+    $busy = New-Object 'System.Collections.Generic.List[DateTime]'
+    foreach ($h in $all) {
+        if (-not [string]$h.username -or [string]$h.username -ine $u) { continue }
+        $t = ConvertTo-TikTokLocalTime ([string]$h.tiktok_schedule_time)
+        if ($null -eq $t) { $t = ConvertTo-TikTokLocalTime ([string]$h.planned_for) }
+        if ($null -eq $t) { continue }
+        $st = [string]$h.status
+        if ($st -in $active -or ($st -eq 'succeeded' -and $t -gt $Now)) { $busy.Add($t) }
+    }
+    return $busy.ToArray()
+}
+
+function Get-NextFreeTikTokSlot {
+    # Gio som nhat (gio may) trong cac gio yeu thich ('HH:mm') nam trong [Bounds.Min, Bounds.Max] va cach moi gio ban it nhat 60 phut; $null neu khong co.
+    param([string[]]$Favorites, [DateTime[]]$Busy = @(), [DateTime]$Now = [DateTime]::Now, $Bounds = $null)
+    if ($null -eq $Bounds) { $Bounds = Get-TikTokScheduleBounds $Now }
+    $times = @(@($Favorites) | Where-Object { $_ -match '^([01]\d|2[0-3]):[0-5]\d$' } | Sort-Object -Unique)
+    foreach ($d in 0..10) {
+        $day = $Bounds.Min.Date.AddDays($d)
+        foreach ($t in $times) {
+            $slot = $day.AddHours([int]$t.Substring(0, 2)).AddMinutes([int]$t.Substring(3, 2))
+            if ($slot -lt $Bounds.Min -or $slot -gt $Bounds.Max) { continue }
+            $clash = $false
+            foreach ($b in @($Busy)) { if ([Math]::Abs(($slot - $b).TotalMinutes) -lt 60) { $clash = $true; break } }
+            if (-not $clash) { return $slot }
+        }
+    }
+    return $null
 }
 
 function Show-TikTokPublishDialog {
@@ -3309,11 +3488,12 @@ function Show-TikTokPublishDialog {
      <UniformGrid Columns="7" Margin="0,0,0,4"><TextBlock Text="Th 2" TextAlignment="Center"/><TextBlock Text="Th 3" TextAlignment="Center"/><TextBlock Text="Th 4" TextAlignment="Center"/><TextBlock Text="Th 5" TextAlignment="Center"/><TextBlock Text="Th 6" TextAlignment="Center"/><TextBlock Text="Th 7" TextAlignment="Center"/><TextBlock Text="CN" TextAlignment="Center"/></UniformGrid>
      <UniformGrid x:Name="Days" Columns="7" Rows="6"/>
     </StackPanel>
-    <StackPanel Width="230" Margin="0,8,0,0"><TextBlock Text="Giờ đăng · 24 tiếng" FontWeight="ExtraBold"/><StackPanel Orientation="Horizontal" Margin="0,8,0,10"><TextBox x:Name="Hour" Text="19" Width="68" Height="44" MinHeight="44" Padding="4,0" MaxLength="2" TextAlignment="Center" VerticalContentAlignment="Center" AutomationProperties.Name="Giờ đăng"/><TextBlock Text=" : " FontSize="20" VerticalAlignment="Center"/><TextBox x:Name="Minute" Text="00" Width="68" Height="44" MinHeight="44" Padding="4,0" MaxLength="2" TextAlignment="Center" VerticalContentAlignment="Center" AutomationProperties.Name="Phút đăng"/></StackPanel><TextBlock x:Name="ChosenDate" TextWrapping="Wrap" Margin="0,0,0,12"/><WrapPanel x:Name="TimePresets"/><WrapPanel Margin="0,12,0,8"><Button x:Name="Today" Content="Hôm nay" Margin="0,0,6,6"/><Button x:Name="Tomorrow" Content="Ngày mai" Margin="0,0,0,6"/></WrapPanel><TextBlock x:Name="ScheduleHint" FontSize="12" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap"/></StackPanel>
+    <StackPanel Width="230" Margin="0,8,0,0"><TextBlock Text="Giờ đăng · 24 tiếng" FontWeight="ExtraBold"/><StackPanel Orientation="Horizontal" Margin="0,8,0,10"><TextBox x:Name="Hour" Text="19" Width="68" Height="44" MinHeight="44" Padding="4,0" MaxLength="2" TextAlignment="Center" VerticalContentAlignment="Center" AutomationProperties.Name="Giờ đăng"/><TextBlock Text=" : " FontSize="20" VerticalAlignment="Center"/><TextBox x:Name="Minute" Text="00" Width="68" Height="44" MinHeight="44" Padding="4,0" MaxLength="2" TextAlignment="Center" VerticalContentAlignment="Center" AutomationProperties.Name="Phút đăng"/></StackPanel><TextBlock x:Name="ChosenDate" TextWrapping="Wrap" Margin="0,0,0,12"/><WrapPanel x:Name="TimePresets"/><Button x:Name="NextFree" Content="Giờ trống kế tiếp" Margin="0,6,0,0" HorizontalAlignment="Left" ToolTip="Chọn giờ yêu thích gần nhất (từ 20 phút nữa) mà tài khoản này chưa có bài hẹn trong vòng 1 tiếng."/><WrapPanel Margin="0,12,0,8"><Button x:Name="Today" Content="Hôm nay" Margin="0,0,6,6"/><Button x:Name="Tomorrow" Content="Ngày mai" Margin="0,0,0,6"/></WrapPanel><TextBlock x:Name="ScheduleHint" FontSize="12" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap"/></StackPanel>
    </WrapPanel>
   </Border>
   <Expander Header="Tùy chọn nâng cao" Margin="0,0,0,10"><WrapPanel><CheckBox x:Name="Comments" Content="Bình luận" IsChecked="True" MinHeight="44" Margin="0,0,18,0"/><CheckBox x:Name="Duet" Content="Song ca" MinHeight="44" Margin="0,0,18,0"/><CheckBox x:Name="Stitch" Content="Ghép nối" MinHeight="44" Margin="0,0,18,0"/><CheckBox x:Name="Private" Content="Chỉ mình tôi" MinHeight="44" Margin="0,0,18,0"/><CheckBox x:Name="AI" Content="Nhãn AI" MinHeight="44"/></WrapPanel></Expander>
   <CheckBox x:Name="ConfirmRepost" Content="Tôi đã kiểm tra và muốn đăng lại thành bài mới" Visibility="Collapsed" MinHeight="44" Margin="0,4,0,8"/>
+  <Border x:Name="RepostWarnBox" Visibility="Collapsed" Background="{DynamicResource WarningSubtle}" BorderBrush="{DynamicResource Warning}" BorderThickness="1" CornerRadius="14" Padding="12" Margin="0,4,0,8"><StackPanel><TextBlock x:Name="RepostWarn" TextWrapping="Wrap" FontWeight="SemiBold" Foreground="{DynamicResource WarningText}"/><CheckBox x:Name="ConfirmOther" Content="Tôi vẫn muốn đăng" MinHeight="44" Margin="0,6,0,0"/></StackPanel></Border>
  </StackPanel></ScrollViewer>
  <WrapPanel Grid.Row="2" HorizontalAlignment="Right" Margin="0,16,0,0"><Button x:Name="Dashboard" Content="Tài khoản / Lịch đăng" Margin="0,0,8,8"/><Button x:Name="Close" Content="Đóng" Margin="0,0,8,8" IsCancel="True"/><Button x:Name="Submit" Content="Đăng và chạy nền" Style="{DynamicResource BtnPrimary}" IsEnabled="False" Margin="0,0,0,8"/></WrapPanel>
  </Grid>
@@ -3321,21 +3501,34 @@ function Show-TikTokPublishDialog {
 '@
     $dlg=[Windows.Markup.XamlReader]::Parse($markup);[void]$dlg.Resources.MergedDictionaries.Add((Get-DialogTheme));$dlg.Owner=$win
     $dlg.MaxHeight=[Math]::Max(460,[Windows.SystemParameters]::WorkArea.Height-40)
-    $c=@{};foreach($name in @('FileLabel','Refresh','Accounts','History','Status','Caption','HashtagHeader','HashtagChips','HashtagHint','Schedule','WhenPanel','NextMonth','PrevMonth','MonthLabel','Days','Hour','Minute','ChosenDate','TimePresets','Today','Tomorrow','ScheduleHint','Comments','Duet','Stitch','Private','AI','ConfirmRepost','Dashboard','Close','Submit')){$c[$name]=$dlg.FindName($name)}
+    $c=@{};foreach($name in @('FileLabel','Refresh','Accounts','History','Status','Caption','HashtagHeader','HashtagChips','HashtagHint','Schedule','WhenPanel','NextMonth','PrevMonth','MonthLabel','Days','Hour','Minute','ChosenDate','TimePresets','Today','Tomorrow','ScheduleHint','Comments','Duet','Stitch','Private','AI','ConfirmRepost','NextFree','RepostWarnBox','RepostWarn','ConfirmOther','Dashboard','Close','Submit')){$c[$name]=$dlg.FindName($name)}
     $c.FileLabel.Text=[IO.Path]::GetFileName($source)
-    $state=@{Task=$null;SelectedAccount='';Entries=@();Tags=@(Read-TikTokHashtags);Ready=$false;Native=$false;SelectedDay=[DateTime]::Today;Month=[DateTime]::Today.AddDays(1-[DateTime]::Today.Day);Submitted=$false;FileSha=''}
+    $state=@{Task=$null;SelectedAccount='';Entries=@();Tags=@(Read-TikTokHashtags);Ready=$false;Native=$false;SelectedDay=[DateTime]::Today;Month=[DateTime]::Today.AddDays(1-[DateTime]::Today.Day);Submitted=$false;FileSha='';Prefs=(Read-TikTokPrefs);Dirty=$false;Programmatic=$false;Libraries=@();VideoKho='';Chips=@()}
+    # Kho data for the caption template / account preselect; failures are logged and the dialog works without them.
+    $metaSnap=$script:galleryMeta
+    try{
+        $state.Libraries=@((Get-KhoRegistry).libraries)
+        if($metaSnap){$vp=$metaSnap.PSObject.Properties[[string]$videoId];if($vp){$state.VideoKho=Get-KhoEffectiveId $vp.Value}}
+    }catch{Write-FileLog ('WARN TikTok dialog kho info: '+$_.Exception.Message)}
     $updateSelection={
         $blocking=@('pending','queued','running','preparing')
         $own=@($state.Entries | Where-Object {$_.username -eq $state.SelectedAccount -or (-not $_.username -and $_.status -in $blocking)})
         $active=@($own | Where-Object {$_.status -in $blocking})
         $repeat=@($own | Where-Object {$_.status -eq 'succeeded' -or $_.publish_uncertain -or $_.prior_uncertain})
         $c.ConfirmRepost.Visibility=$(if($repeat.Count){'Visible'}else{'Collapsed'})
+        $other=$(if($state.SelectedAccount){Get-TikTokRepostWarning @($state.Entries) $state.SelectedAccount}else{$null})
+        if($other){
+            $c.RepostWarn.Text='Video này đã đăng ở @'+$other.Username+$(if($other.When){' ('+$other.When.ToString('dd/MM HH:mm')+')'}else{''})+'. Đăng thêm tài khoản khác dễ bị TikTok coi là trùng.'
+            $c.RepostWarnBox.Visibility='Visible'
+        }else{$c.RepostWarnBox.Visibility='Collapsed'}
+        $needOther=[bool]$other -and -not $c.ConfirmOther.IsChecked
         $state.Upgrading=Test-AutotokUpgradeActive
-        $c.Submit.IsEnabled=(-not $state.Submitted -and -not $state.Upgrading -and $state.Ready -and $state.SelectedAccount -and -not $active.Count -and (-not $repeat.Count -or $c.ConfirmRepost.IsChecked))
+        $c.Submit.IsEnabled=(-not $state.Submitted -and -not $state.Upgrading -and $state.Ready -and $state.SelectedAccount -and -not $active.Count -and (-not $repeat.Count -or $c.ConfirmRepost.IsChecked) -and -not $needOther)
         if($state.Submitted){return}
         if($state.Upgrading){$c.Status.Text='Đang cài hoặc cập nhật bộ đăng TikTok. Đợi xong rồi đăng.';return}
         if($active.Count){$c.Status.Text='Tài khoản này đã có tác vụ cho video này. Xem Lịch đăng để theo dõi; không cần gửi thêm.'}
         elseif($repeat.Count -and -not $c.ConfirmRepost.IsChecked){$c.Status.Text='Video đã được gửi trên tài khoản này hoặc kết quả chưa rõ. Chọn tài khoản khác, hoặc xác nhận đăng lại sau khi kiểm tra.'}
+        elseif($needOther){$c.Status.Text='Video này đã đăng ở tài khoản khác. Chọn "Tôi vẫn muốn đăng" nếu anh chắc chắn.'}
         elseif($state.Ready){$c.Status.Text='Nhập caption rồi bấm Đăng và chạy nền. Anh có thể tiếp tục dùng app ngay.'}
     }.GetNewClosure()
     # Hashtag hay dung: chip goi y duoi o caption (loc theo hashtag dang go tai con tro).
@@ -3362,7 +3555,7 @@ function Show-TikTokPublishDialog {
     $hashtagUi.Remove=$chipRemove
     $hashtagUi.Render={
         $c.HashtagChips.Children.Clear()
-        $list=@(Get-TikTokHashtagSuggestions -Tags $state.Tags -Text $c.Caption.Text -Caret $c.Caption.CaretIndex -Max 20)
+        $list=@(Get-TikTokHashtagSuggestions -Tags $state.Tags -Text $c.Caption.Text -Caret $c.Caption.CaretIndex -Max 20 -Account $state.SelectedAccount)
         $none=(@($state.Tags).Count -eq 0)
         $c.HashtagHint.Visibility=$(if($none){'Visible'}else{'Collapsed'})
         $c.HashtagHeader.Visibility=$(if($none){'Collapsed'}else{'Visible'})
@@ -3378,7 +3571,7 @@ function Show-TikTokPublishDialog {
             [void]$c.HashtagChips.Children.Add($b)
         }
     }.GetNewClosure()
-    $c.Caption.Add_TextChanged({& $hashtagUi.Render}.GetNewClosure())
+    $c.Caption.Add_TextChanged({if(-not $state.Programmatic){$state.Dirty=$true};& $hashtagUi.Render}.GetNewClosure())
     $c.Caption.Add_SelectionChanged({& $hashtagUi.Render}.GetNewClosure())
     & $hashtagUi.Render
     $calendar=@{Render=$null}
@@ -3394,6 +3587,8 @@ function Show-TikTokPublishDialog {
         $context=$sender.Tag
         $context.State.SelectedAccount=[string]$context.Username
         $context.Controls.ConfirmRepost.IsChecked=$false
+        $context.Controls.ConfirmOther.IsChecked=$false
+        & $context.OnAccount
         & $context.Update
     }
     $receiptAction={
@@ -3436,10 +3631,41 @@ function Show-TikTokPublishDialog {
     $c.PrevMonth.Add_Click({$state.Month=$state.Month.AddMonths(-1);& $calendar.Render}.GetNewClosure())
     $c.Today.Add_Click({$state.SelectedDay=[DateTime]::Today;$state.Month=$state.SelectedDay.AddDays(1-$state.SelectedDay.Day);& $calendar.Render}.GetNewClosure())
     $c.Tomorrow.Add_Click({$state.SelectedDay=[DateTime]::Today.AddDays(1);$state.Month=$state.SelectedDay.AddDays(1-$state.SelectedDay.Day);& $calendar.Render}.GetNewClosure())
-    foreach($time in @('08:00','12:00','19:00','21:00')){$b=New-Object Windows.Controls.Button;$b.Content=$time;$b.Tag=$time;$b.Margin=[Windows.Thickness]::new(0,0,6,6);$b.Add_Click({param($sender,$eventArgs) $parts=([string]$sender.Tag).Split(':');$c.Hour.Text=$parts[0];$c.Minute.Text=$parts[1]}.GetNewClosure());[void]$c.TimePresets.Children.Add($b)}
+    # Time chips: the selected account's most used times (data\tiktok-prefs.json), topped up with 08:00/12:00/19:00/21:00.
+    $renderPresets={
+        $c.TimePresets.Children.Clear()
+        $key=([string]$state.SelectedAccount).ToLowerInvariant();$times=$null
+        if($key -and $state.Prefs.times.ContainsKey($key)){$times=$state.Prefs.times[$key]}
+        $state.Chips=@(Get-TikTokTimeChips $times)
+        foreach($time in $state.Chips){$b=New-Object Windows.Controls.Button;$b.Content=$time;$b.Tag=$time;$b.Margin=[Windows.Thickness]::new(0,0,6,6);$b.Add_Click({param($sender,$eventArgs) $parts=([string]$sender.Tag).Split(':');$c.Hour.Text=$parts[0];$c.Minute.Text=$parts[1]}.GetNewClosure());[void]$c.TimePresets.Children.Add($b)}
+    }.GetNewClosure()
+    & $renderPresets
+    # Account changed: refresh chips, prefill the caption while the user has not typed, re-rank hashtag suggestions.
+    $onAccount={
+        & $renderPresets
+        if(-not $state.Dirty){
+            $template=Get-TikTokCaptionTemplate -Account $state.SelectedAccount -VideoKhoId $state.VideoKho -Libraries $state.Libraries
+            if($template -ne $c.Caption.Text){$state.Programmatic=$true;try{$c.Caption.Text=$template;$c.Caption.CaretIndex=$template.Length}finally{$state.Programmatic=$false}}
+        }
+        & $hashtagUi.Render
+    }.GetNewClosure()
+    $c.NextFree.Add_Click({
+        if(-not $state.SelectedAccount){$c.ScheduleHint.Text='Chọn tài khoản trước.';return}
+        try{
+            $meta=$metaSnap;if($null -eq $meta){$meta=Get-ReupMetadata -OutDir $outDir}
+            $busy=@(Get-TikTokBusyTimes -Metadata $meta -Account $state.SelectedAccount -ExtraEntries @($state.Entries))
+            $slot=Get-NextFreeTikTokSlot -Favorites @($state.Chips) -Busy $busy
+        }catch{Write-FileLog ('WARN TikTok next free slot: '+$_.Exception.Message);$c.Status.Text='Không đọc được lịch để tìm giờ trống: '+$_.Exception.Message;return}
+        if($null -eq $slot){$c.ScheduleHint.Text='Các giờ yêu thích trong 10 ngày tới đều đã có bài hẹn. Chọn giờ khác bằng tay.';return}
+        $c.Schedule.IsChecked=$true
+        $state.SelectedDay=$slot.Date;$state.Month=$state.SelectedDay.AddDays(1-$state.SelectedDay.Day)
+        $c.Hour.Text=$slot.ToString('HH');$c.Minute.Text=$slot.ToString('mm')
+        & $calendar.Render
+        $c.ScheduleHint.Text='Giờ trống kế tiếp: '+$slot.ToString('HH:mm dd/MM')+'. '+$c.ScheduleHint.Text
+    }.GetNewClosure())
     $c.Schedule.Add_Checked({if(-not (Test-TikTokScheduleDay $state.SelectedDay)){$state.SelectedDay=(Get-TikTokScheduleBounds).Min.Date;$state.Month=$state.SelectedDay.AddDays(1-$state.SelectedDay.Day)};& $calendar.Render;$c.WhenPanel.Visibility='Visible';$c.Private.IsChecked=$false;$c.Private.IsEnabled=$false;$c.Submit.Content='Hẹn giờ trên TikTok';$dlg.UpdateLayout();$c.WhenPanel.BringIntoView()}.GetNewClosure())
     $c.Schedule.Add_Unchecked({$c.WhenPanel.Visibility='Collapsed';$c.Private.IsEnabled=$true;$c.Submit.Content='Đăng và chạy nền'}.GetNewClosure())
-    $c.ConfirmRepost.Add_Checked($updateSelection);$c.ConfirmRepost.Add_Unchecked($updateSelection)
+    $c.ConfirmRepost.Add_Checked($updateSelection);$c.ConfirmRepost.Add_Unchecked($updateSelection);$c.ConfirmOther.Add_Checked($updateSelection);$c.ConfirmOther.Add_Unchecked($updateSelection)
     $c.Dashboard.Add_Click({Start-Process ((Get-TikTokEndpoint)+'/accounts')}.GetNewClosure())
     $c.Close.Add_Click({$dlg.Close()}.GetNewClosure())
     $refresh={if($state.Task -or $state.Submitted){return};try{$state.Ready=$false;$c.Submit.IsEnabled=$false;$c.Refresh.IsEnabled=$false;$c.Status.Text='Đang kiểm tra lịch sử và tài khoản…';$state.Task=Start-TikTokTask 'prepare' (Get-TikTokHistoryPayload $outDir $source)}catch{$c.Status.Text=$_.Exception.Message;$c.Refresh.IsEnabled=$true}}.GetNewClosure()
@@ -3473,7 +3699,8 @@ function Show-TikTokPublishDialog {
             return
         }
         # The job now runs in its own process. Nothing below may re-enable Submit; failures here are logged, not fatal.
-        try{Add-TikTokHashtagsFromCaption $caption}catch{Write-FileLog ('WARN TikTok hashtag save after submit: '+$_.Exception.Message)}
+        try{Add-TikTokHashtagsFromCaption $caption -Account $state.SelectedAccount}catch{Write-FileLog ('WARN TikTok hashtag save after submit: '+$_.Exception.Message)}
+        try{Register-TikTokPrefsSubmit -Username $state.SelectedAccount -Time $(if($scheduled){$when.ToString('HH:mm')}else{''})}catch{Write-FileLog ('WARN TikTok prefs save after submit: '+$_.Exception.Message)}
         $warning=''
         try{[void](Add-TikTokLocalReceiptHistory $outDir $videoId @($state.Entries) $record)}catch{$warning=$_.Exception.Message;Write-FileLog ('WARN TikTok local history after submit: '+$warning)}
         try{Update-Gallery}catch{if(-not $warning){$warning=$_.Exception.Message};Write-FileLog ('WARN TikTok gallery refresh after submit: '+$_.Exception.Message)}
@@ -3493,7 +3720,7 @@ function Show-TikTokPublishDialog {
             $state.Entries=@($result.history | Where-Object {$null -ne $_})
             $state.FileSha=[string]$result.file_sha
             $state.Native=[bool]$result.native_schedule
-            if(-not $state.Native){$c.Schedule.IsChecked=$false;$c.Schedule.IsEnabled=$false;$c.Schedule.ToolTip='Bộ đăng nền chưa hỗ trợ hẹn giờ trên TikTok. Cập nhật bộ đăng nền rồi khởi động lại.'}
+            if(-not $state.Native){$c.Schedule.IsChecked=$false;$c.Schedule.IsEnabled=$false;$c.NextFree.IsEnabled=$false;$c.Schedule.ToolTip='Bộ đăng nền chưa hỗ trợ hẹn giờ trên TikTok. Cập nhật bộ đăng nền rồi khởi động lại.'}
             if($result.changed){Update-Gallery}
             $c.History.Children.Clear()
             if(-not $state.Entries.Count){$text=New-Object Windows.Controls.TextBlock;$text.Text='Chưa có lịch sử đăng trong hệ thống.';[void]$c.History.Children.Add($text)}
@@ -3533,12 +3760,19 @@ function Show-TikTokPublishDialog {
             $c.Accounts.Children.Clear();$group='TikTokAccount'+[Guid]::NewGuid().ToString('N')
             $accounts=@($result.accounts | Where-Object has_valid_session)
             foreach($account in $accounts){
-                $button=New-Object Windows.Controls.RadioButton;$button.Style=$dlg.FindResource('SegButton');$button.GroupName=$group;$button.Content='@'+$account.username;$button.Tag=@{State=$state;Controls=$c;Username=[string]$account.username;Update=$updateSelection};$button.MinHeight=48;$button.Padding=[Windows.Thickness]::new(16,0,16,0);$button.Margin=[Windows.Thickness]::new(0,0,8,8)
+                $button=New-Object Windows.Controls.RadioButton;$button.Style=$dlg.FindResource('SegButton');$button.GroupName=$group;$button.Content='@'+$account.username;$button.Tag=@{State=$state;Controls=$c;Username=[string]$account.username;Update=$updateSelection;OnAccount=$onAccount};$button.MinHeight=48;$button.Padding=[Windows.Thickness]::new(16,0,16,0);$button.Margin=[Windows.Thickness]::new(0,0,8,8)
                 $button.Add_Checked($accountChecked)
                 [void]$c.Accounts.Children.Add($button)
             }
             $state.Ready=$true
-            if($c.Accounts.Children.Count){$c.Accounts.Children[0].IsChecked=$true}else{$c.Status.Text='Chưa có tài khoản sẵn sàng. Mở Tài khoản / Lịch đăng để đăng nhập.'}
+            if($c.Accounts.Children.Count){
+                # Order of preference: the account already chosen (refresh), the video's account kho, the last used account, then the first.
+                $want=@();if($state.SelectedAccount){$want+=$state.SelectedAccount};if(([string]$state.VideoKho).StartsWith('acct:')){$want+=([string]$state.VideoKho).Substring(5)};if($state.Prefs.lastAccount){$want+=$state.Prefs.lastAccount}
+                $pre=$null
+                foreach($w in $want){$pre=@($c.Accounts.Children | Where-Object {$_.Tag.Username -ieq $w})[0];if($pre){break}}
+                if(-not $pre){$pre=$c.Accounts.Children[0]}
+                $pre.IsChecked=$true
+            }else{$c.Status.Text='Chưa có tài khoản sẵn sàng. Mở Tài khoản / Lịch đăng để đăng nhập.'}
             & $updateSelection
         }catch{$c.Status.Text=$_.Exception.Message;$state.Ready=$false}
         $c.Refresh.IsEnabled=$true
