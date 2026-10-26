@@ -4488,7 +4488,7 @@ function New-TikTokSpreadJob {
     $options = @{ allow_comment = 1; allow_duet = 0; allow_stitch = 0; visibility_type = 0; ai_label = 0 }
     $payload = @{ username = $Account; title = $Caption; scheduled_for = $scheduled; options_json = ($options | ConvertTo-Json -Compress); reel_id = (Get-TikTokWireReelId $videoId) }
     $now = [DateTime]::UtcNow.ToString('o')
-    $record = [pscustomobject]@{ RequestId = [Guid]::NewGuid().ToString('N'); SourcePath = $source; OutDir = $outDir; VideoId = $videoId; Username = $Account; ScheduledFor = $scheduled; Status = 'submitted'; CreatedAt = $now; LaunchedAt = $now; Message = '' }
+    $record = [pscustomobject]@{ RequestId = [Guid]::NewGuid().ToString('N'); SourcePath = $source; OutDir = $outDir; VideoId = $videoId; Username = $Account; ScheduledFor = $scheduled; Status = 'submitted'; CreatedAt = $now; LaunchedAt = $now; Message = ''; Caption = $Caption }
     return @{ Record = $record; Payload = $payload }
 }
 
@@ -4670,8 +4670,33 @@ function Step-TikTokSpreadRun {
     return 'launched'
 }
 
+function Get-TikTokRescheduleSeed {
+    # D13: when the NEWEST TikTok entry of a video is a native schedule that TikTok rejected (status failed, schedule_mode native) returns
+    # @{ Account; Caption; RequestId } (Caption from the receipt of that request when it kept one, else ''), otherwise $null.
+    param([object[]]$History, [string]$OutDir)
+    $latest = $null; $latestKey = [long]-1
+    foreach ($h in @($History)) {
+        if ($null -eq $h) { continue }
+        $k = Get-TikTokSortKey ([string]$h.created_at)
+        if ($k -le 0) { $k = Get-TikTokSortKey ([string]$h.accepted_at) }
+        if ($null -eq $latest -or $k -ge $latestKey) { $latest = $h; $latestKey = $k }
+    }
+    if ($null -eq $latest -or [string]$latest.status -ne 'failed' -or [string]$latest.schedule_mode -ne 'native' -or -not (ConvertTo-KhoUsername ([string]$latest.username))) { return $null }
+    $caption = ''
+    $req = [string]$latest.request_id
+    if ($req -match '^[a-f0-9]{32}$' -and $OutDir) {
+        foreach ($dir in @((Join-Path (Join-Path $OutDir '.cache') 'tiktok-posts'), $OutDir)) {
+            $f = Join-Path $dir ($req + '.json')
+            if (-not [System.IO.File]::Exists($f)) { continue }
+            try { $caption = [string]([System.IO.File]::ReadAllText($f, [System.Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop).Caption; break }
+            catch { Write-FileLog "WARN Hẹn lại: không đọc được biên nhận '$f': $($_.Exception.Message)" }
+        }
+    }
+    return @{ Account = (ConvertTo-KhoUsername ([string]$latest.username)); Caption = $caption; RequestId = $req }
+}
+
 function Show-TikTokPublishDialog {
-    param([string]$FilePath)
+    param([string]$FilePath, $Reschedule = $null)
     if([string]::IsNullOrWhiteSpace($FilePath) -or -not (Test-Path -LiteralPath $FilePath -PathType Leaf) -or -not (Test-KhoVideoFileName ([IO.Path]::GetFileName($FilePath)))){Show-Toast 'Chọn video hoàn chỉnh trong Kho trước khi đăng.' -Kind warning;return}
     # D4: posting only reads a finished -3 file, so a running download queue does not block it.
     if($script:stopping){Show-Toast 'Đợi tác vụ hiện tại dừng hẳn trước khi đăng video.' -Kind warning;return}
@@ -4898,7 +4923,7 @@ function Show-TikTokPublishDialog {
             $options=@{allow_comment=[int][bool]$c.Comments.IsChecked;allow_duet=[int][bool]$c.Duet.IsChecked;allow_stitch=[int][bool]$c.Stitch.IsChecked;visibility_type=[int][bool]$c.Private.IsChecked;ai_label=[int][bool]$c.AI.IsChecked}
             $payload=@{username=$state.SelectedAccount;title=$caption;scheduled_for=$scheduled;options_json=($options|ConvertTo-Json -Compress);reel_id=(Get-TikTokWireReelId $videoId)}
             $now=[DateTime]::UtcNow.ToString('o')
-            $record=[pscustomobject]@{RequestId=[Guid]::NewGuid().ToString('N');SourcePath=$source;OutDir=$outDir;VideoId=$videoId;Username=$state.SelectedAccount;ScheduledFor=$scheduled;Status='submitted';CreatedAt=$now;LaunchedAt=$now;Message=''}
+            $record=[pscustomobject]@{RequestId=[Guid]::NewGuid().ToString('N');SourcePath=$source;OutDir=$outDir;VideoId=$videoId;Username=$state.SelectedAccount;ScheduledFor=$scheduled;Status='submitted';CreatedAt=$now;LaunchedAt=$now;Message='';Caption=$caption}
             # G2: marked before launching; reset only when Start-TikTokBackgroundJob reports that nothing was started.
             $state.Submitted=$true;$c.Submit.IsEnabled=$false
             try{Start-TikTokBackgroundJob $record $payload}catch{$state.Submitted=$false;throw}
@@ -4975,6 +5000,12 @@ function Show-TikTokPublishDialog {
                 [void]$c.Accounts.Children.Add($button)
             }
             $state.Ready=$true
+            if($Reschedule -and -not $state.Seeded){
+                # D13 Hẹn lại: same account and caption as the failed schedule; the time is the next free slot (after the selection below).
+                $state.Seeded=$true;$state.SelectedAccount=[string]$Reschedule.Account
+                if([string]$Reschedule.Caption){$state.Dirty=$true;$state.Programmatic=$true;try{$c.Caption.Text=[string]$Reschedule.Caption;$c.Caption.CaretIndex=$c.Caption.Text.Length}finally{$state.Programmatic=$false}}
+                $state.SeedSlot=$true
+            }
             if($c.Accounts.Children.Count){
                 # Order of preference: the account already chosen (refresh), the video's account kho, the last used account, then the first.
                 $want=@();if($state.SelectedAccount){$want+=$state.SelectedAccount};if($state.VideoKhoAccount){$want+=$state.VideoKhoAccount};if($state.Prefs.lastAccount){$want+=$state.Prefs.lastAccount}
@@ -4984,6 +5015,7 @@ function Show-TikTokPublishDialog {
                 $pre.IsChecked=$true
             }else{$c.Status.Text='Chưa có tài khoản sẵn sàng. Mở Tài khoản / Lịch đăng để đăng nhập.'}
             & $updateSelection
+            if($state.SeedSlot){$state.SeedSlot=$false;$c.NextFree.RaiseEvent((New-Object Windows.RoutedEventArgs ([Windows.Controls.Primitives.ButtonBase]::ClickEvent)))}
         }catch{$c.Status.Text=$_.Exception.Message;$state.Ready=$false}
         $c.Refresh.IsEnabled=$true
     }.GetNewClosure())
@@ -7099,6 +7131,11 @@ function New-GalleryItem {
     $external = Test-KhoExternalKey $id
     $isPosted = ($null -ne $Metadata -and $Metadata.PSObject.Properties.Name -contains $id -and $Metadata.$id.Posted -eq $true)
     $postedDate = if ($isPosted -and $Metadata.$id.Date) { [string]$Metadata.$id.Date } else { '' }
+    # D13: newest TikTok entry is a rejected native schedule -> "Hẹn lại" on the card menu (receipt read only for those rare cards).
+    $reschedule = $null
+    if ($null -ne $Metadata -and $Metadata.PSObject.Properties.Name -contains $id -and $Metadata.$id.History) {
+        try { $reschedule = Get-TikTokRescheduleSeed -History @($Metadata.$id.History) -OutDir ([string]$File.Root) } catch { Write-FileLog "WARN Hẹn lại: $($_.Exception.Message)" }
+    }
     $date = [DateTime]$File.LastWriteTime
     $sizeText = Format-Bytes ([double]$File.Length)
     $detail = 'Đang đọc thông tin…'
@@ -7150,14 +7187,14 @@ function New-GalleryItem {
     $khoName = $(if ($khoLib) { [string]$khoLib.name } else { '' })
     $statusName = $(if ($heldUntil -and $heldUntil -gt [DateTime]::UtcNow) { 'Đã hẹn' } elseif ($isPosted) { 'Đã đăng' } else { 'Chờ đăng' })
     return [pscustomobject]@{
-        Path = [string]$File.FullName; Id = $id; Title = (Get-ReelLabel $id); External = $external; ThumbKey = (Get-KhoThumbKey $id); FileName = [string]$File.Name; Date = $date; Stamp = [string]$File.Stamp
+        Path = [string]$File.FullName; Id = $id; Title = (Get-ReelLabel $id); External = $external; Reschedule = $reschedule; ThumbKey = (Get-KhoThumbKey $id); FileName = [string]$File.Name; Date = $date; Stamp = [string]$File.Stamp
         MetaText = $metaText; DetailText = $detail; Posted = [bool]$isPosted; ManualPosted = [bool]$manual.Posted; PostedText = $postedText; PostedShort = $postedShort
         PostedMultiline = $postedShort.Contains("`n")
         Thumb = $thumb; ThumbPath = $thumbPath; File = $File
         PostUrl = $postUrl; PostId = $postId; LinkKey = $linkKey; LinkState = $linkState
         Kho = $khoId; Root = [string]$File.Root; HeldUntil = $heldUntil; KhoName = $khoName; AutomationText = "$(Get-ReelLabel $id) · $statusName · $khoName"
         # Chu ky hien thi: giong nhau -> giu nguyen doi tuong cu (khong tao lai the, giu cuon/chon).
-        Signature = ([string]$File.Stamp + '|' + $metaText + '|' + $detail + '|' + $postedText + '|' + $postedShort + '|' + [bool]$manual.Posted + '|' + $thumbPath + '|' + $postUrl + '|' + $postId + '|' + $linkState + '|' + $khoId + '|' + $khoName)
+        Signature = ([string]$File.Stamp + '|' + $metaText + '|' + $detail + '|' + $postedText + '|' + $postedShort + '|' + [bool]$manual.Posted + '|' + $thumbPath + '|' + $postUrl + '|' + $postId + '|' + $linkState + '|' + $khoId + '|' + $khoName + '|' + $(if ($reschedule) { 'R' + $reschedule.RequestId } else { '' }))
     }
 }
 
@@ -7931,6 +7968,7 @@ function Show-GalleryCardMenu {
     if(Test-TikTokEnabled){
         $specs+=,@('Đăng video lên TikTok',0xE898,'post')
         $specs+=,@('Lịch sử đăng video',0xE81C,'history')
+        if($Item.Reschedule){$specs+=,@('Hẹn lại',0xE787,'reschedule')}
         $specs+=,@($(if($Item.ManualPosted){'Bỏ đánh dấu đã đăng'}else{'Đánh dấu đã đăng'}),0xE73E,'mark')
         if(Test-TikTokPostUrl ([string]$Item.PostUrl)){
             $specs+=,@('Mở bài đăng',0xE8A7,'openpost')
@@ -7964,6 +8002,7 @@ function Show-GalleryCardMenu {
             switch([string]$context.Action){
                 'post' {Show-TikTokPublishDialog -FilePath $filePath}
                 'history' {Show-TikTokPublishDialog -FilePath $filePath}
+                'reschedule' {Show-TikTokPublishDialog -FilePath $filePath -Reschedule $context.Item.Reschedule}
                 'mark' {Set-GalleryPosted $context.Item}
                 'openpost' {Open-TikTokPostUrl ([string]$context.PostUrl)}
                 'copylink' {Copy-TikTokPostUrl ([string]$context.PostUrl)}
