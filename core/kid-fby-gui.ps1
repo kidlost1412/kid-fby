@@ -1073,6 +1073,7 @@ function Set-ReupMetadata {
     # Manual posted mark (D3). Only the manual flag flips; synced TikTok history is kept as-is.
     param([string]$VideoId, [bool]$Posted, [Parameter(Mandatory)][string]$OutDir)
     if ([string]::IsNullOrWhiteSpace($VideoId)) { throw 'Thiếu ID video để lưu lịch sử TikTok.' }
+    if (Test-KhoIdReserved $OutDir $VideoId) { throw "$(Get-ReelLabel $VideoId) đang có lần chuyển kho chưa hoàn tất; xử lý trong Quản lý kho rồi thử lại." }
     $markDate = (Get-Date).ToString('dd/MM HH:mm')
     [void](Update-ReupMetadata -OutDir $OutDir -Change {
         param($meta)
@@ -1851,6 +1852,29 @@ function Get-KhoBlockedRoots {
     return , $set
 }
 
+function Get-KhoReservedIds {
+    # Video ids that an unresolved move journal reserves in this kho folder (it is the journal's source or target): metadata writes for them
+    # wait until recovery completes, otherwise recovery would overwrite them. Hashtable id -> $true; key '*' = a journal is unreadable, so
+    # nothing can be trusted. Reads the small journal folder only.
+    param([string]$Root)
+    $set = @{}
+    if (-not $Root) { return $set }
+    $canon = (Get-CanonicalPath $Root).ToUpperInvariant()
+    foreach ($e in @(Read-KhoJournals)) {
+        if (-not $e.Journal) { $set['*'] = $true; continue }
+        foreach ($p in @($e.Journal.from, $e.Journal.to)) {
+            if ($p -and (Get-CanonicalPath ([string]$p)).ToUpperInvariant() -eq $canon) { $set[[string]$e.Journal.id] = $true }
+        }
+    }
+    return $set
+}
+
+function Test-KhoIdReserved {
+    param([string]$Root, [string]$VideoId)
+    $set = Get-KhoReservedIds $Root
+    return ($set.ContainsKey('*') -or $set.ContainsKey([string]$VideoId))
+}
+
 function Initialize-KhoCacheDir {
     param([string]$Dir)
     if ([System.IO.Directory]::Exists($Dir)) { return }
@@ -2046,6 +2070,9 @@ function Resume-KhoMove {
         }
         foreach ($r in @($Journal.renames)) { if ([string]$r.kind -eq 'receipt' -and [string]$r.status -in @('moved', 'done')) { Update-KhoReceiptPaths ([string]$r.dst) $to $id } }
         $snapshot = $Journal.sourceEntrySnapshot
+        # The source entry that still exists is the newest truth (also when the journal's snapshot is null).
+        $currentSource = (Get-ReupMetadata -OutDir $from).PSObject.Properties[$id]
+        if ($currentSource -and $null -ne $currentSource.Value) { $snapshot = Copy-ReupEntry $currentSource.Value }
         if ($null -ne $snapshot) {
             [void](Update-ReupMetadata -OutDir $to -Change { param($meta) return (Merge-KhoMoveEntry $meta $id $snapshot) })
         }
@@ -2972,6 +2999,7 @@ $script:tikTokWorker = {
                 $old=$meta.PSObject.Properties[$vid]
                 # D6/S6: a video whose -3 left this folder (moved or deleted) never gets a NEW entry from a pass that captured it earlier.
                 if(-not $old -and -not [IO.File]::Exists((Get-KhoVideoPath $outDir $vid))){continue}
+                if($Data.reserved_ids -and ($Data.reserved_ids.ContainsKey('*') -or $Data.reserved_ids.ContainsKey($vid))){continue}  # pending move journal: recovery owns this entry
                 $history=@(Merge-TikTokVideoHistory $vid $perVideo[$vid] $receipts $(if($old){$old.Value}else{$null}) $probe.Missing $now $receiptIndex)
                 $merged[$vid]=$history
                 if(Set-TikTokItemHistory $meta $vid $history ([string]$result.Hashes[$vid])){$any=$true}
@@ -3031,6 +3059,7 @@ $script:tikTokWorker = {
             foreach($vid in @($jobs.Values | ForEach-Object {$_.VideoId} | Select-Object -Unique)){
                 $prop=$meta.PSObject.Properties[$vid]
                 if(-not $prop -or $prop.Value.Source -ne 'autotok-history'){continue}
+                if($Data.reserved_ids -and ($Data.reserved_ids.ContainsKey('*') -or $Data.reserved_ids.ContainsKey($vid))){continue}  # pending move journal
                 $history=@(foreach($h in @($prop.Value.History)){
                     if($null -eq $h){continue}
                     $hit=$jobs[[string]$h.request_id]
@@ -3129,6 +3158,12 @@ function Get-TikTokWorkerSessionState {
 
 function Start-TikTokTask {
     param([string]$Action, $Payload = @{}, [string]$FilePath = '', [string]$RequestId = '')
+    if ($Payload -is [hashtable] -and $Payload.ContainsKey('out_dir')) {
+        # Ids reserved by an unresolved move journal: the worker's Change blocks skip them (recovery would overwrite their writes).
+        $reserved = Get-KhoReservedIds ([string]$Payload.out_dir)
+        if ($reserved.Count) { Write-FileLogLimited -Key 'kho-reserved' -Text ('WARN TikTok sync bỏ qua video đang chờ hoàn tất chuyển kho: ' + (@($reserved.Keys) -join ', ')) -MinSeconds 300 }
+        $Payload.reserved_ids = $reserved
+    }
     $ps = [PowerShell]::Create((Get-TikTokWorkerSessionState))
     $cancel=[Threading.CancellationTokenSource]::new()
     try {
@@ -3610,6 +3645,7 @@ function Add-TikTokLocalReceiptHistory {
     # Right after submit: show the new receipt in Kho immediately (it is replaced by the backend entry on the next sync).
     param([string]$OutDir, [string]$VideoId, [object[]]$Entries, $Record)
     $view = [pscustomobject]@{ RequestId = [string]$Record.RequestId; VideoId = [string]$Record.VideoId; Username = [string]$Record.Username; ScheduledFor = [string]$Record.ScheduledFor; Status = [string]$Record.Status; CreatedAt = [string]$Record.CreatedAt; LaunchedAt = [string]$Record.LaunchedAt; WorkerAlive = $true }
+    if (Test-KhoIdReserved $OutDir $VideoId) { Write-FileLog "WARN Bỏ qua ghi lịch sử cục bộ cho #${VideoId}: đang có lần chuyển kho chưa hoàn tất."; return $false }
     # Short wait: this runs on the UI thread right after submit; the next sync pass writes it anyway.
     $localUpdate = Update-ReupMetadata -OutDir $OutDir -TimeoutMs 1500 -Change {
         param($meta)
