@@ -1273,6 +1273,12 @@ function Read-KhoRegistry {
     $fresh = {
         param([string]$Why)
         $reg = New-KhoDefaultRegistry
+        if ($script:settingsReadLocked) {
+            # settings.json was locked: the real outDir is unknown, so "Output cũ" may point at the wrong folder -> keep it in memory only.
+            $script:khoRegistryReady = $false
+            Write-FileLog "WARN kho.json: cài đặt đang bị khóa nên chưa biết thư mục xuất cũ; kho tạm chỉ dùng trong phiên này ($Why)."
+            return $reg
+        }
         try { [void](Save-KhoRegistry -Registry $reg -Path $Path) } catch { Write-FileLog "WARN Không ghi được kho.json mới ($Why): $($_.Exception.Message)" }
         Write-FileLog "INFO kho.json: tạo mới với kho 'Output cũ' = '$($reg.libraries[0].path)' ($Why)."
         return $reg
@@ -2333,6 +2339,14 @@ public static class KidDosDevice {
     return @{ Ok = $true; Reason = '' }
 }
 
+function Get-KhoNoRecycleReason {
+    # '' when the Windows Recycle Bin works for $Path, otherwise the reason (used to ask for an explicit "xóa vĩnh viễn").
+    param([string]$Path)
+    if ($script:khoRecycleOverride) { return '' }
+    $bin = Test-KhoRecycleBin $Path
+    return $(if ($bin.Ok) { '' } else { [string]$bin.Reason })
+}
+
 function Invoke-KhoRecycle {
     # Sends one file (or a whole folder) to the Windows Recycle Bin; throws when it cannot. On a volume WITHOUT a Recycle Bin it refuses unless the caller
     # passes -AllowPermanent after the owner explicitly confirmed a permanent delete: nothing is ever deleted permanently by surprise.
@@ -2429,7 +2443,7 @@ function Remove-KhoWithVideos {
     # and only app files remain). Refused when the app is not quiet, a journal references the folder, any video has a TikTok job
     # (running or kept for retry), or it is the last kho. Nothing is unregistered unless every video was recycled.
     # Returns @{ Success; Deleted; Failed = @(@{Id; Errors}); FolderRecycled; Why }.
-    param([string]$Id)
+    param([string]$Id, [switch]$AllowPermanent)
     $result = @{ Success = $false; Deleted = 0; Failed = @(); FolderRecycled = $false; Why = '' }
     $reg = Get-KhoRegistry
     $lib = Get-KhoById $Id $reg
@@ -2450,7 +2464,7 @@ function Remove-KhoWithVideos {
         foreach ($v in $videos) {
             $vid = Get-KhoVideoKey $v.Name
             $why = Get-KhoVideoBlock $khoRoot $vid $groups
-            if ($why) { $result.Why = "Video #${vid}: $why"; return $result }
+            if ($why) { $result.Why = "$(Get-ReelLabel $vid): $why"; return $result }
         }
         # A job without a readable video blocks the folder even when it has no video of its own.
         foreach ($req in $groups.Keys) { if ($groups[$req].Live -and -not $groups[$req].VideoId) { $result.Why = 'Thư mục có lệnh đăng không rõ thuộc video nào — xử lý trước.'; return $result } }
@@ -2458,7 +2472,7 @@ function Remove-KhoWithVideos {
         $failed = New-Object System.Collections.Generic.List[object]; $deleted = 0
         foreach ($v in $videos) {
             $vid = Get-KhoVideoKey $v.Name
-            $r = Remove-ReelToRecycleBin -Root $khoRoot -Id $vid -Groups $groups
+            $r = Remove-ReelToRecycleBin -Root $khoRoot -Id $vid -Groups $groups -AllowPermanent:$AllowPermanent
             if ($r.Success) { $deleted++ } else { $failed.Add(@{ Id = $vid; Errors = @($r.Errors) }) }
         }
         $result.Deleted = $deleted; $result.Failed = $failed.ToArray()
@@ -2470,7 +2484,7 @@ function Remove-KhoWithVideos {
         }
         if ($lib.createdByApp -and [System.IO.Directory]::Exists($khoRoot)) {
             try {
-                if (Test-KhoFolderOnlyAppFiles $khoRoot) { Invoke-KhoRecycle $khoRoot -Folder; $result.FolderRecycled = $true }
+                if (Test-KhoFolderOnlyAppFiles $khoRoot) { Invoke-KhoRecycle $khoRoot -Folder -AllowPermanent:$AllowPermanent; $result.FolderRecycled = $true }
             } catch { Write-FileLog "WARN Không chuyển được thư mục kho '$khoRoot' vào Thùng rác: $($_.Exception.Message)" }
         }
         $result.Success = $true
@@ -3746,9 +3760,11 @@ function Invoke-TikTokSyncTick {
 
 function Get-GalleryMetaByRoot {
     # Fresh read of reup-status.json of every kho folder (canonical folder -> metadata). A folder that cannot be read is left out
-    # and logged: callers treat it as "nothing known", never as empty history.
+    # and logged: callers treat it as "nothing known", never as empty history. -Skip: folders that are not read at all.
+    param($Skip = $null)
     $map = @{}
     foreach ($r in @(Get-KhoRoots)) {
+        if ($Skip -and $Skip.Contains([string]$r)) { continue }
         if (-not [IO.Directory]::Exists($r)) { continue }
         try { $map[$r] = Get-ReupMetadata -OutDir $r }
         catch { Write-FileLog "WARN Không đọc được lịch sử của kho '$r': $($_.Exception.Message)" }
@@ -3763,8 +3779,7 @@ function Invoke-KhoAutoMoveNow {
     if (Test-KhoQuiet) { $script:khoAutoMoveWanted = $false; $script:khoAutoMoveDeferred = $true; return 0 }
     $blocked = Get-KhoBlockedRoots
     if ($null -eq $blocked) { $script:khoAutoMoveWanted = $false; Write-FileLogLimited -Key 'kho-automove-journal' -Text 'WARN Tự chuyển kho tạm dừng: có nhật ký chuyển kho không đọc được (Quản lý kho › Bỏ qua).' -MinSeconds 300; return 0 }
-    $meta = Get-GalleryMetaByRoot
-    foreach ($k in @($meta.Keys)) { if ($blocked.Contains([string]$k)) { $meta.Remove($k) } }
+    $meta = Get-GalleryMetaByRoot -Skip $blocked
     $moved = Invoke-KhoAutoMove $meta
     if ($moved -gt 0) {
         Show-Toast ("Đã chuyển $moved video vào kho theo tài khoản đã đăng.") -Kind success
@@ -6544,7 +6559,7 @@ function Test-GalleryActionsBusy {
 
 function Get-DeleteConfirmText {
     # G-C1: liet ke dung cac file se xoa va noi chung nam (-3 o thu muc xuat, -1/-2 trong .cache an, file cu o goc).
-    param([string]$FilePath)
+    param([string]$FilePath, [string]$NoRecycle = '')
     $id = Get-ReelId $FilePath
     $dir = Split-Path $FilePath -Parent
     $files = @(Get-ReelMediaFiles -VideoPath $FilePath -Existing)
@@ -6553,6 +6568,10 @@ function Get-DeleteConfirmText {
     $lines = @($files | ForEach-Object { "• $($_.Leaf) — $($desc[$_.Kind]) · $($where[$_.Location])" })
     if (-not $lines.Count) { $lines = @("• $(Get-KhoVideoFileName $id) — video hoàn chỉnh") }
     $thumbs = @(Get-ReelThumbFiles -VideoPath $FilePath)
+    if ($NoRecycle) {
+        return ("Ổ này không có Thùng rác ($NoRecycle) — xóa vĩnh viễn?`r`nXóa $(Get-ReelLabel $id) khỏi kho, KHÔNG khôi phục được:`r`n$dir`r`n`r`n" + ($lines -join "`r`n") +
+            $(if ($thumbs.Count) { "`r`n• ảnh thu nhỏ trong .cache	humbs" } else { '' }) + "`r`n`r`nLịch sử đăng của video này cũng bị xóa khỏi kho.")
+    }
     return ("Chuyển $(Get-ReelLabel $id) trong kho vào Thùng rác:`r`n$dir`r`n`r`n" + ($lines -join "`r`n") +
         $(if ($thumbs.Count) { "`r`n• ảnh thu nhỏ trong .cache\thumbs (tự tạo lại được, xóa luôn)" } else { '' }) +
         "`r`n`r`nCác file nằm trong Thùng rác của Windows nên khôi phục được từ đó; lịch sử đăng của video này sẽ được xóa khỏi kho.")
@@ -6562,6 +6581,8 @@ function Confirm-GalleryDelete {
     param([string]$FilePath)
     # Hop thoai theo theme; nut mac dinh la Huy: Enter/Esc khong xoa nham.
     $n = [Math]::Max(1, @(Get-ReelMediaFiles -VideoPath $FilePath -Existing).Count)
+    $noBin = Get-KhoNoRecycleReason (Split-Path $FilePath -Parent)
+    if ($noBin) { return (Show-ConfirmDialog -Title 'Ổ này không có Thùng rác — xóa vĩnh viễn?' -Message (Get-DeleteConfirmText -FilePath $FilePath -NoRecycle $noBin) -ConfirmText "Xóa vĩnh viễn $n file" -Danger) }
     return (Show-ConfirmDialog -Title 'Xóa video này?' -Message (Get-DeleteConfirmText -FilePath $FilePath) -ConfirmText "Chuyển $n file vào Thùng rác" -Danger)
 }
 
@@ -6630,7 +6651,7 @@ function Invoke-GalleryDelete {
     }
 
     $result = $null
-    try { $result = Remove-ReelFiles $FilePath }
+    try { $result = Remove-ReelFiles $FilePath -AllowPermanent:([bool](Get-KhoNoRecycleReason (Split-Path $FilePath -Parent))) }
     catch { $result = @{ Success=$false; Errors=@($_.Exception.Message); CleanupStatus='RecoveryRequired'; RecoveryPaths=@() } }
     $recoveryPaths = @($result.RecoveryPaths | Where-Object { $_ })
     Add-Log "Gallery delete: success=$($result.Success); cleanup=$($result.CleanupStatus); recovery=$($recoveryPaths -join ', '); errors=$(@($result.Errors) -join '; ')" 'Danger'
@@ -7544,12 +7565,19 @@ function Find-GalleryVisualChild {
 $script:band = $null
 $script:tBand = $null
 
+function Get-BandPointer {
+    # Pointer in panel coordinates. $script:bandPointerOverride is a test seam (the WPF smoke injects the pointer; real use leaves it $null).
+    param($Panel)
+    if ($null -ne $script:bandPointerOverride) { return $script:bandPointerOverride }
+    return [Windows.Input.Mouse]::GetPosition($Panel)
+}
+
 function Update-GalleryBand {
     # Vẽ khung và áp dụng lựa chọn theo vị trí con trỏ hiện tại (gọi khi chuột di chuyển và mỗi nhịp tự cuộn).
     $b = $script:band
     if (-not $b -or -not $b.Active) { return }
     $panel = $b.Panel
-    $pos = [Windows.Input.Mouse]::GetPosition($panel)
+    $pos = Get-BandPointer $panel
     $vw = [double]$panel.ViewportWidth; $vh = [double]$panel.ViewportHeight
     $px = [Math]::Max(0.0, [Math]::Min($vw, $pos.X)); $py = [Math]::Max(0.0, [Math]::Min($vh, $pos.Y))
     $scroll = [double]$panel.VerticalOffset
@@ -7613,7 +7641,7 @@ function Step-GalleryBandScroll {
     # Tự cuộn khi con trỏ gần mép trên/dưới (hoặc ra ngoài) trong lúc kéo.
     $b = $script:band
     if (-not $b -or -not $b.Active) { if ($script:tBand) { $script:tBand.Stop() }; return }
-    $pos = [Windows.Input.Mouse]::GetPosition($b.Panel)
+    $pos = Get-BandPointer $b.Panel
     $vh = [double]$b.Panel.ViewportHeight
     $edge = 32.0
     $step = 0.0
@@ -7978,11 +8006,15 @@ function Test-KhoRegistryWritable { return [bool]$script:khoRegistryReady }
 
 function Confirm-KhoDelete {
     # "Xóa kho '<tên>' và N video vào Thùng rác?" - the default button is Cancel.
-    param($Owner, [string]$Name, [int]$Count = 0)
+    param($Owner, [string]$Name, [int]$Count = 0, [string]$NoRecycle = '')
     if ($null -ne $script:confirmDialogAutoAnswer) { return [bool]$script:confirmDialogAutoAnswer }
     Write-FileLog "DIALOG Xóa kho '$Name' ($Count video)"
     try {
+        if ($NoRecycle) {
+            $dlg = New-ConfirmDialog -Title 'Ổ này không có Thùng rác — xóa vĩnh viễn?' -Message "Ổ này không có Thùng rác ($NoRecycle) — xóa vĩnh viễn?`r`nXóa kho '$Name' và $Count video KHÔNG khôi phục được." -ConfirmText 'Xóa vĩnh viễn' -Danger
+        } else {
         $dlg = New-ConfirmDialog -Title "Xóa kho '$Name' và $Count video vào Thùng rác?" -Message "Xóa kho '$Name' và $Count video vào Thùng rác?`r`nCác file nằm trong Thùng rác của Windows nên khôi phục được từ đó. Thư mục kho do ứng dụng tạo cũng vào Thùng rác khi không còn gì khác trong đó." -ConfirmText 'Xóa kho' -Danger
+        }
         if ($Owner) { $dlg.Owner = $Owner } elseif ($win -and $win.IsVisible) { $dlg.Owner = $win }
         return ($dlg.ShowDialog() -eq $true)
     } catch {
@@ -8001,8 +8033,8 @@ function Update-KhoCardsAfterRename {
 
 function Remove-KhoAndRefresh {
     # Remove-KhoWithVideos (videos -> Recycle Bin, kho unregistered) then a gallery rebuild. Returns the result of Remove-KhoWithVideos.
-    param([string]$Id)
-    $result = Remove-KhoWithVideos -Id $Id
+    param([string]$Id, [switch]$AllowPermanent)
+    $result = Remove-KhoWithVideos -Id $Id -AllowPermanent:$AllowPermanent
     if ($result.Success -and $script:filterKho -ceq $Id) { $script:filterKho = 'all' }
     Sync-OutDirFromKho
     Update-Gallery
@@ -8343,8 +8375,9 @@ function Show-KhoManagerDialog {
             $lib = Get-KhoById $state.Selected
             if (-not $lib) { return }
             $name = [string]$lib.name; $count = Get-KhoTotalCount ([string]$lib.id)
-            if (-not (Confirm-KhoDelete -Owner $dlg -Name $name -Count $count)) { return }
-            $r = Remove-KhoAndRefresh -Id ([string]$lib.id)
+            $noBin = Get-KhoNoRecycleReason ([string]$lib.path)
+            if (-not (Confirm-KhoDelete -Owner $dlg -Name $name -Count $count -NoRecycle $noBin)) { return }
+            $r = Remove-KhoAndRefresh -Id ([string]$lib.id) -AllowPermanent:([bool]$noBin)
             if ($r.Success) {
                 $state.Selected = [string]@(Get-KhoList)[0].id
                 & $afterChange
@@ -11866,7 +11899,7 @@ $ui.BtnDeleteCurrent.Add_Click({
         $savedNoVidVisibility = if ($ui.TxtNoVid) { $ui.TxtNoVid.Visibility } else { $null }
 
         $delResult = $null
-        try { $delResult = Remove-ReelFiles $delPath }
+        try { $delResult = Remove-ReelFiles $delPath -AllowPermanent:([bool](Get-KhoNoRecycleReason (Split-Path $delPath -Parent))) }
         catch {
             $delResult = @{ Success = $false; Errors = @($_.Exception.Message); CleanupStatus = 'RecoveryRequired'; RecoveryPaths = @() }
         }

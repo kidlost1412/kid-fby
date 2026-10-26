@@ -359,7 +359,7 @@ Test-Case 'auto-move waits for a quiet app (flag stays wanted, nothing moved) an
     Set-AutoSince '2026-10-01T00:00:00Z'
     $id = NextId; [void](New-TestVideo $w.A.path $id -NoReceipt -Entry (New-TestPostedEntry ('{0:x32}' -f [long]$id) 'anna'))
     $script:queue = @(1); $script:khoAutoMoveWanted = $false
-    Assert-Equal (Invoke-KhoAutoMove (MetaOf)) 0; Assert-True $script:khoAutoMoveWanted 'deferred to the next quiet sync completion'
+    Assert-Equal (Invoke-KhoAutoMove (MetaOf)) 0; Assert-True (-not $script:khoAutoMoveWanted -and $script:khoAutoMoveDeferred) 'deferred (re-armed by the next quiet transition), not retried every tick'
     $script:queue = @()
     $script:khoRegistryReady = $false
     Assert-Equal (Invoke-KhoAutoMove (MetaOf)) 0 'read-only registry: no auto-move'

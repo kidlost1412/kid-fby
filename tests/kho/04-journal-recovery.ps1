@@ -128,7 +128,7 @@ Test-Case 'both-exist conflict: nothing is overwritten, the journal stays, BOTH 
     $m = Move-KhoVideos -Videos @(@{ Id = $other; From = $w.A.path }) -ToRoot $w.C.path
     Assert-Equal @($m.Moved).Count 0; Assert-True ($m.Failed[0].Why -like '*chưa hoàn tất*') "why: $($m.Failed[0].Why)"
     $viaEntry = Invoke-KhoMove -Items @((Item $w.A.path $other)) -TargetId $w.C.id -Reason manual
-    Assert-Equal @($viaEntry.Moved).Count 0; Assert-True ([bool]$viaEntry.Busy) "Invoke-KhoMove busy: '$($viaEntry.Busy)'"
+    Assert-Equal @($viaEntry.Moved).Count 0; Assert-Equal $viaEntry.Busy '' 'no global refusal: only the reserved folders are blocked'; Assert-True ($viaEntry.Failed[0].Why -like '*chưa hoàn tất*') "per-folder refusal: $($viaEntry.Failed[0].Why)"
     $del = Remove-KhoWithVideos -Id $w.B.id
     Assert-True ($del.Why -like '*chưa hoàn tất*') "delete refused: $($del.Why)"; Assert-True ($null -ne (Get-KhoById $w.B.id)) 'kho B still registered'
     # startup shows the warning
@@ -170,7 +170,7 @@ Test-Case 'a locked MANDATORY companion mid-move: the batch fails, journal stays
         Assert-True ([IO.File]::Exists((Join-Path $w.A.path "$id-3-hoan-chinh.mp4"))) '-3 not moved'
         $other = NextId; [void](New-TestVideo $w.A.path $other)
         $r2 = Invoke-KhoMove -Items @((Item $w.A.path $other)) -TargetId $w.B.id -Reason manual
-        Assert-Equal @($r2.Moved).Count 0; Assert-True ($r2.Busy -like '*dở dang*') "busy: '$($r2.Busy)'"
+        Assert-Equal @($r2.Moved).Count 0; Assert-True ($r2.Failed[0].Why -like '*chưa hoàn tất*') "folder refusal: '$($r2.Failed[0].Why)'"
     } finally { $lock.Dispose() }
     $r3 = Invoke-KhoMove -Items @((Item $w.A.path $other)) -TargetId $w.B.id -Reason manual
     Assert-Equal @($r3.Moved).Count 1 (($r3.Failed | ForEach-Object { $_.Why }) -join '; ')

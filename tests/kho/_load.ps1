@@ -107,7 +107,7 @@ function New-TestWorld {
     $script:khoLegacyOutDir = Join-Path $script:root 'kho-A'
     $script:khoMoveRunning = $false; $script:importBusy = $false; $script:stopping = $false; $script:autotokInstall = $false
     $script:khoExclusive = 0; $script:ps = $null; $script:queue = @(); $script:tikTokSync = $null; $script:khoRecycleOverride = $null
-    $script:khoAutoMoveFailed = @{}; $script:khoAutoMoveWanted = $false; $script:reelCacheName = '.cache'
+    $script:khoAutoMoveFailed = @{}; $script:khoAutoMoveWanted = $false; $script:khoAutoMoveDeferred = $false; $script:khoWasBusy = $false; $script:khoNoRecycleOverride = $null; $script:khoSettingsLoaded = $true; $script:reelCacheName = '.cache'
     $script:TestLog.Clear()
     [void][IO.Directory]::CreateDirectory($script:khoLegacyOutDir)
     $reg = Get-KhoRegistry
