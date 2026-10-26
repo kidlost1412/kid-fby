@@ -1,6 +1,6 @@
 ﻿# Bàn giao kỹ thuật Kid FB.Y
 
-Ngày rà: 21/10/2026 (đoạn 3.0.0 cập nhật 25/10/2026); lúc rà 21/10, nhánh `audit-fixes-2.1` cùng commit với `main` @ `7f5851a`. `core/version.txt` = 3.0.0; bản 3.0.0 đã phát hành qua `publish.ps1`: tag `v3.0.0` trên `main`, `version.json` và `version.json.sig` đã ký, 15 file, gồm `core/autotok-bundle.zip`. Bản 2.1.0 có tag `v2.1.0`. Bản 3.0.0 phát hành từ nhánh `audit-fixes-2.1` gộp vào `main`. Tài liệu mô tả hành vi có trong nguồn, không chứng nhận không có lỗi, hiệu năng hay kết quả của Facebook.
+Ngày rà: 21/10/2026 (đoạn 3.0.0 cập nhật 25/10/2026); lúc rà 21/10, nhánh `audit-fixes-2.1` cùng commit với `main` @ `7f5851a`. `core/version.txt` = 3.0.0; bản 3.0.0 đã phát hành qua `publish.ps1`: tag `v3.0.0` trên `main`, `version.json` và `version.json.sig` đã ký, 15 file, gồm `core/autotok-bundle.zip`. Bản 2.1.0 có tag `v2.1.0`. Bản 3.0.0 phát hành từ nhánh `audit-fixes-2.1` gộp vào `main`. Bản `v3.0.1` (`c29c066`) là gốc của nhánh `feature/kho-accounts` (HEAD `513be65`); `core/version.txt` trên nhánh vẫn 3.0.1. Nhánh này thêm Kho theo tài khoản, chưa gộp và chưa phát hành: xem mục 10. Tài liệu mô tả hành vi có trong nguồn, không chứng nhận không có lỗi, hiệu năng hay kết quả của Facebook.
 
 ## 1. Cây dự án và công nghệ
 
@@ -62,7 +62,7 @@ Ngày rà: 21/10/2026 (đoạn 3.0.0 cập nhật 25/10/2026); lúc rà 21/10, n
 - File `-1/-2` cũ ở thư mục xuất (bản trước đợt 4): không bị tự xóa hay di chuyển. Mọi chỗ đọc (reedit, Kho, xóa) tìm `.cache` trước rồi fallback thư mục xuất (`Get-ReelIntermediatePath` ở engine, `Get-ReelCompanionPath`/`Get-ReelMediaFiles` ở GUI). "Đã có trong kho" khi phát hiện trùng chỉ dựa vào `-3` ở thư mục xuất.
 - `.cache\thumbs\<id>.*`: ảnh thu nhỏ và cache ffprobe của Kho (cũ: `.thumbs\` ở thư mục xuất); tự tạo lại được. GUI chỉ quét Kho sau khi nạp `settings.json`.
 - `data/rejected-videos.json`: lịch sử loại dùng chung khi đổi thư mục xuất, `Schema=1`, mỗi mục có `VideoId`, `Urls`, `Reason`, `RejectedAt`, `Evidence` (cắt tối đa 2000 ký tự; mục cũ không có trường này vẫn hợp lệ). Ghi file bằng FileStream + Flush rồi replace. File hỏng khi đọc: không ném lỗi làm hỏng mọi link, mà đổi tên thành `rejected-videos.json.corrupt-<yyyyMMdd-HHmmss>-<id>`, ghi cảnh báo và coi như rỗng (bản `.corrupt` giữ để khôi phục tay). `Save-RejectedReel` chỉ nhận `vietnamese-unavailable` hoặc `audio-not-vietnamese` (lý do cũ có thể còn trong file). `Remove-RejectedReel` gỡ theo ID, cùng mutex và ghi file tạm rồi replace; GUI gọi nó từ nút **Bỏ loại**. Khi chạy với `-ForceRetryRejected` và thành công, engine gỡ mục tương ứng. `Remove-RejectedReelMedia` vẫn còn trong `facebook-links.ps1` nhưng không còn caller trong luồng loại (giữ cho công cụ bảo trì gọi tay).
-- `output/reup-status.json`: trạng thái Posted/Date theo ID. Nguồn: đánh dấu tay (`ManualPosted`) hoặc đồng bộ lịch sử autotok khi bật tích hợp TikTok (mục 8). Chỉ `Update-ReupMetadata` ghi file. Không phải xác nhận bài đã công khai trên TikTok.
+- `output/reup-status.json`: trạng thái Posted/Date theo ID. Nguồn: đánh dấu tay (`ManualPosted`) hoặc đồng bộ lịch sử autotok khi bật tích hợp TikTok (mục 8). Chỉ `Update-ReupMetadata` ghi file. Nhãn kho `Kho`/`KhoManual` nằm cùng file (mục 10). Không phải xác nhận bài đã công khai trên TikTok.
 - ID trùng trong cùng input được gộp. Khi đã có `-3` không rỗng ở thư mục xuất, GUI có lựa chọn bỏ qua hoặc tải và ghi âm lại. Đây là kiểm tên/ID/file, không so sánh nội dung video bằng fingerprint.
 
 ### Sự kiện máy đọc (engine → GUI)
@@ -147,6 +147,15 @@ powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\core\kid-fby.ps1 
 
 Chạy SelfTest trong thư mục sao chép riêng khi không muốn ghi trạng thái `_update` vào checkout. SelfTest không kiểm dịch, chất lượng audio, đồng bộ tiếng–hình, queue end-to-end, lỗi khóa file hay hiệu năng. Không có regression suite kèm bản Git này; các harness tạo ngoài repo của phiên làm việc không mặc nhiên có mặt trên máy người nhận.
 
+### Bộ test Kho (nhánh `feature/kho-accounts`)
+
+```powershell
+# Chạy 12 file tests\kho\NN-*.ps1, mỗi file trong powershell.exe -STA riêng; in "FAILED: ..." và exit 1 nếu có file lỗi
+powershell.exe -NoProfile -STA -File tests\kho\run-all.ps1
+```
+
+`08-perf.ps1` có ngưỡng thời gian; máy đang tải CPU nặng có thể làm file này lỗi dù logic đúng. Harness dùng `FakeBackend.ps1`, không gọi TikTok thật.
+
 ### Checklist tái hiện khi nhận việc
 
 - Khởi động từ thư mục mới và đường dẫn có space/`[]`; đối chiếu version GUI/EXE/core/manifest và mười ba resource (kể cả font).
@@ -166,6 +175,7 @@ Chạy SelfTest trong thư mục sao chép riêng khi không muốn ghi trạng 
 
 Các báo cáo và harness nằm ngoài repo (thư mục tạm của phiên làm việc, không có trong clone Git). Số liệu dưới đây là ghi nhận của phiên làm việc, không thay cho việc chạy lại.
 
+- Nhánh Kho (`feature/kho-accounts`, HEAD `513be65`, 26/10/2026): `tests\kho\run-all.ps1` chạy bằng `powershell.exe -STA`, kết quả `ALL TEST FILES PASSED`, exit 0; 12 file, tổng 167 PASS, 0 FAIL (chi tiết và giới hạn ở mục 10).
 - Đợt đồng bộ và giao diện v3 (commit `d2b43cd`): unit engine 54/54 và khớp khung hình 8/8 (fixture và cặp mẫu thật), harness WPF 118/118 (engine giả lập), kiểm chữ ký manifest 8/8 và quote đối số 8/8 (launcher), và một lượt GUI thật trên LDPlayer (hàng đợi ba link, Dừng, Kho phát/tua, đóng/mở lại) đạt. Đã đo `yt-dlp -F` (một luồng audio gốc) và đo onset cũ cắt muộn khoảng 0,45–1,25 s so với khung 0.
 - Đợt 4 (`345d753`, chỉ một file hoàn chỉnh + `.cache` + giao diện cute) và lượt sửa theo duyệt toàn nhánh (`08eddcb`, thu lại khi thiếu, hủy khi khớp hình, dọn code chết): tài liệu này **không** dẫn được kết quả chạy hợp lệ cho riêng hai commit đó; coi là chưa kiểm cho tới khi chạy lại build, SelfTest và các ca ở checklist.
 - Lượt dọn 19/10/2026 (bản 2.0.1 trước nhánh này) từng kiểm 30 assertion engine, harness GUI, metadata build và một lượt Android thật (Reel `4340858519560389`). Mã đã thay đổi lớn từ đó (engine, GUI, launcher, updater), nên kết quả ấy chỉ còn giá trị lịch sử.
@@ -187,6 +197,8 @@ So với bản 2.0.1, bản 2.1.0 (nhánh `audit-fixes-2.1`, nay cùng commit v�
 
 Giữ media đầu vào/bản hoàn chỉnh/lịch sử/công cụ đang dùng. Các fallback tải/cài, lớp GIF/cache/worker, helper Whisper, lịch sử và dữ liệu phục hồi còn có caller hoặc mục đích nên được giữ. Thư mục `output\.thumbs` có thể còn trên máy đã chạy bản thử trước đợt 4 và xóa tay được; ảnh thu nhỏ mới nằm ở `.cache\thumbs`. Tài liệu này cập nhật theo commit `7f5851a` trên `main` và chưa commit theo yêu cầu của tác vụ; không viết lại lịch sử Git.
 
+Nhánh Kho (mục 10) thêm `Kho`/`KhoManual` vào `reup-status.json`, thêm `data\kho.json`, `data\tiktok-prefs.json` và trường `accounts` tùy chọn trong `tiktok-hashtags.json`. Ranh giới tương thích: `Set-ReupMetadata` của bản `v2.1.0` ghi đè cả mục bằng `{Posted, Date}`, làm mất `Kho`, `History` và các trường khác. Vì vậy mỗi thư mục xuất chỉ dùng một phiên bản app (đã chấp nhận khi lập kế hoạch Kho).
+
 ## 8. Tích hợp TikTok cục bộ — 24/10/2026, có trong 3.0.0 (25/10/2026)
 
 Mục đích: đăng video từ Kho lên TikTok qua autotok (`integrations/autotok/`, trong repo), không sao chép file tay. Facebook vẫn là luồng chính; tích hợp này không đổi engine tải Facebook, ngưỡng đồng bộ hay giao thức STAGE/RESULT. Bản 3.0.0 phát hành tích hợp này cùng bộ cài một chấm (xem "Bộ cài một chấm" dưới mục 9).
@@ -200,7 +212,7 @@ Mục đích: đăng video từ Kho lên TikTok qua autotok (`integrations/autot
 
 ### Trạng thái đồng bộ (`reup-status.json`)
 
-- File nằm ở thư mục xuất, theo từng ID video: `Posted`, `Date`, `ManualPosted`, `ManualDate`, `Source='autotok-history'`, `History` (bản rút gọn: key, request_id, username, status, publish_uncertain, prior_uncertain, planned_for, accepted_at, created_at, time_source, sha256), `FileSha256`. `Posted` là trường tổng hợp để bản cũ đọc được.
+- File nằm ở thư mục xuất, theo từng ID video: `Posted`, `Date`, `ManualPosted`, `ManualDate`, `Source='autotok-history'`, `History` (bản rút gọn: key, request_id, username, status, publish_uncertain, prior_uncertain, planned_for, accepted_at, created_at, time_source, sha256), `FileSha256`, và từ nhánh Kho thêm `Kho`/`KhoManual` (mục 10). `Posted` là trường tổng hợp để bản cũ đọc được.
 - Mục cũ không có `Source` được chuyển thành `ManualPosted`. Đồng bộ không bao giờ ghi đè dấu đánh tay.
 - Chỉ `Update-ReupMetadata` ghi file này: mutex có tên, đọc một lần, thay file nguyên tử (thử lại khi `IOException`). Bên đọc mở với `FileShare ReadWrite|Delete`. File hỏng không bị ghi đè.
 - Đây là ACK của uploader, không chứng minh bài đã công khai trên hồ sơ TikTok.
@@ -302,3 +314,74 @@ Mục này thay phần hộp đăng và đồng bộ của bản 23/10 (đã b�
 - Hẹn mới đã chuyển lên TikTok, nhưng job chờ cục bộ cũ vẫn cần scheduler autotok chạy đúng giờ. Chưa cài dịch vụ Windows, chưa tự khởi động cùng máy.
 - **Chưa kiểm**: đăng video TikTok thật; xác minh bài trên hồ sơ; Reel Facebook thật; nhiều DPI cho hộp đăng; phản hồi publish có mã bài; bài hẹn lên đúng giờ khi máy tắt; bộ cài một chấm trên dịch vụ thật (chỉ kiểm với lớp dịch vụ giả). Kiểm bằng fixture và backend giả lập: harness WPF Windows PowerShell 5.1 STA; test làm sạch và đồng bộ trên fixture.
 - Phiên bản 3.0.0 đã phát hành qua `publish.ps1`: `core/version.txt` = 3.0.0, `version.json` và `version.json.sig` đã ký (15 file, gồm `core/autotok-bundle.zip`). Các thay đổi tích hợp TikTok và bộ cài nằm trong bản này (mục 8, 9).
+
+## 10. Kho theo tài khoản — nhánh `feature/kho-accounts` (26/10/2026, chưa gộp)
+
+Vì sao: chủ dự án đăng TikTok bằng 3–5 tài khoản, mỗi tài khoản 2–3 bài/ngày. Cần biết video nào thuộc tài khoản nào, nhưng không muốn di chuyển file. Quyết định 26/10/2026: Kho là nhãn logic.
+
+### Nguyên tắc
+
+- File không bao giờ di chuyển. Mọi video vẫn ở thư mục xuất (`-3`, `.cache`, biên nhận, `reup-status.json` như cũ). Kho chỉ là nhãn.
+- Mỗi video có tối đa một Kho. Thiếu `Kho` nghĩa là Kho chung (`default`).
+- Chỉ `Update-ReupMetadata` ghi `reup-status.json`. Chỉ luồng UI ghi `data\kho.json`; mã nền làm việc với id và không đọc/ghi registry.
+
+### Registry `data\kho.json`
+
+- Dạng: `{version:1, libraries:[{id,name,account,caption,hashtags,lowStock}], downloadTarget}`.
+- Id: `default` (Kho chung, không xóa được); `c-<32 ký tự hex>` (kho tự tạo, `account` rỗng); `acct:<username chữ thường>` (kho tài khoản TikTok, `account` là username).
+- File thiếu: chỉ có Kho chung. File hỏng: đổi tên `kho.json.corrupt-<ts>`, coi như chỉ có Kho chung (không ném lỗi).
+- File không đọc được (ví dụ bị khóa tạm): chỉ có Kho chung và `khoRegistryReady=$false`. Phiên đó không ghi đè file: `Save-KhoRegistry` trả `$false`, xóa kho bị chặn, đổi kho đích chỉ giữ trong phiên.
+- `Get-KhoList` bổ sung kho `acct:*` mà video đang trỏ tới nhưng registry chưa có, rồi lưu một lần.
+
+### Nhãn trong `reup-status.json`
+
+- `Kho`: id kho. `KhoManual` (true): chủ đã chuyển tay, tự gán không đụng vào.
+- Mục mới chỉ tạo để gán kho có dạng `{Posted:$false, Date:''}` cộng `Kho`, để bản cũ đọc được. Không tạo mục cho video lỗi.
+
+### Quy tắc gán
+
+- **Tự gán** (`Invoke-KhoAutoAssign`): chạy trong khối ghi lịch sử của đồng bộ đầy đủ, đồng bộ nhanh và ghi biên nhận cục bộ. Chỉ xét mục có `Source='autotok-history'`, `Kho` rỗng/`default`/`c-*`, không có `KhoManual`. Đích là tài khoản của bài `succeeded` (không `publish_uncertain`) có `accepted_at` sớm nhất. Đã là `acct:*` thì không đổi tự động: đăng lại sang tài khoản B vẫn ở A. Chạy lại không đổi gì.
+- **Chuyển tay** (`Set-MetaKho -Manual`): sang kho tài khoản thì đặt `Kho`. Về Kho chung thì bỏ `Kho`, và chỉ đặt `KhoManual` khi video đã có bài xác nhận (để không bị kéo về kho tài khoản). Sang kho tự tạo thì đặt `Kho`, cùng quy tắc `KhoManual`.
+- **Xóa kho** (`Remove-Kho`): không xóa file. Video của kho bỏ `Kho`, về Kho chung. Với kho tài khoản, mọi video đó được đặt `KhoManual` để tự gán không kéo lại. Kho tài khoản hiện lại khi một video khác của tài khoản đó được xác nhận. Xong mới bỏ kho khỏi registry; `downloadTarget` về `default` nếu đang trỏ tới kho đó. Bị chặn khi đang nhập thư mục.
+- **Id treo** (kho đã bị xóa ở chỗ khác): hiển thị ở Kho chung (`Get-KhoEffectiveId`).
+- **Lưu vào kho** (đích tải): chọn ở ô cạnh ô nhập link, chốt khi hàng đợi bắt đầu (`$script:queueKhoId`). Chỉ gán khi video lưu thành công và chưa có `Kho`/`KhoManual` (`Add-QueueVideoToKho`). Tải lại và ghi âm lại không gán (`queueKhoId = $null`). Lỗi gán chỉ ghi log và báo, không làm hỏng hàng đợi.
+- **Nhập từ thư mục** (`Import-KhoFolder`, nút "Thêm video từ thư mục…" trong Quản lý kho): chỉ chép `<id>-3-hoan-chinh.mp4` chưa có ở thư mục xuất, theo kiểu `.part` rồi đổi tên, không ghi đè. Nếu đích đã có cùng kích thước và SHA256 thì chỉ làm bước metadata (chạy lại an toàn). Nếu đích khác nội dung thì bỏ qua. `-1`/`-2` đi kèm vào `.cache` nếu chưa có. Metadata: video chưa có mục thì chép mục từ nguồn; đã có thì gộp `History` theo `key` (đích thắng); đặt `Kho` trừ khi đích đã `acct:*` hoặc `KhoManual`. Thư mục nguồn chỉ đọc. Nhập và hàng đợi/sửa lại/xóa kho loại trừ nhau (`$script:importBusy`, `Test-KhoImportBlocked`).
+- **Chống hạ cấp lịch sử** (`Test-TikTokStaleDowngrade`): mục đã `succeeded` không bị thay bằng trạng thái đang chờ (`preparing|pending|queued|running`) của cùng request, cả khi đồng bộ đầy đủ lẫn nhanh. Mục không có mã lần thử nên không phân biệt được lần thử mới với dữ liệu cũ.
+
+### Giao diện (`core/kid-fby-gui.ps1`, `core/ui/*.xaml`)
+
+- Chọn kho và đếm (`Update-GalleryKhoSelector`, `Format-KhoCounts`): "Tất cả" và từng kho, đếm Chờ đăng / Đã hẹn / Đã đăng. Tab trạng thái lọc trong bộ nhớ (`Apply-GalleryFilter`, từ `$script:galleryAll`), không quét ổ và không băm lại.
+- Chọn nhiều (Ctrl/Shift, `Select-GalleryItems`): thanh dưới lưới có "Chuyển N video sang kho…" và "Rải lịch…". Menu chuyển kho (`Show-KhoMoveMenu`) là menu phẳng, không có menu con (Theme không có popup con).
+- Quản lý kho (`Show-KhoManagerDialog`): thêm kho; thêm kho tài khoản (danh sách từ `/api/accounts` khi TikTok bật); đổi tên (`Rename-Kho`); xóa (`Confirm-KhoDelete`; hộp xác nhận nói video về Kho chung, không xóa file); caption và hashtag mặc định; ngưỡng "sắp hết" (mặc định 3); nhập thư mục.
+- Cảnh báo sắp hết (`Test-KhoLowStock`): mỗi kho tài khoản một lần mỗi phiên, khi Chờ đăng dưới ngưỡng.
+- Đã hẹn sang Đã đăng: `Update-GalleryHeldExpired` chạy mỗi 60 giây (`$tGalleryHeld`), chỉ đọc bộ nhớ, không gọi mạng.
+- Nút "Tự hẹn lịch" trong kho tài khoản (`Get-TikTokAutoScheduleItems`): lấy video Chờ đăng chưa có lịch sử, cũ nhất trước, rồi mở hộp Rải lịch để xem trước. Không gửi khi chưa bấm xác nhận.
+
+### Hộp đăng TikTok (`Show-TikTokPublishDialog`)
+
+- Tài khoản mặc định: kho tài khoản của video; không có thì tài khoản dùng lần trước (`data\tiktok-prefs.json`: `lastAccount`, `times`). File hỏng: đổi tên `.corrupt-<ts>`, coi như rỗng.
+- Caption trống: điền caption và hashtag mặc định của kho (kho tài khoản, hoặc kho tự tạo của video).
+- Gợi ý hashtag xếp theo số lần dùng của tài khoản. `tiktok-hashtags.json` có trường `accounts` tùy chọn; file cũ vẫn đọc được.
+- Chip giờ: 4 giờ dùng nhiều nhất của tài khoản, đệm bằng 08:00/12:00/19:00/21:00. Mỗi lần hẹn thành công tăng đếm `times[user]["HH:mm"]` (`Register-TikTokPrefsSubmit`).
+- "Giờ trống kế tiếp" (`Get-NextFreeTikTokSlot`): giờ ưa thích sớm nhất trong khoảng hẹn cho phép (+20 phút đến +10 ngày), cách mọi giờ bận của tài khoản ít nhất 60 phút, tìm trong 11 ngày.
+- Đăng lại (`Get-TikTokRepostWarning`): nếu video đã xác nhận trên tài khoản khác, hiện "đã đăng ở @A" và phải tick xác nhận mới gửi.
+
+### Rải lịch và Tự hẹn lịch (`Show-TikTokSpreadDialog`)
+
+- Chọn nhiều video, chọn một tài khoản, xem trước giờ, rồi "Hẹn N video". Giờ do `Get-TikTokSpreadPlan` xếp: giờ ưa thích, từ hôm nay trong N ngày (1–10), tối đa K bài mỗi ngày (1–20), cách nhau ≥ S phút (1–12 giờ, tính theo phút). Mặc định của hàm: 7 ngày, 3 bài/ngày, 120 phút. Các bài đã hẹn và đang gửi được tính vào.
+- Gửi tuần tự: mỗi lần một tiến trình con (`Start-TikTokBackgroundJob -PassThru`); chỉ gửi bài kế khi tiến trình trước thoát (`Step-TikTokSpreadRun`). Trước mỗi lần gửi kiểm lại: video đang có lượt chạy thì bỏ qua.
+- Kết quả đọc từ biên nhận (`Get-TikTokSpreadSendResult`): trạng thái chấp nhận được là đã gửi. `transfer_failed`, `preparation_failed`, `submitted`, `unknown` hoặc thiếu file là lỗi, ghi kèm lý do.
+- Dừng (`Stop-TikTokSpreadRun`): không chạy thêm; tiến trình đang chạy để yên và dòng ghi "vẫn đang gửi". Quá 15 phút chỉ báo `LongWait`, không chạy lại.
+
+### Dọn ổ (Cài đặt › Lưu trữ, `Invoke-KhoCleanup`)
+
+- Ứng viên: video đã đăng (xác nhận hoặc đánh dấu tay) có ngày đăng cũ hơn N ngày (ô nhập 7–365) và còn `-1`/`-2`. Ngày đăng là giờ hẹn TikTok nếu có, không thì ngày chấp nhận; không xác định được ngày thì bỏ qua. Phạm vi: kho đang chọn hoặc tất cả.
+- Chỉ xóa `-1-video-goc.mp4` và `-2-am-thanh-tho.m4a` (trong `.cache` và file cũ ở gốc thư mục xuất), sau xác nhận. Không xóa `-3`, ảnh thu nhỏ, `.kidfby-publish-*`, và bỏ qua video đang có lượt chuyển TikTok.
+- Đây là ngoại lệ có chủ đích cho quy tắc "-1/-2 không xóa theo tuổi" trong `AGENTS.md`: xét theo ngày đăng, không theo tuổi file.
+
+### Giới hạn đã biết
+
+- Đo ngày 26/10/2026 (`tests\kho\08-perf.ps1`, 2.500 video, HEAD `513be65`): đồng bộ ấm sau khởi động 4.144 ms (bản 3.0.1: 4.803 ms). Mục tiêu dưới 2 giây chưa đạt. Báo cáo phiên ghi khoảng 2–4,5 giây.
+- `Get-KhoList`: 158 ms với 2.500 mục (lần đo này). Báo cáo phiên ghi khoảng 240 ms.
+- Mục 6 của kế hoạch (trang Facebook sang kho) chưa làm. Trường uploader của yt-dlp chưa kiểm (unverified).
+- Chưa có bằng chứng trong tài liệu này cho: đăng/hẹn TikTok thật, Android thật, thao tác giao diện thủ công trên bản thử (unverified).
