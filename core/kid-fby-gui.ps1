@@ -1095,11 +1095,14 @@ function Set-ReupMetadata {
 $script:khoRegistry = $null
 $script:khoRegistryReady = $true     # $false: kho.json was unreadable this session -> it is never overwritten
 $script:khoLegacyOutDir = ''         # outDir saved in settings.json = the folder that becomes "Output cũ" on first start ('' -> <root>\output)
+$script:khoSettingsLoaded = $false   # $false until startup has read settings.json: before that the registry is never created, cached or saved (outDir unknown)
 $script:queueOutDir = ''             # folder the running download queue saves into (captured at queue start; record again = that video's folder)
 $script:importBusy = $false          # a background folder import is running
 $script:khoExclusive = 0             # > 0 while a dialog / cleanup holds the kho folders (no move or delete may run)
 $script:khoMoveRunning = $false      # a move batch is running (every other actor refuses)
 $script:khoAutoMoveWanted = $false   # a sync pass changed history: look for videos to move into their account kho
+$script:khoAutoMoveDeferred = $false # wanted but the app was busy: re-armed on the next busy -> quiet transition (not every 1 s tick)
+$script:khoWasBusy = $false          # Test-KhoQuiet was non-empty at the previous sync tick
 $script:khoAutoMoveFailed = @{}      # account -> time of the last failed attempt to create its kho (not retried for 10 minutes)
 
 # D12: video trong kho = MỌI file video của thư mục kho (.mp4 .mov .m4v .mkv .webm .avi, không phân biệt hoa/thường; bỏ file ẩn bắt đầu bằng '.', *.part, *.tmp).
@@ -1138,10 +1141,10 @@ function Get-KhoVideoFileName {
 }
 
 function Get-KhoVideoPath {
-    param([string]$Root, [string]$Key)
+    param([Alias('Root')][string]$KhoRoot, [string]$Key)
     $name = Get-KhoVideoFileName $Key
     if (-not $name) { return '' }
-    return (Join-Path $Root $name)
+    return (Join-Path $KhoRoot $name)
 }
 
 function Get-KhoThumbKey {
@@ -1152,7 +1155,7 @@ function Get-KhoThumbKey {
     finally { $sha.Dispose() }
 }
 
-function Get-KhoPath { return (Join-Path $root 'data\kho.json') }
+function Get-KhoPath { return (Join-Path $script:root 'data\kho.json') }
 
 function Test-KhoId {
     param([string]$Id)
@@ -1242,7 +1245,7 @@ function Get-KhoLegacyOutDir {
     $saved = ([string]$script:khoLegacyOutDir).Trim()
     if ($saved -match '^[A-Za-z]:[\\/]' -or $saved.StartsWith('\\')) { return $saved }
     if ($saved) { Write-FileLog "WARN outDir đã lưu '$saved' không phải đường dẫn đầy đủ; dùng thư mục output mặc định cho kho 'Output cũ'." }
-    return (Join-Path $root 'output')
+    return (Join-Path $script:root 'output')
 }
 
 function New-KhoDefaultRegistry {
@@ -1312,6 +1315,12 @@ function Read-KhoRegistry {
 }
 
 function Get-KhoRegistry {
+    # Before settings.json is loaded the saved outDir (= folder of "Output cũ") is unknown: hand out a transient default that is never
+    # cached or written, so an early caller cannot create / save a registry that points at <app>\output.
+    if ($script:khoSettingsLoaded -eq $false) {
+        Write-FileLog 'WARN Get-KhoRegistry được gọi trước khi nạp cài đặt; trả về kho tạm, không lưu.'
+        return (New-KhoDefaultRegistry)
+    }
     if ($null -eq $script:khoRegistry) { $script:khoRegistry = Read-KhoRegistry }
     return $script:khoRegistry
 }
@@ -1319,6 +1328,7 @@ function Get-KhoRegistry {
 function Save-KhoRegistry {
     # Atomic write (Write-KidSettings). Returns $false without writing when kho.json was unreadable this session.
     param($Registry = (Get-KhoRegistry), [string]$Path = (Get-KhoPath))
+    if ($script:khoSettingsLoaded -eq $false) { Write-FileLog 'WARN Chưa nạp cài đặt; không ghi kho.json.'; return $false }
     if (-not $script:khoRegistryReady) { Write-FileLog 'WARN kho.json không đọc được trong phiên này; không ghi đè.'; return $false }
     $data = [ordered]@{
         version = 2
@@ -1338,6 +1348,7 @@ function Invoke-KhoRegistryChange {
     # Applies $Change to a copy and saves it; the in-memory registry is replaced only after the save succeeded.
     param([scriptblock]$Change)
     $current = Get-KhoRegistry
+    if ($script:khoSettingsLoaded -eq $false) { throw 'Chưa nạp xong cài đặt nên chưa lưu được thay đổi kho.' }
     if (-not $script:khoRegistryReady) { throw 'Không đọc được data\kho.json nên phiên này không lưu thay đổi kho. Đóng ứng dụng, kiểm tra file rồi mở lại.' }
     $copy = ConvertTo-KhoRegistry $current
     $output = @(& $Change $copy) | Select-Object -Last 1
@@ -1755,12 +1766,12 @@ $script:khoImportFunctions = @('Get-CanonicalPath', 'Get-FileStamp', 'Get-ReupMu
 # A move is a batch of same-volume renames driven by a journal written BEFORE the first rename (temp file + Flush(true) + rename).
 # The journal lives outside every kho folder, so no cache cleanup can ever delete it. Recovery (startup, before each batch) rolls
 # forward from the recorded phase: renaming -> meta-target-done -> meta-source-done. Every step is idempotent.
-function Get-KhoMovesDir { return (Join-Path $root 'data\kho-moves') }
+function Get-KhoMovesDir { return (Join-Path $script:root 'data\kho-moves') }
 
 function Add-KhoMoveLog {
     param([string]$Text)
     try {
-        $dir = Join-Path $root 'logs'
+        $dir = Join-Path $script:root 'logs'
         [void][System.IO.Directory]::CreateDirectory($dir)
         [System.IO.File]::AppendAllText((Join-Path $dir 'kho-moves.log'), ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + '  ' + $Text + "`r`n"), [System.Text.UTF8Encoding]::new($false))
     } catch { Write-FileLog "WARN kho-moves.log: $($_.Exception.Message)" }
@@ -1809,11 +1820,22 @@ function Get-KhoJournalBlock {
         if (-not $e.Journal) { return "Có file nhật ký chuyển kho không đọc được ($([IO.Path]::GetFileName($e.Path))). Kiểm tra thư mục data\kho-moves rồi mở lại ứng dụng." }
         foreach ($p in @($e.Journal.from, $e.Journal.to)) {
             if ($p -and $set.ContainsKey((Get-CanonicalPath ([string]$p)).ToUpperInvariant())) {
-                return "Có lần chuyển video #$($e.Journal.id) chưa hoàn tất giữa '$($e.Journal.from)' và '$($e.Journal.to)'. Kho này bị khóa chuyển/xóa cho tới khi xử lý (mở lại ứng dụng để thử hoàn tất, hoặc kiểm tra hai thư mục)."
+                return "Có lần chuyển video #$($e.Journal.id) chưa hoàn tất giữa '$($e.Journal.from)' và '$($e.Journal.to)'. Kho này bị khóa chuyển/xóa cho tới khi xử lý (Quản lý kho › 'Có lần chuyển kho dở dang' › Thử hoàn tất, hoặc Bỏ qua để giữ file tại chỗ)."
             }
         }
     }
     return ''
+}
+
+function Get-KhoBlockedRoots {
+    # Canonical folders reserved by unresolved move journals (HashSet, case-insensitive); $null when a journal cannot be read
+    # (then no folder can be trusted). Reads the small journal folder only, never a reup-status.json.
+    $set = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($e in @(Read-KhoJournals)) {
+        if (-not $e.Journal) { return $null }
+        foreach ($p in @($e.Journal.from, $e.Journal.to)) { if ($p) { [void]$set.Add((Get-CanonicalPath ([string]$p))) } }
+    }
+    return , $set
 }
 
 function Initialize-KhoCacheDir {
@@ -1827,8 +1849,8 @@ function Initialize-KhoCacheDir {
 function Get-KhoReceiptGroups {
     # Files of <root>\.cache\tiktok-posts grouped by request id: @{ VideoId; Files; Live } (VideoId read from the receipt, else the
     # .job; '' when unknown). Live = a .job or .lock (running OR kept for retry) exists.
-    param([string]$Root)
-    $dir = Join-Path (Join-Path $Root '.cache') 'tiktok-posts'
+    param([Alias('Root')][string]$KhoRoot)
+    $dir = Join-Path (Join-Path $KhoRoot '.cache') 'tiktok-posts'
     $groups = @{}
     if (-not [System.IO.Directory]::Exists($dir)) { return $groups }
     foreach ($f in [System.IO.DirectoryInfo]::new($dir).GetFiles()) {
@@ -1857,15 +1879,15 @@ function Get-KhoReceiptGroups {
 function Get-KhoVideoBlock {
     # S2: '' when nothing about this video's TikTok jobs blocks a move / delete; otherwise the Vietnamese reason. Any .job / .lock of
     # the video in its folder blocks it (running or kept for retry). A job whose video cannot be read blocks the whole folder.
-    param([string]$Root, [string]$Id, $Groups = $null)
-    if ($null -eq $Groups) { $Groups = Get-KhoReceiptGroups $Root }
+    param([Alias('Root')][string]$KhoRoot, [string]$Id, $Groups = $null)
+    if ($null -eq $Groups) { $Groups = Get-KhoReceiptGroups $KhoRoot }
     foreach ($req in $Groups.Keys) {
         $g = $Groups[$req]
         if (-not $g.Live) { continue }
         if ($g.VideoId -ceq $Id) { return 'Video có lệnh đăng chưa xong hoặc lỗi chưa xử lý — Thử lại hoặc Lưu trữ trước.' }
         if (-not $g.VideoId) { return 'Thư mục có lệnh đăng không rõ thuộc video nào (xem Lịch sử đăng) — xử lý trước.' }
     }
-    if (Test-TikTokTransferActive (Get-KhoVideoPath $Root $Id)) { return 'Video đang được chuyển sang bộ đăng nền.' }
+    if (Test-TikTokTransferActive (Get-KhoVideoPath $KhoRoot $Id)) { return 'Video đang được chuyển sang bộ đăng nền.' }
     return ''
 }
 
@@ -2050,6 +2072,32 @@ function Resume-KhoMoves {
     return @{ Done = $done; Pending = $pending.ToArray() }
 }
 
+function Get-KhoStuckMoves {
+    # Journals still on disk = moves that startup / the last batch could not finish. @{ Path; Text } per journal (unreadable ones too).
+    $list = New-Object System.Collections.Generic.List[object]
+    foreach ($e in @(Read-KhoJournals)) {
+        $name = [IO.Path]::GetFileName([string]$e.Path)
+        if (-not $e.Journal) { $list.Add(@{ Path = [string]$e.Path; Text = "Nhật ký hỏng $name ($($e.Error))" }); continue }
+        $list.Add(@{ Path = [string]$e.Path; Text = "Video $(Get-ReelLabel ([string]$e.Journal.id)): '$($e.Journal.from)' → '$($e.Journal.to)' (bước: $([string]$e.Journal.phase))" })
+    }
+    return $list.ToArray()
+}
+
+function Move-KhoJournalAside {
+    # "Bỏ qua": the journal moves to data\kho-moves\abandoned\ (never deleted); files stay exactly where they are. Returns the new path.
+    param([string]$JournalPath)
+    $dir = Get-KhoMovesDir
+    $full = [IO.Path]::GetFullPath($JournalPath)
+    if (-not (Test-SamePath ([IO.Path]::GetDirectoryName($full)) $dir)) { throw 'Chỉ bỏ qua được nhật ký nằm trong data\kho-moves.' }
+    if (-not [System.IO.File]::Exists($full)) { throw 'Không thấy file nhật ký (có thể đã được xử lý).' }
+    $abandoned = Join-Path $dir 'abandoned'
+    [void][System.IO.Directory]::CreateDirectory($abandoned)
+    $dest = Join-Path $abandoned ([IO.Path]::GetFileNameWithoutExtension($full) + '.' + (Get-Date).ToString('yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.json')
+    [System.IO.File]::Move($full, $dest)
+    Add-KhoMoveLog "SKIP nhật ký $([IO.Path]::GetFileName($full)) được bỏ qua theo yêu cầu (file giữ nguyên tại chỗ) -> $dest"
+    return $dest
+}
+
 function Initialize-KhoStartup {
     # Luc khoi dong, TRUOC khi quet kho va truoc khi dong bo TikTok chay: nap (hoac tao/chuyen doi) data\kho.json, hoan tat cac lan chuyen kho
     # dang do tu nhat ky, roi dong bo duong dan tuong thich. Khong nem loi.
@@ -2179,8 +2227,9 @@ function Invoke-KhoMove {
     $script:khoMoveRunning = $true
     try {
         if (-not (Suspend-TikTokSync)) { $result.Busy = 'đang đồng bộ TikTok'; return $result }
+        # Finish what can be finished; a journal that stays stuck blocks only ITS two folders (Move-KhoVideos checks per folder).
         $recovered = Resume-KhoMoves
-        if ($recovered.Pending.Count) { $result.Busy = 'còn lần chuyển kho dở dang: ' + ($recovered.Pending -join '; '); return $result }
+        foreach ($m in @($recovered.Pending)) { Write-FileLog "WARN Chuyển kho dở dang chưa xử lý được (chỉ khóa kho liên quan): $m" }
         $videos = @(@($Items) | Where-Object { $_ -and [string]$_.Id -and [string]$_.Path } | ForEach-Object { @{ Id = [string]$_.Id; From = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath([string]$_.Path)) } } | Where-Object { -not (Test-SamePath $_.From ([string]$target.path)) })
         Release-KhoPlayer @($videos | ForEach-Object { Get-KhoVideoPath $_.From $_.Id })
         $batch = Move-KhoVideos -Videos $videos -ToRoot ([string]$target.path) -Manual:($Reason -eq 'manual')
@@ -2224,10 +2273,11 @@ function Get-KhoAutoMoveCandidates {
 
 function Invoke-KhoAutoMove {
     # After a sync pass: moves newly confirmed videos into their account kho (created when missing, next to the download kho).
-    # Not quiet -> stays wanted and is retried by the next sync tick. Returns the number of videos moved.
+    # Not quiet -> deferred (NOT retried every tick): the tick re-arms it when the app turns quiet; a sync pass that changes history re-arms it too.
+    # Returns the number of videos moved.
     param($MetaByRoot)
     if (-not $script:khoRegistryReady) { return 0 }
-    if (Test-KhoQuiet) { $script:khoAutoMoveWanted = $true; return 0 }
+    if (Test-KhoQuiet) { $script:khoAutoMoveWanted = $false; $script:khoAutoMoveDeferred = $true; return 0 }
     $reg = Get-KhoRegistry
     $cands = @(Get-KhoAutoMoveCandidates $reg $MetaByRoot)
     $script:khoAutoMoveWanted = $false
@@ -2254,10 +2304,46 @@ function Invoke-KhoAutoMove {
 # ------------------------------------------------------------- xoa video / xoa kho: Thung rac ----
 $script:khoRecycleOverride = $null   # test seam: scriptblock { param($Path, $IsFolder) } replacing the shell call
 
+
+function Test-KhoRecycleBin {
+    # Does the Windows Recycle Bin work for $Path? Not for network (UNC / mapped) drives, removable / optical / RAM drives, or subst / virtual drives
+    # (QueryDosDevice target starts with \??\). Returns @{ Ok; Reason } with the Vietnamese reason when not.
+    param([string]$Path)
+    if (-not ([System.Management.Automation.PSTypeName]'KidDosDevice').Type) {
+        Add-Type -TypeDefinition @"
+using System.Runtime.InteropServices;
+using System.Text;
+public static class KidDosDevice {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern uint QueryDosDevice(string name, StringBuilder buffer, int max);
+    public static string Query(string name) { var sb = new StringBuilder(2048); return QueryDosDevice(name, sb, sb.Capacity) == 0 ? "" : sb.ToString(); }
+}
+"@
+    }
+    $full = [System.IO.Path]::GetFullPath($Path)
+    if ($full.StartsWith('\\')) { return @{ Ok = $false; Reason = 'thư mục mạng (UNC)' } }
+    $drive = [System.IO.Path]::GetPathRoot($full)
+    if ($drive -notmatch '^[A-Za-z]:\\$') { return @{ Ok = $false; Reason = 'không xác định được ổ đĩa' } }
+    try {
+        $type = [System.IO.DriveInfo]::new($drive).DriveType
+        if ($type -ne [System.IO.DriveType]::Fixed) { return @{ Ok = $false; Reason = "ổ $($drive.Substring(0, 2)) là ổ $type (không phải ổ cứng cố định)" } }
+    } catch { return @{ Ok = $false; Reason = "không đọc được loại ổ $($drive.Substring(0, 2)): $($_.Exception.Message)" } }
+    $target = [KidDosDevice]::Query($drive.Substring(0, 2))
+    if ($target.StartsWith('\??\')) { return @{ Ok = $false; Reason = "ổ $($drive.Substring(0, 2)) là ổ ảo (subst) trỏ tới $($target.Substring(4))" } }
+    return @{ Ok = $true; Reason = '' }
+}
+
 function Invoke-KhoRecycle {
-    # Sends one file (or a whole folder) to the Windows Recycle Bin; throws when it cannot.
-    param([string]$Path, [switch]$Folder)
+    # Sends one file (or a whole folder) to the Windows Recycle Bin; throws when it cannot. On a volume WITHOUT a Recycle Bin it refuses unless the caller
+    # passes -AllowPermanent after the owner explicitly confirmed a permanent delete: nothing is ever deleted permanently by surprise.
+    param([string]$Path, [switch]$Folder, [switch]$AllowPermanent)
     if ($script:khoRecycleOverride) { & $script:khoRecycleOverride $Path ([bool]$Folder); return }
+    $bin = Test-KhoRecycleBin $Path
+    if (-not $bin.Ok) {
+        if (-not $AllowPermanent) { throw "Ổ này không có Thùng rác ($($bin.Reason)); cần xác nhận xóa vĩnh viễn." }
+        if ($Folder) { [System.IO.Directory]::Delete($Path, $true) } else { [System.IO.File]::Delete($Path) }
+        return
+    }
     Add-Type -AssemblyName Microsoft.VisualBasic
     $dialogs = [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs
     $bin = [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin
@@ -2269,11 +2355,11 @@ function Remove-ReelToRecycleBin {
     # S8: one video of a kho folder -> Recycle Bin: the -3 first, then -1/-2, then its finished / archived receipts (thumbnails are
     # regenerable and are deleted outright). When any recycle fails the metadata entry is KEPT and the rest is reported, so a retry
     # deletes what is left (a missing -3 with leftovers is still deletable). Returns @{ Success; Recycled; Remaining; Errors; MetaError }.
-    param([string]$Root, [string]$Id, $Groups = $null)
+    param([Alias('Root')][string]$KhoRoot, [string]$Id, $Groups = $null, [switch]$AllowPermanent)
     $result = @{ Success = $false; Recycled = @(); Remaining = @(); Errors = @(); MetaError = '' }
     $recycled = New-Object System.Collections.Generic.List[string]; $errors = New-Object System.Collections.Generic.List[string]
     $remaining = New-Object System.Collections.Generic.List[string]
-    $r = Get-CanonicalPath $Root
+    $r = Get-CanonicalPath $KhoRoot
     if (-not (Test-KhoVideoKey $Id)) { $result.Errors = @('ID video không hợp lệ.'); return $result }
     $files = New-Object System.Collections.Generic.List[string]
     $files.Add((Get-KhoVideoPath $r $Id))
@@ -2286,10 +2372,14 @@ function Remove-ReelToRecycleBin {
         if ($g.VideoId -cne $Id) { continue }
         foreach ($f in @($g.Files | Sort-Object { $_.Name })) { $files.Add([string]$f.Path) }
     }
+    $finalPath = [string]$files[0]
+    $stopped = $false
     foreach ($path in $files) {
         if (-not [System.IO.File]::Exists($path)) { continue }
-        try { Invoke-KhoRecycle $path; $recycled.Add($path) }
-        catch { $errors.Add("$([IO.Path]::GetFileName($path)): $($_.Exception.Message)"); $remaining.Add($path); Write-FileLog "WARN Thùng rác: không chuyển được '$path': $($_.Exception.Message)" }
+        # The video itself could not be recycled (open in another program, ...): STOP. Its re-edit inputs and receipts stay exactly where they are.
+        if ($stopped) { $remaining.Add($path); continue }
+        try { Invoke-KhoRecycle $path -AllowPermanent:$AllowPermanent; $recycled.Add($path) }
+        catch { $errors.Add("$([IO.Path]::GetFileName($path)): $($_.Exception.Message)"); $remaining.Add($path); Write-FileLog "WARN Thùng rác: không chuyển được '$path': $($_.Exception.Message)"; if ($path -ceq $finalPath) { $stopped = $true } }
     }
     $result.Recycled = $recycled.ToArray(); $result.Errors = $errors.ToArray(); $result.Remaining = $remaining.ToArray()
     if ($errors.Count) { return $result }
@@ -2311,8 +2401,8 @@ function Remove-ReelToRecycleBin {
 
 function Test-KhoFolderOnlyAppFiles {
     # True when the folder holds nothing but files the app made itself (status file, thumbnails, identity cache, empty receipt folder).
-    param([string]$Root)
-    foreach ($e in [System.IO.DirectoryInfo]::new($Root).GetFileSystemInfos()) {
+    param([Alias('Root')][string]$KhoRoot)
+    foreach ($e in [System.IO.DirectoryInfo]::new($KhoRoot).GetFileSystemInfos()) {
         if ($e -is [System.IO.DirectoryInfo]) {
             if ($e.Name -cne '.cache') { return $false }
             foreach ($c in $e.GetFileSystemInfos()) {
@@ -2329,9 +2419,9 @@ function Test-KhoFolderOnlyAppFiles {
 }
 
 function Get-KhoVideoFiles {
-    param([string]$Root)
-    if (-not [System.IO.Directory]::Exists($Root)) { return @() }
-    return @([System.IO.DirectoryInfo]::new($Root).GetFiles() | Where-Object { Test-KhoVideoFileName $_.Name })
+    param([Alias('Root')][string]$KhoRoot)
+    if (-not [System.IO.Directory]::Exists($KhoRoot)) { return @() }
+    return @([System.IO.DirectoryInfo]::new($KhoRoot).GetFiles() | Where-Object { Test-KhoVideoFileName $_.Name })
 }
 
 function Remove-KhoWithVideos {
@@ -2430,9 +2520,9 @@ function New-QueueRow {
 function Get-TikTokIntegration {
     # Same resolution as integrations\tiktok\start.ps1 (D1). Not configured: the app keeps its behaviour from before
     # the bridge (copy button, manual posted badge, no sync timer, no hashing).
-    $launcher = Join-Path $root 'integrations\tiktok\start.ps1'
+    $launcher = Join-Path $script:root 'integrations\tiktok\start.ps1'
     $starter = [string]$env:KID_FBY_AUTOTOK_STARTER
-    $config = Join-Path $root 'integrations\tiktok\local.json'
+    $config = Join-Path $script:root 'integrations\tiktok\local.json'
     if (-not $starter -and [IO.File]::Exists($config)) {
         try { $starter = [string]([IO.File]::ReadAllText($config) | ConvertFrom-Json -ErrorAction Stop).Starter }
         catch { Write-FileLog "WARN TikTok integration config '$config': $($_.Exception.Message)"; $starter = '' }
@@ -2454,9 +2544,9 @@ function Get-TikTokEndpoint {
 # core\autotok-bundle.zip (delivered by the signed app update) carries integrations\autotok\kid-install.ps1.
 # The installer runs in its own hidden process; the GUI only polls its progress file (no UI blocking).
 function Get-AutotokPaths {
-    $integrations = Join-Path $root 'integrations'
+    $integrations = Join-Path $script:root 'integrations'
     return @{
-        Integrations = $integrations; Bundle = (Join-Path $root 'core\autotok-bundle.zip')
+        Integrations = $integrations; Bundle = (Join-Path $script:root 'core\autotok-bundle.zip')
         Current = (Join-Path $integrations 'autotok-current.json'); Launcher = (Join-Path $integrations 'autotok-start.ps1')
         UpgradeLock = (Join-Path $integrations 'autotok-upgrade.lock'); InstallLock = (Join-Path $integrations 'autotok-install.lock')
         LocalJson = (Join-Path $integrations 'tiktok\local.json')
@@ -2601,7 +2691,7 @@ function Start-AutotokInstall {
         } finally { $zip.Dispose() }
         if (-not $expected -or (Get-FileHash -LiteralPath $script -Algorithm SHA256).Hash -ne $expected.ToUpperInvariant()) { throw 'kid-install.ps1 không khớp gói cài.' }
         $progress = Join-Path $work 'progress.txt'
-        $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $script + '"'), '-Root', ('"' + $root.TrimEnd('\') + '"'),
+        $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $script + '"'), '-Root', ('"' + $script:root.TrimEnd('\') + '"'),
             '-Bundle', ('"' + $paths.Bundle + '"'), '-ProgressFile', ('"' + $progress + '"'))
         if ($takeOver) { $argList += '-TakeOverStarter' }
         $process = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -WindowStyle Hidden -PassThru
@@ -3514,10 +3604,10 @@ function Add-TikTokLocalReceiptHistory {
 function Set-TikTokSyncStale {
     # R8: a failed sync keeps the stored state, shows a visible note in Kho and logs at most every 5 minutes.
     # -Root: the kho folder the message is about (one note per folder; the first non-empty one is shown).
-    param([string]$Message, [string]$Root = '')
+    param([string]$Message, [Alias('Root')][string]$KhoRoot = '')
     if ($Message) { Write-FileLogLimited -Key 'tiktok-sync' -Text ('WARN TikTok sync: ' + $Message) -MinSeconds 300 }
     $sync = $script:tikTokSync
-    if ($Message) { $sync.StaleRoots[$Root] = [string]$Message } else { $sync.StaleRoots.Remove($Root) }
+    if ($Message) { $sync.StaleRoots[$KhoRoot] = [string]$Message } else { $sync.StaleRoots.Remove($KhoRoot) }
     $combined = [string](@($sync.StaleRoots.Values | Where-Object { $_ }) | Select-Object -First 1)
     if ([string]$sync.Stale -eq $combined) { return }
     if ($sync.Stale -and -not $combined) { Write-FileLog 'TikTok sync: kết nối lại bình thường.' }
@@ -3555,13 +3645,13 @@ function Get-TikTokSyncDelay {
 
 function Get-TikTokRootState {
     # Per kho folder: identity cache, input signature, file stamp, probe cursor and the fast pass bookkeeping (every folder has its own).
-    param([string]$Root)
+    param([Alias('Root')][string]$KhoRoot)
     $sync = $script:tikTokSync
-    $state = $sync.Roots[$Root]
+    $state = $sync.Roots[$KhoRoot]
     if (-not $state) {
         $state = @{ IdentityCache = $null; InputSig = ''; FileStamp = ''; ProbeCursor = ''; NextAt = [DateTime]::MinValue
                     FastStamp = ''; FastActive = @(); FastCursor = ''; FastNextAt = [DateTime]::MinValue; FastWroteAt = [DateTime]::MinValue }
-        $sync.Roots[$Root] = $state
+        $sync.Roots[$KhoRoot] = $state
     }
     return $state
 }
@@ -3587,15 +3677,15 @@ function Invoke-TikTokFastTick {
     if ($sync.Paused -or -not @($Roots).Count) { return $false }
     $n = @($Roots).Count
     for ($k = 0; $k -lt $n; $k++) {
-        $root = [string]@($Roots)[([int]$sync.FastRoot + $k) % $n]
-        $state = Get-TikTokRootState $root
+        $khoRoot = [string]@($Roots)[([int]$sync.FastRoot + $k) % $n]
+        $state = Get-TikTokRootState $khoRoot
         if ([DateTime]::UtcNow -lt $state.FastNextAt) { continue }
         # Idle (nothing active, file unchanged): no task at all.
-        $stamp = Get-FileStamp (Join-Path $root 'reup-status.json')
+        $stamp = Get-FileStamp (Join-Path $khoRoot 'reup-status.json')
         if ($stamp -eq $state.FastStamp -and -not @($state.FastActive).Count) { $state.FastNextAt = [DateTime]::UtcNow.AddSeconds(5); continue }
         $sync.FastRoot = ([int]$sync.FastRoot + $k + 1) % $n
-        $sync.Fast = Start-TikTokTask 'fast' @{ out_dir = $root; last_stamp = $state.FastStamp; active = @($state.FastActive); cursor = $state.FastCursor }
-        $sync.Fast.OutDir = $root
+        $sync.Fast = Start-TikTokTask 'fast' @{ out_dir = $khoRoot; last_stamp = $state.FastStamp; active = @($state.FastActive); cursor = $state.FastCursor }
+        $sync.Fast.OutDir = $khoRoot
         return $true
     }
     return $false
@@ -3633,19 +3723,22 @@ function Invoke-TikTokSyncStep {
     if ($sync.Paused -or $startedFast -or -not $roots.Count) { return }
     $due = @($roots | ForEach-Object { @{ Root = $_; At = (Get-TikTokRootState $_).NextAt } } | Where-Object { [DateTime]::UtcNow -ge $_.At } | Sort-Object { $_.At })
     if (-not $due.Count) { return }
-    $root = [string]$due[0].Root
-    $state = Get-TikTokRootState $root
-    Remove-TikTokStaleCleanFiles $root
-    $payload = Get-TikTokHistoryPayload $root
+    $khoRoot = [string]$due[0].Root
+    $state = Get-TikTokRootState $khoRoot
+    Remove-TikTokStaleCleanFiles $khoRoot
+    $payload = Get-TikTokHistoryPayload $khoRoot
     $payload.identity_cache = $state.IdentityCache; $payload.last_input_sig = $state.InputSig; $payload.last_file_stamp = $state.FileStamp; $payload.probe_cursor = [string]$state.ProbeCursor
     $sync.Task = Start-TikTokTask 'sync' $payload
-    $sync.Task.OutDir = $root; $sync.Task.StartedAt = [DateTime]::UtcNow
+    $sync.Task.OutDir = $khoRoot; $sync.Task.StartedAt = [DateTime]::UtcNow
 }
 
 function Invoke-TikTokSyncTick {
     # One 1 s tick: the sync step, then (when no pass is running or paused) the auto-move of newly confirmed videos.
     $sync = $script:tikTokSync
     Invoke-TikTokSyncStep
+    $busyNow = [bool](Test-KhoQuiet)
+    if ($script:khoAutoMoveDeferred -and $script:khoWasBusy -and -not $busyNow) { $script:khoAutoMoveDeferred = $false; $script:khoAutoMoveWanted = $true }
+    $script:khoWasBusy = $busyNow
     if ($script:khoAutoMoveWanted -and -not $sync.Paused -and -not $sync.Task -and -not $sync.Fast -and -not $script:khoMoveRunning) {
         try { [void](Invoke-KhoAutoMoveNow) } catch { Write-FileLogLimited -Key 'kho-automove' -Text ('WARN Tự chuyển kho: ' + $_.Exception.Message) -MinSeconds 300 }
     }
@@ -3665,7 +3758,14 @@ function Get-GalleryMetaByRoot {
 
 function Invoke-KhoAutoMoveNow {
     # Reads every kho's history and moves newly confirmed videos into their account kho; refreshes the gallery and tells the owner.
-    $moved = Invoke-KhoAutoMove (Get-GalleryMetaByRoot)
+    # Cheap checks first (no reup-status.json read): not quiet -> deferred; folders reserved by a stuck journal are left out.
+    if (-not $script:khoRegistryReady) { $script:khoAutoMoveWanted = $false; return 0 }
+    if (Test-KhoQuiet) { $script:khoAutoMoveWanted = $false; $script:khoAutoMoveDeferred = $true; return 0 }
+    $blocked = Get-KhoBlockedRoots
+    if ($null -eq $blocked) { $script:khoAutoMoveWanted = $false; Write-FileLogLimited -Key 'kho-automove-journal' -Text 'WARN Tự chuyển kho tạm dừng: có nhật ký chuyển kho không đọc được (Quản lý kho › Bỏ qua).' -MinSeconds 300; return 0 }
+    $meta = Get-GalleryMetaByRoot
+    foreach ($k in @($meta.Keys)) { if ($blocked.Contains([string]$k)) { $meta.Remove($k) } }
+    $moved = Invoke-KhoAutoMove $meta
     if ($moved -gt 0) {
         Show-Toast ("Đã chuyển $moved video vào kho theo tài khoản đã đăng.") -Kind success
         Update-Gallery
@@ -3689,9 +3789,9 @@ function Start-TikTokStatusSync {
 
 function Find-TikTokTool {
     # Same places the app looks for FFmpeg (tools\ffmpeg, tools\ffmpeg\bin, tools, then PATH).
-    param([string]$Name, [string]$Root)
+    param([string]$Name, [Alias('Root')][string]$AppRoot)
     foreach ($sub in @("tools\ffmpeg\$Name.exe", "tools\ffmpeg\bin\$Name.exe", "tools\$Name.exe")) {
-        $candidate = Join-Path $Root $sub
+        $candidate = Join-Path $AppRoot $sub
         if ([IO.File]::Exists($candidate)) { return $candidate }
     }
     $command = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -3841,8 +3941,8 @@ function New-TikTokCleanCopy {
     # Tries a stream copy first; an encoder string only in the audio -> re-encode audio; broken keyframes/frames after
     # SEI stripping or encoder strings in the video (e.g. x265 info in hvcC) -> re-encode the video to H.264 with the
     # engine's libx264 settings (Get-VideoEncoderArgs in core\kid-fby.ps1). Throws when no attempt passes the gate.
-    param([string]$SourcePath, [string]$PostsDir, [string]$RequestId, [string]$Root)
-    $ffmpeg = Find-TikTokTool 'ffmpeg' $Root; $ffprobe = Find-TikTokTool 'ffprobe' $Root
+    param([string]$SourcePath, [string]$PostsDir, [string]$RequestId, [Alias('Root')][string]$AppRoot)
+    $ffmpeg = Find-TikTokTool 'ffmpeg' $AppRoot; $ffprobe = Find-TikTokTool 'ffprobe' $AppRoot
     if (-not $ffmpeg -or -not $ffprobe) { throw 'Không tìm thấy FFmpeg/FFprobe.' }
     $size = [IO.FileInfo]::new($SourcePath).Length
     try {
@@ -3967,7 +4067,7 @@ function Move-TikTokReceiptToArchive {
 }
 
 # ------------------------------------------------------------- hashtag hay dung cho TikTok (data\tiktok-hashtags.json) ----
-function Get-TikTokHashtagPath { return (Join-Path $root 'data\tiktok-hashtags.json') }
+function Get-TikTokHashtagPath { return (Join-Path $script:root 'data\tiktok-hashtags.json') }
 
 function Get-TikTokHashtagsFromText {
     # Cac hashtag trong caption (Unicode: chu cai, dau to hop, so, gach duoi). Khong phan biet hoa thuong; giu cach viet dau tien.
@@ -4118,7 +4218,7 @@ function Add-TikTokHashtagToCaption {
     return [pscustomobject]@{ Ok = $true; Text = $new; Caret = $pos; Reason = '' }
 }
 
-function Get-TikTokPrefsPath { return (Join-Path $root 'data\tiktok-prefs.json') }
+function Get-TikTokPrefsPath { return (Join-Path $script:root 'data\tiktok-prefs.json') }
 
 function Read-TikTokPrefs {
     # @{ lastAccount; times = @{ <user lower> = @{ 'HH:mm' = count } } }. Thieu file -> rong. Hong -> doi ten .corrupt-<ts> roi coi nhu rong.
@@ -6394,9 +6494,12 @@ function Remove-ReelFiles {
     # S8: the video's files go to the Windows Recycle Bin (-3 first, then -1/-2 and its finished receipts; thumbnails are deleted).
     # A failure keeps the metadata entry and reports what is left in RecoveryPaths; a retry deletes the rest.
     # Returns Success, Errors, CleanupStatus ('Complete'), RecoveryPaths (files still there), DeletedFiles.
-    param([string]$FilePath)
+    param([string]$FilePath, [switch]$AllowPermanent)
     if (-not $FilePath) { return @{ Success = $false; Errors = @('Thieu duong dan file can xoa.'); CleanupStatus = 'NotStarted'; RecoveryPaths = @() } }
     $dir = Split-Path $FilePath -Parent
+    # A stuck / pending move journal reserves both of its folders: nothing in them may be deleted until it is resolved.
+    $journalBlock = Get-KhoJournalBlock @($dir)
+    if ($journalBlock) { return @{ Success = $false; Errors = @($journalBlock); CleanupStatus = 'NotStarted'; RecoveryPaths = @(); DeletedFiles = @() } }
     $mediaFiles = @(Get-ReelMediaFiles -VideoPath $FilePath)
     $targetPaths = @($mediaFiles | ForEach-Object { [IO.Path]::GetFullPath($_.Path) })
 
@@ -6422,7 +6525,7 @@ function Remove-ReelFiles {
     }
     Start-Sleep -Milliseconds 100
 
-    $removal = Remove-ReelToRecycleBin -Root $dir -Id (Get-ReelId $FilePath)
+    $removal = Remove-ReelToRecycleBin -Root $dir -Id (Get-ReelId $FilePath) -AllowPermanent:$AllowPermanent
     foreach ($k in @($script:probeCache.Keys)) { if ([string]::Equals($k, $FilePath, [StringComparison]::OrdinalIgnoreCase)) { $script:probeCache.Remove($k) } }
     return @{
         Success = [bool]$removal.Success
@@ -6496,6 +6599,8 @@ function Invoke-GalleryDelete {
         return $false
     }
     if (-not (Test-Path -LiteralPath $FilePath)) { Show-Toast 'Không tìm thấy video trong kho.' -Kind warning; return $false }
+    $journalBlock = Get-KhoJournalBlock @((Split-Path $FilePath -Parent))
+    if ($journalBlock) { Show-Toast $journalBlock -Kind warning; return $false }
     if (Test-TikTokTransferActive $FilePath) { Show-Toast 'Video đang được chuyển sang bộ đăng nền. Đợi chuyển xong rồi hãy xóa.' -Kind warning; return $false }
     if (-not (Confirm-GalleryDelete $FilePath)) { return $false }
 
@@ -6613,7 +6718,7 @@ function Get-RejectedReasonText {
 function Update-RejectedDashboard {
     if (-not $ui.TxtRejectedDashboard) { return }
     try {
-        $entries = @(Get-RejectedReels -Root $root | Sort-Object RejectedAt -Descending)
+        $entries = @(Get-RejectedReels -Root $script:root | Sort-Object RejectedAt -Descending)
         if ($ui.TxtRejectedTabLabel) { $ui.TxtRejectedTabLabel.Text = "Lịch sử đã loại ($($entries.Count))" }
         $canUnreject = [bool](Get-Command Remove-RejectedReel -ErrorAction SilentlyContinue)
         $rows = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
@@ -6650,7 +6755,7 @@ function Invoke-UnrejectReel {
         return
     }
     try {
-        $removed = [bool](Remove-RejectedReel -Root $root -VideoId $VideoId)
+        $removed = [bool](Remove-RejectedReel -Root $script:root -VideoId $VideoId)
         if ($removed) {
             Add-Log "Đã bỏ loại Reel #$VideoId; lần tải sau sẽ xử lý lại video này." 'Success'
             Show-Toast "Đã bỏ loại Reel #$VideoId." -Kind success
@@ -6677,7 +6782,7 @@ function Invoke-UnrejectReel {
 function Get-MediaToolPath {
     param([ValidateSet('ffmpeg', 'ffprobe')][string]$Name)
     foreach ($rel in @("tools\ffmpeg\$Name.exe", "tools\ffmpeg\bin\$Name.exe", "tools\$Name.exe")) {
-        $p = Join-Path $root $rel
+        $p = Join-Path $script:root $rel
         if ([System.IO.File]::Exists($p)) { return $p }
     }
     $cmd = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -7224,9 +7329,9 @@ function Update-KhoKnown {
 
 function Get-GalleryMetaFor {
     # reup-status.json (already read) of one kho folder; $null when unknown.
-    param([string]$Root)
-    if (-not $Root -or -not $script:galleryMetaByRoot) { return $null }
-    return $script:galleryMetaByRoot[$Root]
+    param([Alias('Root')][string]$KhoRoot)
+    if (-not $KhoRoot -or -not $script:galleryMetaByRoot) { return $null }
+    return $script:galleryMetaByRoot[$KhoRoot]
 }
 
 function Select-GalleryItems {
@@ -7426,8 +7531,8 @@ function Get-RubberBandHits {
 }
 
 function Find-GalleryVisualChild {
-    param($Root, [Type]$Type)
-    $q = New-Object System.Collections.Generic.Queue[object]; $q.Enqueue($Root)
+    param($VisualRoot, [Type]$Type)
+    $q = New-Object System.Collections.Generic.Queue[object]; $q.Enqueue($VisualRoot)
     while ($q.Count) {
         $n = $q.Dequeue()
         if ($Type.IsInstanceOfType($n)) { return $n }
@@ -7978,6 +8083,11 @@ function Show-KhoManagerDialog {
    <TextBlock Text="Quản lý kho" Style="{DynamicResource TextHeading}" FontSize="25"/>
    <TextBlock Text="Mỗi kho là một thư mục thật chứa video của nó. Chuyển video sang kho khác là chuyển file; xóa video hoặc xóa kho đưa file vào Thùng rác của Windows." Style="{DynamicResource TextMutedStyle}" TextWrapping="Wrap" Margin="0,4,0,0"/>
    <Border x:Name="WarnBox" Visibility="Collapsed" Background="{DynamicResource DangerSubtle}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" CornerRadius="14" Padding="12,8" Margin="0,10,0,0"><TextBlock x:Name="Warn" TextWrapping="Wrap" FontWeight="SemiBold"/></Border>
+   <Border x:Name="StuckBox" Visibility="Collapsed" Background="{DynamicResource DangerSubtle}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" CornerRadius="14" Padding="12,8" Margin="0,10,0,0"><StackPanel>
+    <TextBlock Text="Có lần chuyển kho dở dang" FontWeight="ExtraBold"/>
+    <TextBlock x:Name="StuckText" TextWrapping="Wrap" Margin="0,4,0,8"/>
+    <WrapPanel><Button x:Name="BtnStuckRetry" Content="Thử hoàn tất" Margin="0,0,8,0" AutomationProperties.Name="Thử hoàn tất lần chuyển kho dở dang"/><Button x:Name="BtnStuckAbandon" Content="Bỏ qua (giữ file tại chỗ)" AutomationProperties.Name="Bỏ qua lần chuyển kho dở dang"/></WrapPanel>
+   </StackPanel></Border>
   </StackPanel>
   <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"><StackPanel Margin="0,14,10,0">
    <TextBlock Text="Chọn kho" FontWeight="ExtraBold"/>
@@ -8054,7 +8164,7 @@ function Show-KhoManagerDialog {
     if ($win -and $win.IsVisible) { $dlg.Owner = $win }
     $dlg.MaxHeight = [Math]::Max(460, [Windows.SystemParameters]::WorkArea.Height - 40)
     $c = @{}
-    foreach ($name in @('WarnBox', 'Warn', 'KhoChips', 'DetailTitle', 'PathText', 'BtnOpenFolder', 'BtnDelete', 'BtnRename', 'NameBox', 'AccountBox', 'BtnSetAccount', 'CaptionBox', 'TagsBox', 'SlotChips', 'SlotAddBox', 'BtnSlotAdd', 'LowBox',
+    foreach ($name in @('WarnBox', 'Warn', 'StuckBox', 'StuckText', 'BtnStuckRetry', 'BtnStuckAbandon', 'KhoChips', 'DetailTitle', 'PathText', 'BtnOpenFolder', 'BtnDelete', 'BtnRename', 'NameBox', 'AccountBox', 'BtnSetAccount', 'CaptionBox', 'TagsBox', 'SlotChips', 'SlotAddBox', 'BtnSlotAdd', 'LowBox',
                         'BtnSaveOpts', 'BtnSetTarget', 'BtnAutoSchedule', 'AddBox', 'AddPathBox', 'BtnBrowse', 'BtnAdd',
                         'AcctPanel', 'BtnAddAcct', 'BtnLoadAcct', 'CmbAcct', 'AcctStatus', 'BtnImport', 'BtnImportStop', 'ImportBar', 'ImportText', 'Close', 'Status')) { $c[$name] = $dlg.FindName($name) }
     $firstKho = @(Get-KhoList)[0]
@@ -8097,6 +8207,7 @@ function Show-KhoManagerDialog {
         $c.CaptionBox.Text = [string]$lib.caption
         $c.TagsBox.Text = (@($lib.hashtags) -join ' ')
         & $state.RenderSlots
+        & $state.RenderStuck
         $c.LowBox.Text = [string]$lib.lowStock
         $w = $state.Writable
         $c.BtnRename.IsEnabled = $w
@@ -8135,6 +8246,35 @@ function Show-KhoManagerDialog {
         } finally { $state.Rendering = $false }
         & $state.Fill
     }.GetNewClosure()
+
+    # Lần chuyển kho dở dang (nhật ký còn lại): thử hoàn tất lại hoặc bỏ qua (nhật ký sang data\kho-moves\abandoned, file giữ nguyên).
+    $state.RenderStuck = {
+        $stuck = @(Get-KhoStuckMoves)
+        $c.StuckBox.Visibility = $(if ($stuck.Count) { 'Visible' } else { 'Collapsed' })
+        $c.StuckText.Text = (@($stuck | ForEach-Object { $_.Text }) -join "`r`n")
+    }.GetNewClosure()
+    $c.BtnStuckRetry.Add_Click({
+        try {
+            if (Test-KhoQuiet) { $c.Status.Text = "Đang bận ($(Test-KhoQuiet)); thử lại sau."; return }
+            if (-not (Suspend-TikTokSync)) { $c.Status.Text = 'Đang đồng bộ TikTok; thử lại sau ít giây.'; return }
+            try { $r = Resume-KhoMoves } finally { Resume-TikTokSync }
+            & $state.RenderStuck
+            $c.Status.Text = $(if ($r.Pending.Count) { 'Chưa hoàn tất được: ' + ($r.Pending -join '; ') } else { "Đã hoàn tất $($r.Done) lần chuyển kho dở dang." })
+            Update-Gallery
+        } catch { $c.Status.Text = (Get-FriendlyError $_.Exception.Message); Write-FileLog "WARN Quản lý kho (thử hoàn tất chuyển kho): $($_.Exception.Message)" }
+    }.GetNewClosure())
+    $c.BtnStuckAbandon.Add_Click({
+        try {
+            $stuck = @(Get-KhoStuckMoves)
+            if (-not $stuck.Count) { & $state.RenderStuck; return }
+            $ok = Show-ConfirmDialog -Title 'Bỏ qua chuyển kho dở dang?' -ConfirmText 'Bỏ qua' -Danger -Message ("Các file KHÔNG bị đổi hay xóa — chúng nằm nguyên ở chỗ hiện tại (có thể một phần ở kho cũ, một phần ở kho mới). Chỉ nhật ký chuyển kho được cất sang data\kho-moves\abandoned, kho liên quan được mở khóa.`r`n`r`n" + (@($stuck | ForEach-Object { $_.Text }) -join "`r`n"))
+            if (-not $ok) { return }
+            foreach ($s in $stuck) { [void](Move-KhoJournalAside $s.Path) }
+            & $state.RenderStuck
+            $c.Status.Text = 'Đã bỏ qua; file giữ nguyên tại chỗ.'
+            Update-Gallery
+        } catch { $c.Status.Text = (Get-FriendlyError $_.Exception.Message); Write-FileLog "WARN Quản lý kho (bỏ qua chuyển kho): $($_.Exception.Message)" }
+    }.GetNewClosure())
 
     $afterChange = { Apply-GalleryFilter; & $state.Render }.GetNewClosure()
     $fail = { param($ex) $c.Status.Text = (Get-FriendlyError $ex.Exception.Message); Write-FileLog "WARN Quản lý kho: $($ex.Exception.Message)" }.GetNewClosure()
@@ -8385,36 +8525,36 @@ function Invoke-QueueRowAction {
 
 # ------------------------------------------------------------- quan ly cong cu & thu vien ----
 function Update-ToolsStatus {
-    $inToolsScrcpy = (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy.exe')) -or
-                     (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy-win64-v5.0\scrcpy.exe')) -or
-                     (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy-win64-v4.1\scrcpy.exe')) -or
-                     (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy-win64-v3.1\scrcpy.exe')) -or
-                     (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy-win64-v2.7\scrcpy.exe')) -or
-                     (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy.exe'))
+    $inToolsScrcpy = (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy.exe')) -or
+                     (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy-win64-v5.0\scrcpy.exe')) -or
+                     (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy-win64-v4.1\scrcpy.exe')) -or
+                     (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy-win64-v3.1\scrcpy.exe')) -or
+                     (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy-win64-v2.7\scrcpy.exe')) -or
+                     (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy.exe'))
     $hasScrcpy = $inToolsScrcpy -or (Get-Command 'scrcpy' -ErrorAction SilentlyContinue)
 
-    $inToolsAdb    = (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\adb.exe')) -or
-                     (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy-win64-v5.0\adb.exe')) -or
-                     (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy-win64-v4.1\adb.exe')) -or
-                     (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy-win64-v3.1\adb.exe')) -or
-                     (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy-win64-v2.7\adb.exe')) -or
-                     (Test-Path -LiteralPath (Join-Path $root 'tools\adb.exe'))
+    $inToolsAdb    = (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\adb.exe')) -or
+                     (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy-win64-v5.0\adb.exe')) -or
+                     (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy-win64-v4.1\adb.exe')) -or
+                     (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy-win64-v3.1\adb.exe')) -or
+                     (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy-win64-v2.7\adb.exe')) -or
+                     (Test-Path -LiteralPath (Join-Path $script:root 'tools\adb.exe'))
     $hasAdb = $inToolsAdb -or (Get-Command 'adb' -ErrorAction SilentlyContinue) -or
               (Test-Path -LiteralPath 'D:\LDPlayer\LDPlayer14\adb.exe' -ErrorAction SilentlyContinue) -or
               (Test-Path -LiteralPath 'D:\LDPlayer\LDPlayer9\adb.exe' -ErrorAction SilentlyContinue) -or
               (Test-Path -LiteralPath 'C:\LDPlayer\LDPlayer14\adb.exe' -ErrorAction SilentlyContinue)
 
-    $inToolsYtdlp  = (Test-Path -LiteralPath (Join-Path $root 'tools\yt-dlp.exe')) -or
-                     (Test-Path -LiteralPath (Join-Path $root 'tools\yt-dlp\yt-dlp.exe'))
+    $inToolsYtdlp  = (Test-Path -LiteralPath (Join-Path $script:root 'tools\yt-dlp.exe')) -or
+                     (Test-Path -LiteralPath (Join-Path $script:root 'tools\yt-dlp\yt-dlp.exe'))
     $hasYtdlp = $inToolsYtdlp -or (Get-Command 'yt-dlp' -ErrorAction SilentlyContinue)
 
-    $inToolsFfmpeg = (Test-Path -LiteralPath (Join-Path $root 'tools\ffmpeg\ffmpeg.exe')) -or
-                     (Test-Path -LiteralPath (Join-Path $root 'tools\ffmpeg\bin\ffmpeg.exe')) -or
-                     (Test-Path -LiteralPath (Join-Path $root 'tools\ffmpeg.exe'))
+    $inToolsFfmpeg = (Test-Path -LiteralPath (Join-Path $script:root 'tools\ffmpeg\ffmpeg.exe')) -or
+                     (Test-Path -LiteralPath (Join-Path $script:root 'tools\ffmpeg\bin\ffmpeg.exe')) -or
+                     (Test-Path -LiteralPath (Join-Path $script:root 'tools\ffmpeg.exe'))
     $hasFfmpeg = $inToolsFfmpeg -or (Get-Command 'ffmpeg' -ErrorAction SilentlyContinue)
-    $inToolsFfprobe = (Test-Path -LiteralPath (Join-Path $root 'tools\ffmpeg\ffprobe.exe')) -or
-                      (Test-Path -LiteralPath (Join-Path $root 'tools\ffmpeg\bin\ffprobe.exe')) -or
-                      (Test-Path -LiteralPath (Join-Path $root 'tools\ffprobe.exe'))
+    $inToolsFfprobe = (Test-Path -LiteralPath (Join-Path $script:root 'tools\ffmpeg\ffprobe.exe')) -or
+                      (Test-Path -LiteralPath (Join-Path $script:root 'tools\ffmpeg\bin\ffprobe.exe')) -or
+                      (Test-Path -LiteralPath (Join-Path $script:root 'tools\ffprobe.exe'))
     $hasFfprobe = $inToolsFfprobe -or (Get-Command 'ffprobe' -ErrorAction SilentlyContinue)
 
     function Set-ToolCard($txtElem, $badgeElem, $btnElem, [bool]$installed, [bool]$inTools = $false) {
@@ -8443,7 +8583,7 @@ function Update-ToolsStatus {
     $hasWhisper = $false
     if ($script:whisperLanguageHelperAvailable) {
         try {
-            $whisperPaths = Get-WhisperPaths $root
+            $whisperPaths = Get-WhisperPaths $script:root
             $hasWhisper = [bool]$whisperPaths.Ready
         } catch {
             $hasWhisper = $false
@@ -8542,7 +8682,7 @@ function Install-ToolGUI {
         Show-Toast 'Hãy hoàn tất tác vụ và hàng đợi trước khi cài công cụ.' -Kind warning
         return
     }
-    $tDir = Join-Path $root 'tools'
+    $tDir = Join-Path $script:root 'tools'
     foreach ($sub in @('', '_download', 'scrcpy', 'ffmpeg')) {
         $p = if ($sub) { Join-Path $tDir $sub } else { $tDir }
         if (-not (Test-Path -LiteralPath $p)) {
@@ -8575,10 +8715,10 @@ function Start-Engine {
     $candidate = $null
     try {
         Set-Busy $true
-        try { [System.Environment]::CurrentDirectory = $root } catch { <# bo qua: khong doi duoc thu muc hien tai; engine dung duong dan tuyet doi #> }
+        try { [System.Environment]::CurrentDirectory = $script:root } catch { <# bo qua: khong doi duoc thu muc hien tai; engine dung duong dan tuyet doi #> }
         # Do not publish a partially configured runspace as the active task.
         $candidate = [PowerShell]::Create()
-        [void]$candidate.AddCommand('Set-Location').AddParameter('LiteralPath', $root)
+        [void]$candidate.AddCommand('Set-Location').AddParameter('LiteralPath', $script:root)
         [void]$candidate.AddStatement()
         [void]$candidate.AddCommand($engine)
         if ($Links) { foreach ($l in $Links) { [void]$candidate.AddArgument($l) } }
@@ -9248,33 +9388,33 @@ function Invoke-EngineTick {
                 # G-R3: vua cai cong cu -> worker quet Kho phai dung ffmpeg/ffprobe moi.
                 Reset-MediaWorkerForTools 'vừa cài công cụ'
                 Update-ToolsStatus
-                $hasScrcpy = (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy.exe')) -or
-                             (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy-win64-v5.0\scrcpy.exe')) -or
-                             (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy-win64-v4.1\scrcpy.exe')) -or
-                             (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy-win64-v3.1\scrcpy.exe')) -or
-                             (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy-win64-v2.7\scrcpy.exe')) -or
-                             (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy.exe')) -or
+                $hasScrcpy = (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy.exe')) -or
+                             (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy-win64-v5.0\scrcpy.exe')) -or
+                             (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy-win64-v4.1\scrcpy.exe')) -or
+                             (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy-win64-v3.1\scrcpy.exe')) -or
+                             (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy-win64-v2.7\scrcpy.exe')) -or
+                             (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy.exe')) -or
                              (Get-Command 'scrcpy' -ErrorAction SilentlyContinue)
-                $hasAdb    = (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\adb.exe')) -or
-                             (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy-win64-v5.0\adb.exe')) -or
-                             (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy-win64-v4.1\adb.exe')) -or
-                             (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy-win64-v3.1\adb.exe')) -or
-                             (Test-Path -LiteralPath (Join-Path $root 'tools\scrcpy\scrcpy-win64-v2.7\adb.exe')) -or
-                             (Test-Path -LiteralPath (Join-Path $root 'tools\adb.exe')) -or
+                $hasAdb    = (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\adb.exe')) -or
+                             (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy-win64-v5.0\adb.exe')) -or
+                             (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy-win64-v4.1\adb.exe')) -or
+                             (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy-win64-v3.1\adb.exe')) -or
+                             (Test-Path -LiteralPath (Join-Path $script:root 'tools\scrcpy\scrcpy-win64-v2.7\adb.exe')) -or
+                             (Test-Path -LiteralPath (Join-Path $script:root 'tools\adb.exe')) -or
                              (Get-Command 'adb' -ErrorAction SilentlyContinue) -or
                              (Test-Path -LiteralPath 'D:\LDPlayer\LDPlayer14\adb.exe' -ErrorAction SilentlyContinue) -or
                              (Test-Path -LiteralPath 'D:\LDPlayer\LDPlayer9\adb.exe' -ErrorAction SilentlyContinue) -or
                              (Test-Path -LiteralPath 'C:\LDPlayer\LDPlayer14\adb.exe' -ErrorAction SilentlyContinue)
-                $hasYtdlp  = (Test-Path -LiteralPath (Join-Path $root 'tools\yt-dlp.exe')) -or
-                             (Test-Path -LiteralPath (Join-Path $root 'tools\yt-dlp\yt-dlp.exe')) -or
+                $hasYtdlp  = (Test-Path -LiteralPath (Join-Path $script:root 'tools\yt-dlp.exe')) -or
+                             (Test-Path -LiteralPath (Join-Path $script:root 'tools\yt-dlp\yt-dlp.exe')) -or
                              (Get-Command 'yt-dlp' -ErrorAction SilentlyContinue)
-                $hasFfmpeg = (Test-Path -LiteralPath (Join-Path $root 'tools\ffmpeg\ffmpeg.exe')) -or
-                             (Test-Path -LiteralPath (Join-Path $root 'tools\ffmpeg\bin\ffmpeg.exe')) -or
-                             (Test-Path -LiteralPath (Join-Path $root 'tools\ffmpeg.exe')) -or
+                $hasFfmpeg = (Test-Path -LiteralPath (Join-Path $script:root 'tools\ffmpeg\ffmpeg.exe')) -or
+                             (Test-Path -LiteralPath (Join-Path $script:root 'tools\ffmpeg\bin\ffmpeg.exe')) -or
+                             (Test-Path -LiteralPath (Join-Path $script:root 'tools\ffmpeg.exe')) -or
                              (Get-Command 'ffmpeg' -ErrorAction SilentlyContinue)
-                $hasFfprobe = (Test-Path -LiteralPath (Join-Path $root 'tools\ffmpeg\ffprobe.exe')) -or
-                              (Test-Path -LiteralPath (Join-Path $root 'tools\ffmpeg\bin\ffprobe.exe')) -or
-                              (Test-Path -LiteralPath (Join-Path $root 'tools\ffprobe.exe')) -or
+                $hasFfprobe = (Test-Path -LiteralPath (Join-Path $script:root 'tools\ffmpeg\ffprobe.exe')) -or
+                              (Test-Path -LiteralPath (Join-Path $script:root 'tools\ffmpeg\bin\ffprobe.exe')) -or
+                              (Test-Path -LiteralPath (Join-Path $script:root 'tools\ffprobe.exe')) -or
                               (Get-Command 'ffprobe' -ErrorAction SilentlyContinue)
                 $allReady = $hasScrcpy -and $hasAdb -and $hasYtdlp -and $hasFfmpeg -and $hasFfprobe
                 if ($allReady) {
@@ -9566,8 +9706,6 @@ $wrapFactory.SetValue([KidWrapPanel]::ItemHeightProperty, 396.0)
 $ui.GalleryList.ItemsPanel = New-Object Windows.Controls.ItemsPanelTemplate($wrapFactory)
 $ui.GalleryList.ItemsSource = $script:galleryRows
 $ui.RejectedList.ItemsSource = $script:rejectedRows
-# Bo chon kho + o "Luu vao kho" co noi dung ngay tu luc mo app (khong doi toi lan quet Kho dau tien).
-try { Update-GalleryKhoSelector } catch { Write-FileLog "WARN Khoi tao bo chon kho: $($_.Exception.Message)" }
 # ------------------------------------------------------------- cac nut cai dat thu vien ----
 $ui.BtnInstallAllTools.Add_Click({ Install-ToolGUI 'all' })
 $ui.BtnInstallScrcpy.Add_Click({   Install-ToolGUI 'scrcpy' })
@@ -9679,8 +9817,8 @@ function Get-CacheSummary {
     if (-not $roots.Count) { return $r }
     $protected = Get-KhoJournalPaths
     $dirs = New-Object System.Collections.Generic.List[string]; $legacy = New-Object System.Collections.Generic.List[object]; $thumbs = New-Object System.Collections.Generic.List[string]
-    foreach ($root in $roots) {
-        $cacheDir = Get-ReelCacheDir $root
+    foreach ($khoRoot in $roots) {
+        $cacheDir = Get-ReelCacheDir $khoRoot
         if ([System.IO.Directory]::Exists($cacheDir)) {
             $r.CacheExists = $true; $dirs.Add($cacheDir)
             $posts = (Join-Path $cacheDir 'tiktok-posts') + '\'
@@ -9691,8 +9829,8 @@ function Get-CacheSummary {
                 if ($f.Name -match '-1-video-goc\.mp4$' -and $f.DirectoryName -eq $cacheDir) { $r.ReeditCount++ }
             }
         }
-        foreach ($f in @(Get-LegacyIntermediateFiles $root)) { $legacy.Add($f); $r.LegacyBytes += $f.Length }
-        $oldThumbs = Join-Path $root '.thumbs'
+        foreach ($f in @(Get-LegacyIntermediateFiles $khoRoot)) { $legacy.Add($f); $r.LegacyBytes += $f.Length }
+        $oldThumbs = Join-Path $khoRoot '.thumbs'
         if ([System.IO.Directory]::Exists($oldThumbs)) { $thumbs.Add($oldThumbs) }
     }
     $r.CacheDirs = $dirs.ToArray(); $r.LegacyFiles = $legacy.ToArray(); $r.LegacyThumbs = $thumbs.ToArray()
@@ -9962,7 +10100,7 @@ function Invoke-KhoCleanup {
     if ($null -eq $protected) { Show-Toast 'Có nhật ký chuyển kho không đọc được; chưa dọn gì.' -Kind warning; return }
     $script:khoExclusive++
     try {
-        foreach ($root in @($cands | ForEach-Object { $_.Root } | Select-Object -Unique)) { Release-PlayerFromCache (Get-ReelCacheDir $root) }
+        foreach ($khoRoot in @($cands | ForEach-Object { $_.Root } | Select-Object -Unique)) { Release-PlayerFromCache (Get-ReelCacheDir $khoRoot) }
         $r = Remove-KhoCleanupFiles -Candidates $cands -Protected $protected
         $summary = "Dọn ổ: đã xóa $($r.Deleted) file · giải phóng $(Format-Bytes $r.Freed) · lỗi $($r.Failed)"
         if ($r.Skipped) { $summary += " · bỏ qua $($r.Skipped) mục đang chuyển TikTok hoặc chuyển kho dở dang" }
@@ -10005,7 +10143,7 @@ function Get-LinkSummary {
     $report = $null
     if (Get-Command Get-FacebookLinkDuplicateReport -ErrorAction SilentlyContinue) { $report = Get-FacebookLinkDuplicateReport -Text $Text -OutDir $OutDir }
     $unique = if ($report) { @($report.Links) } else { @($raw | Select-Object -Unique) }
-    $rejected = @(Get-RejectedReels -Root $root)
+    $rejected = @(Get-RejectedReels -Root $script:root)
     $blocked = @(Get-RejectedLinkMatches -Links $unique -Rejected $rejected)
     $blockedIds = @($blocked | ForEach-Object { Get-FacebookVideoId -Url $_ } | Where-Object { $_ })
     $downloaded = @(if ($report) { @($report.DownloadedIds) | Where-Object { $blockedIds -notcontains $_ } })
@@ -10704,7 +10842,7 @@ function Start-GifSelectionWorker {
         $player.Close()
         [pscustomobject]@{ Path=$path; Prepared=$prepared; FrameCount=$prepared.FrameCount; Width=$prepared.CanvasWidth; Height=$prepared.CanvasHeight; PrivateBefore=$privateBefore; PrivateAfterLoad=$privateAfterLoad; PrivateAfterPrepare=$privateAfterPrepare }
     }
-    [void]$ps.AddScript($worker.ToString()).AddArgument($FullPath).AddArgument($root).AddArgument($engineFunctions)
+    [void]$ps.AddScript($worker.ToString()).AddArgument($FullPath).AddArgument($script:root).AddArgument($engineFunctions)
     $runspace.OpenAsync()
     $script:gifSelectionWorker = [pscustomobject]@{ Generation=$Generation; Path=$FullPath; PowerShell=$ps; Runspace=$runspace; Async=$null; Cancelled=$false; StopAsync=$null }
     } catch {
@@ -11913,7 +12051,7 @@ function Start-QueueFromLinks {
     $skipped = New-Object System.Collections.ArrayList
     $preRejectedCount = 0
     try {
-        $rejectedHistory = @(Get-RejectedReels -Root $root)
+        $rejectedHistory = @(Get-RejectedReels -Root $script:root)
         $blockedLinks = @(Get-RejectedLinkMatches -Links $links -Rejected $rejectedHistory)
         # Dem theo video (ID hoac URL) de link lap khong bi tinh hai lan.
         $preRejectedCount = @($blockedLinks | ForEach-Object { $bid = Get-FacebookVideoId -Url $_; if ($bid) { "id:$bid" } else { "url:$_" } } | Select-Object -Unique).Count
@@ -12154,7 +12292,10 @@ $engine" -Title 'Thiếu file' | Out-Null
         $win.Add_StateChanged({ Request-SaveSettings })
     }
     # Kho la thu muc that: nap registry (chuyen "Output cũ" lan dau) va hoan tat chuyen kho dang do TRUOC khi quet kho / chay dong bo.
+    $script:khoSettingsLoaded = $true    # settings.json da duoc nap (hoac khong co / bi khoa): tu day registry kho moi duoc tao va luu
     Initialize-KhoStartup
+    # Bo chon kho + o "Luu vao kho" co noi dung ngay tu luc mo app (khong doi toi lan quet Kho dau tien); chi sau khi registry da nap.
+    try { Update-GalleryKhoSelector } catch { Write-FileLog "WARN Khoi tao bo chon kho: $($_.Exception.Message)" }
     # Khoi dong: trang Nguon, quet kho nen (chi sau khi settings da nap -> dung thu muc kho cua nguoi dung), trang thai cong cu.
     Show-Page 'source'
     $script:galleryScanReady = $true
