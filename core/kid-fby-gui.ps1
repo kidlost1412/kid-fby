@@ -1099,6 +1099,541 @@ function Set-ReupMetadata {
     })
 }
 
+# ------------------------------------------------------------- kho (thu vien logic: nhan theo tung video) ----
+# A kho is a label stored per video in reup-status.json (Kho / KhoManual); files never move. data\kho.json (the
+# registry) is read and written on the UI thread only; background code works with ids and never touches it.
+$script:khoRegistry = $null
+$script:khoRegistryReady = $true     # $false: kho.json was unreadable this session -> it is never overwritten
+$script:khoDownloadTarget = 'default'
+$script:queueKhoId = $null           # kho for videos the running queue saves ($null: redo / record again, no assignment)
+$script:importBusy = $false          # a background folder import is running
+
+function Get-KhoPath { return (Join-Path $root 'data\kho.json') }
+
+function Test-KhoId {
+    param([string]$Id)
+    return [bool]($Id -cmatch '^(default|c-[0-9a-f]{32}|acct:\S+)$')
+}
+
+function Get-KhoAccountId {
+    # Deterministic id of an account kho; '' when there is no usable username.
+    param([string]$Username)
+    $u = ([string]$Username).Trim().TrimStart('@').ToLowerInvariant()
+    if (-not $u -or $u -match '\s') { return '' }
+    return ('acct:' + $u)
+}
+
+function Get-KhoEffectiveId {
+    # Kho of a stored video entry; a missing field means the default kho.
+    param($Entry)
+    $kho = if ($Entry) { [string]$Entry.Kho } else { '' }
+    if ($kho) { return $kho }
+    return 'default'
+}
+
+function New-KhoLibrary {
+    param([string]$Id, [string]$Name, [string]$Account = '')
+    return [pscustomobject]@{ id = $Id; name = $Name; account = $Account; caption = ''; hashtags = @(); lowStock = 3 }
+}
+
+function New-KhoAccountLibrary {
+    param([string]$Id)
+    $user = $Id.Substring(5)
+    return (New-KhoLibrary -Id $Id -Name ('@' + $user) -Account $user)
+}
+
+function New-KhoRegistryObject {
+    return [pscustomobject]@{ version = 1; libraries = @(New-KhoLibrary -Id 'default' -Name 'Kho chung'); downloadTarget = 'default' }
+}
+
+function ConvertTo-KhoLibrary {
+    # Validated copy of one stored library; $null when the id is not valid.
+    param($Raw)
+    if ($null -eq $Raw) { return $null }
+    $id = [string]$Raw.id
+    if (-not (Test-KhoId $id)) { return $null }
+    $account = if ($id.StartsWith('acct:')) { $id.Substring(5) } else { '' }
+    $name = ([string]$Raw.name).Trim()
+    if ($id -eq 'default') { $name = 'Kho chung' } elseif (-not $name) { $name = $(if ($account) { '@' + $account } else { $id }) }
+    $lib = New-KhoLibrary -Id $id -Name $name -Account $account
+    $lib.caption = [string]$Raw.caption
+    $lib.hashtags = @(@($Raw.hashtags) | Where-Object { $null -ne $_ -and ([string]$_).Trim() } | ForEach-Object { ([string]$_).Trim() })
+    $low = 0
+    if ([int]::TryParse([string]$Raw.lowStock, [ref]$low) -and $low -ge 0 -and $low -le 999) { $lib.lowStock = $low }
+    return $lib
+}
+
+function ConvertTo-KhoRegistry {
+    # Validated copy of a parsed registry: bad or duplicate libraries dropped, 'default' always first.
+    param($Raw)
+    $list = New-Object System.Collections.Generic.List[object]
+    $list.Add((New-KhoLibrary -Id 'default' -Name 'Kho chung'))
+    $seen = @{ default = 0 }
+    foreach ($item in @($Raw.libraries)) {
+        $lib = ConvertTo-KhoLibrary $item
+        if ($null -eq $lib) { continue }
+        if ($lib.id -eq 'default') { $list[0] = $lib; continue }
+        if ($seen.ContainsKey($lib.id)) { continue }
+        $seen[$lib.id] = $list.Count
+        $list.Add($lib)
+    }
+    $target = [string]$Raw.downloadTarget
+    if (-not $seen.ContainsKey($target)) { $target = 'default' }
+    return [pscustomobject]@{ version = 1; libraries = $list.ToArray(); downloadTarget = $target }
+}
+
+function Read-KhoRegistry {
+    # Missing -> default only. Corrupt -> renamed to .corrupt-<ts>, default only. Locked/unreadable -> default only and
+    # $script:khoRegistryReady = $false so this session never overwrites the file. Never throws.
+    param([string]$Path = (Get-KhoPath))
+    $script:khoRegistryReady = $true
+    $fallback = New-KhoRegistryObject
+    try {
+        if (-not [System.IO.File]::Exists($Path)) { return $fallback }
+        $json = $null; $readErr = $null
+        for ($try = 1; $try -le 3; $try++) {
+            try { $json = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8); $readErr = $null; break }
+            catch { $readErr = $_.Exception.Message; if ($try -lt 3) { Start-Sleep -Milliseconds 100 } }
+        }
+        if ($null -ne $readErr) {
+            Write-FileLog "WARN Không đọc được kho.json (đang bị khóa?), giữ nguyên file và không ghi đè trong phiên này: $readErr"
+            $script:khoRegistryReady = $false
+            return $fallback
+        }
+        try {
+            if ([string]::IsNullOrWhiteSpace($json) -or -not $json.TrimStart().StartsWith('{')) { throw 'Không phải đối tượng JSON.' }
+            $obj = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+            if ($null -eq $obj -or $obj -isnot [pscustomobject] -or $null -eq $obj.PSObject.Properties['libraries']) { throw 'Thiếu danh sách kho.' }
+            return (ConvertTo-KhoRegistry $obj)
+        } catch {
+            $err = $_.Exception.Message
+            $bad = $Path + '.corrupt-' + (Get-Date).ToString('yyyyMMdd-HHmmss')
+            if ([System.IO.File]::Exists($bad)) { $bad += '-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) }
+            try { [System.IO.File]::Move($Path, $bad); Write-FileLog "WARN kho.json bị hỏng ($err); đã đổi tên thành '$bad'." }
+            catch {
+                # Could not move the bad file away: saving would overwrite it, so this session does not save.
+                $script:khoRegistryReady = $false
+                Write-FileLog "WARN kho.json bị hỏng ($err) và không đổi tên được: $($_.Exception.Message)"
+            }
+            return $fallback
+        }
+    } catch {
+        $script:khoRegistryReady = $false
+        Write-FileLog "WARN Đọc kho.json lỗi: $($_.Exception.Message)"
+        return $fallback
+    }
+}
+
+function Get-KhoRegistry {
+    if ($null -eq $script:khoRegistry) {
+        $script:khoRegistry = Read-KhoRegistry
+        $script:khoDownloadTarget = [string]$script:khoRegistry.downloadTarget
+    }
+    return $script:khoRegistry
+}
+
+function Save-KhoRegistry {
+    # Atomic write (Write-KidSettings). Returns $false without writing when kho.json was unreadable this session.
+    param($Registry = (Get-KhoRegistry), [string]$Path = (Get-KhoPath))
+    if (-not $script:khoRegistryReady) { Write-FileLog 'WARN kho.json không đọc được trong phiên này; không ghi đè.'; return $false }
+    $data = [ordered]@{
+        version = 1
+        libraries = @($Registry.libraries | ForEach-Object {
+            [ordered]@{ id = [string]$_.id; name = [string]$_.name; account = [string]$_.account; caption = [string]$_.caption
+                        hashtags = @($_.hashtags | ForEach-Object { [string]$_ }); lowStock = [int]$_.lowStock }
+        })
+        downloadTarget = [string]$Registry.downloadTarget
+    }
+    Write-KidSettings -Path $Path -Data $data
+    return $true
+}
+
+function Invoke-KhoRegistryChange {
+    # Applies $Change to a copy and saves it; the in-memory registry is replaced only after the save succeeded.
+    param([scriptblock]$Change)
+    $current = Get-KhoRegistry
+    if (-not $script:khoRegistryReady) { throw 'Không đọc được data\kho.json nên phiên này không lưu thay đổi kho. Đóng ứng dụng, kiểm tra file rồi mở lại.' }
+    $copy = ConvertTo-KhoRegistry $current
+    $output = @(& $Change $copy) | Select-Object -Last 1
+    [void](Save-KhoRegistry -Registry $copy)
+    $script:khoRegistry = $copy
+    $script:khoDownloadTarget = [string]$copy.downloadTarget
+    return $output
+}
+
+function Assert-KhoName {
+    # Trimmed name, or a Vietnamese error when it is empty, too long or already used by another kho.
+    param($Registry, [string]$Name, [string]$ExceptId = '')
+    $n = $Name.Trim()
+    if (-not $n) { throw 'Tên kho không được để trống.' }
+    if ($n.Length -gt 60) { throw 'Tên kho tối đa 60 ký tự.' }
+    foreach ($lib in @($Registry.libraries)) {
+        if ($lib.id -ne $ExceptId -and [string]::Equals([string]$lib.name, $n, [StringComparison]::OrdinalIgnoreCase)) { throw "Đã có kho tên '$n'." }
+    }
+    return $n
+}
+
+function New-Kho {
+    param([string]$Name)
+    return (Invoke-KhoRegistryChange {
+        param($reg)
+        $lib = New-KhoLibrary -Id ('c-' + [Guid]::NewGuid().ToString('N')) -Name (Assert-KhoName $reg $Name)
+        $reg.libraries = @($reg.libraries) + $lib
+        return $lib
+    })
+}
+
+function New-KhoForAccount {
+    # Returns the account's kho, creating it when missing.
+    param([string]$Username)
+    $id = Get-KhoAccountId $Username
+    if (-not $id) { throw 'Tên tài khoản TikTok không hợp lệ.' }
+    $existing = @((Get-KhoRegistry).libraries | Where-Object { $_.id -ceq $id })
+    if ($existing.Count) { return $existing[0] }
+    Invoke-KhoRegistryChange {
+        param($reg)
+        $lib = New-KhoAccountLibrary $id
+        if (@($reg.libraries | Where-Object { [string]::Equals([string]$_.name, $lib.name, [StringComparison]::OrdinalIgnoreCase) }).Count) { $lib.name += ' (TikTok)' }
+        $reg.libraries = @($reg.libraries) + $lib
+    }
+    return @($script:khoRegistry.libraries | Where-Object { $_.id -ceq $id })[0]
+}
+
+function Rename-Kho {
+    param([string]$Id, [string]$Name)
+    if ($Id -eq 'default') { throw 'Kho chung giữ nguyên tên.' }
+    Invoke-KhoRegistryChange {
+        param($reg)
+        $lib = @($reg.libraries | Where-Object { $_.id -ceq $Id })
+        if (-not $lib.Count) { throw 'Không tìm thấy kho.' }
+        $lib[0].name = Assert-KhoName $reg $Name $Id
+    }
+}
+
+function Set-KhoOptions {
+    # Caption template, default hashtags and low-stock threshold of one kho; only the parameters given are changed.
+    param([string]$Id, [string]$Caption, [string[]]$Hashtags, [int]$LowStock)
+    $bound = $PSBoundParameters
+    Invoke-KhoRegistryChange {
+        param($reg)
+        $lib = @($reg.libraries | Where-Object { $_.id -ceq $Id })
+        if (-not $lib.Count) { throw 'Không tìm thấy kho.' }
+        if ($bound.ContainsKey('Caption')) { $lib[0].caption = [string]$Caption }
+        if ($bound.ContainsKey('Hashtags')) { $lib[0].hashtags = @(@($Hashtags) | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() }) }
+        if ($bound.ContainsKey('LowStock')) {
+            if ($LowStock -lt 0 -or $LowStock -gt 999) { throw 'Ngưỡng sắp hết phải từ 0 đến 999.' }
+            $lib[0].lowStock = $LowStock
+        }
+    }
+}
+
+function Get-KhoDownloadTarget {
+    # Kho the next queue saves into; falls back to 'default' when that kho no longer exists.
+    $reg = Get-KhoRegistry
+    if (@($reg.libraries | Where-Object { $_.id -ceq $script:khoDownloadTarget }).Count) { return [string]$script:khoDownloadTarget }
+    return 'default'
+}
+
+function Set-KhoDownloadTarget {
+    param([string]$Id)
+    $reg = Get-KhoRegistry
+    if (-not @($reg.libraries | Where-Object { $_.id -ceq $Id }).Count) { throw 'Không tìm thấy kho.' }
+    $script:khoDownloadTarget = $Id
+    # Locked kho.json: the choice only lasts for this session.
+    if (-not $script:khoRegistryReady) { return }
+    Invoke-KhoRegistryChange { param($r) $r.downloadTarget = $Id }
+}
+
+function Get-KhoList {
+    # Registry libraries plus account khos that videos reference but the registry lacks (added and saved once).
+    param($Metadata = $null)
+    $reg = Get-KhoRegistry
+    if ($null -eq $Metadata) { return @($reg.libraries) }
+    $known = @{}
+    foreach ($lib in $reg.libraries) { $known[[string]$lib.id] = $true }
+    $missing = @{}
+    foreach ($p in $Metadata.PSObject.Properties) {
+        if ($null -eq $p.Value) { continue }
+        $k = [string]$p.Value.Kho
+        if ($k.StartsWith('acct:') -and -not $known.ContainsKey($k) -and (Test-KhoId $k)) { $missing[$k] = $true }
+    }
+    if (-not $missing.Count) { return @($reg.libraries) }
+    $ids = @($missing.Keys | Sort-Object)
+    if ($script:khoRegistryReady) {
+        try {
+            Invoke-KhoRegistryChange { param($r) $r.libraries = @($r.libraries) + @($ids | ForEach-Object { New-KhoAccountLibrary $_ }) }
+            return @($script:khoRegistry.libraries)
+        } catch { Write-FileLog "WARN Không lưu được kho tài khoản mới vào kho.json: $($_.Exception.Message)" }
+    }
+    return @($reg.libraries) + @($ids | ForEach-Object { New-KhoAccountLibrary $_ })
+}
+
+function Set-MetaKho {
+    # Sets Kho (and KhoManual when $Manual) on one entry of an open metadata object. A missing entry is created in the
+    # minimal shape older versions accept. Returns $true when something changed.
+    param($Metadata, [string]$VideoId, [string]$KhoId, [bool]$Manual)
+    $prop = $Metadata.PSObject.Properties[$VideoId]
+    $item = if ($prop) { $prop.Value } else { $null }
+    if ($null -eq $item) {
+        $item = [pscustomobject]@{ Posted = $false; Date = '' }
+        $Metadata | Add-Member -MemberType NoteProperty -Name $VideoId -Force -Value $item
+    }
+    $changed = $false
+    if ([string]$item.Kho -cne $KhoId) { Set-ReupField $item 'Kho' $KhoId; $changed = $true }
+    if ($Manual -and $item.KhoManual -ne $true) { Set-ReupField $item 'KhoManual' $true; $changed = $true }
+    return $changed
+}
+
+function Set-VideoKho {
+    # One Update-ReupMetadata call for the whole batch. -Manual: the owner chose it (KhoManual = true, auto-assign leaves it).
+    # -OnlyIfUnassigned: skip entries that already have a Kho or a manual choice (download target never overrides).
+    # Returns $true when the file changed.
+    param([string[]]$VideoIds, [string]$KhoId, [switch]$Manual, [switch]$OnlyIfUnassigned, [string]$OutDir = $ui.TxtOut.Text, [int]$TimeoutMs = 10000)
+    if (-not (Test-KhoId $KhoId)) { throw "Mã kho không hợp lệ: '$KhoId'." }
+    $ids = @($VideoIds | Where-Object { $_ } | Select-Object -Unique)
+    foreach ($id in $ids) { if ($id -notmatch '^\d+$') { throw "ID video không hợp lệ: '$id'." } }
+    if (-not $ids.Count) { return $false }
+    $isManual = [bool]$Manual
+    $update = Update-ReupMetadata -OutDir $OutDir -TimeoutMs $TimeoutMs -Change {
+        param($meta)
+        $any = $false
+        foreach ($id in $ids) {
+            if ($OnlyIfUnassigned) {
+                $p = $meta.PSObject.Properties[$id]
+                if ($p -and $p.Value -and ([string]$p.Value.Kho -or $p.Value.KhoManual -eq $true)) { continue }
+            }
+            if (Set-MetaKho $meta $id $KhoId $isManual) { $any = $true }
+        }
+        return $any
+    }
+    return [bool]$update.Changed
+}
+
+function Remove-Kho {
+    # Videos of the kho go back to the default kho (no file is touched); videos of an account kho also get KhoManual so
+    # auto-assign does not pull them back. Then the kho leaves the registry. Returns the number of videos moved.
+    param([string]$Id, [string]$OutDir = $ui.TxtOut.Text)
+    if ($Id -eq 'default') { throw 'Không xóa được Kho chung.' }
+    if ($script:importBusy) { throw 'Đang thêm video từ thư mục; đợi xong rồi hãy xóa kho.' }
+    $reg = Get-KhoRegistry
+    if (-not $script:khoRegistryReady) { throw 'Không đọc được data\kho.json nên phiên này không lưu thay đổi kho. Đóng ứng dụng, kiểm tra file rồi mở lại.' }
+    if (-not @($reg.libraries | Where-Object { $_.id -ceq $Id }).Count) { throw 'Không tìm thấy kho.' }
+    $isAccount = $Id.StartsWith('acct:')
+    $state = @{ Moved = 0 }
+    [void](Update-ReupMetadata -OutDir $OutDir -Change {
+        param($meta)
+        foreach ($p in $meta.PSObject.Properties) {
+            $item = $p.Value
+            if ($null -eq $item -or [string]$item.Kho -cne $Id) { continue }
+            [void]$item.PSObject.Properties.Remove('Kho')
+            if ($isAccount) { Set-ReupField $item 'KhoManual' $true }
+            elseif ($item.PSObject.Properties['KhoManual']) { [void]$item.PSObject.Properties.Remove('KhoManual') }
+            $state.Moved++
+        }
+        return [bool]$state.Moved
+    })
+    Invoke-KhoRegistryChange {
+        param($r)
+        $r.libraries = @($r.libraries | Where-Object { $_.id -cne $Id })
+        if ($r.downloadTarget -ceq $Id) { $r.downloadTarget = 'default' }
+    }
+    return [int]$state.Moved
+}
+
+function Invoke-KhoAutoAssign {
+    # Pure: runs inside the Change block that writes history. A video whose Kho is missing / default / custom and that is
+    # not KhoManual moves to the account kho of its earliest confirmed (succeeded, not uncertain) post. Once it is an
+    # account kho it never changes by itself. Returns $true when something changed.
+    param($Metadata)
+    $changed = $false
+    foreach ($p in $Metadata.PSObject.Properties) {
+        $item = $p.Value
+        if ($null -eq $item -or $item.Source -ne 'autotok-history' -or $item.KhoManual -eq $true) { continue }
+        $current = [string]$item.Kho
+        if ($current.StartsWith('acct:')) { continue }
+        $target = ''; $earliest = [long]::MaxValue
+        foreach ($h in @($item.History)) {
+            if ($null -eq $h -or [string]$h.status -ne 'succeeded' -or $h.publish_uncertain -eq $true) { continue }
+            $account = Get-KhoAccountId ([string]$h.username)
+            if (-not $account) { continue }
+            $when = Get-TikTokSortKey ([string]$h.accepted_at)
+            if ($when -le 0) { $when = [long]::MaxValue - 1 }
+            if ($when -lt $earliest) { $earliest = $when; $target = $account }
+        }
+        if ($target -and $current -cne $target) { Set-ReupField $item 'Kho' $target; $changed = $true }
+    }
+    return $changed
+}
+
+function Add-QueueVideoToKho {
+    # After a successful save: the video joins the kho chosen at queue start, unless it already has a kho or a manual
+    # choice. A failure is logged and never reaches the queue.
+    param([string]$VideoPath)
+    $khoId = [string]$script:queueKhoId
+    if (-not $khoId -or $khoId -eq 'default') { return }
+    try {
+        $name = [IO.Path]::GetFileName($VideoPath)
+        $match = [regex]::Match($name, '^(\d+)-3-hoan-chinh\.mp4$')
+        if (-not $match.Success) { throw "Tên file không đúng dạng <ID>-3-hoan-chinh.mp4: $name" }
+        $dir = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($VideoPath))
+        [void](Set-VideoKho -VideoIds @($match.Groups[1].Value) -KhoId $khoId -OnlyIfUnassigned -OutDir $dir -TimeoutMs 3000)
+    } catch {
+        Write-FileLog "WARN Không gán kho '$khoId' cho '$VideoPath': $($_.Exception.Message)"
+        Add-Log "Đã lưu video nhưng chưa gán được vào kho đã chọn ($($_.Exception.Message)). Chuyển kho thủ công trong Kho video." 'Warning'
+    }
+}
+
+function Test-KhoImportBlocked {
+    # '' when a folder import may start now; otherwise the message for the owner.
+    if ($script:importBusy) { return 'Đang thêm video từ một thư mục khác.' }
+    if ($script:ps -or $script:stopping -or ($script:queue -and @($script:queue).Count -gt 0)) { return 'Hãy dừng hoặc đợi hàng đợi / sửa video hoàn tất trước khi thêm video từ thư mục.' }
+    return ''
+}
+
+function Get-KhoFileSha256 {
+    param([string]$Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    try { return [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+    finally { $stream.Dispose(); $sha.Dispose() }
+}
+
+function Copy-KhoFileNoOverwrite {
+    # Copies to <dest>.part, flushes, then File.Move (which throws when dest exists). Returns 'copied' or 'exists'.
+    param([string]$Source, [string]$Dest, [Threading.CancellationToken]$CancelToken = [Threading.CancellationToken]::None)
+    if ([System.IO.File]::Exists($Dest)) { return 'exists' }
+    $part = $Dest + '.part'
+    $moved = $false
+    try {
+        $in = [System.IO.File]::Open($Source, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+        try {
+            $out = [System.IO.File]::Open($part, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+            try {
+                $buffer = New-Object byte[] (4MB)
+                while (($read = $in.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $CancelToken.ThrowIfCancellationRequested()
+                    $out.Write($buffer, 0, $read)
+                }
+                $out.Flush($true)
+            } finally { $out.Dispose() }
+        } finally { $in.Dispose() }
+        try { [System.IO.File]::Move($part, $Dest); $moved = $true }
+        catch [System.IO.IOException] { if (-not [System.IO.File]::Exists($Dest)) { throw }; return 'exists' }
+        return 'copied'
+    } finally {
+        if (-not $moved -and [System.IO.File]::Exists($part)) { try { [System.IO.File]::Delete($part) } catch { <# bo qua: file .part, loi xoa khong anh huong ket qua #> } }
+    }
+}
+
+function Import-KhoFolder {
+    # Copies <id>-3-hoan-chinh.mp4 (+ -1/-2 companions) of a folder into $OutDir without overwriting anything, then records
+    # Kho (and the source's history) in one Update-ReupMetadata call. Safe to run in a background runspace: no UI access;
+    # progress goes to the optional $Progress callback ({Done; Total; Id}). The source folder is only read.
+    # An id already present with identical content (retry after a failed metadata step) only gets the metadata step.
+    param([string]$SourceDir, [string]$KhoId, [string]$OutDir, [scriptblock]$Progress = $null, [Threading.CancellationToken]$CancelToken = [Threading.CancellationToken]::None)
+    if (-not (Test-KhoId $KhoId)) { throw "Mã kho không hợp lệ: '$KhoId'." }
+    if (-not [System.IO.Directory]::Exists($SourceDir)) { throw "Không thấy thư mục nguồn: $SourceDir" }
+    $srcFull = Get-CanonicalPath $SourceDir; $outFull = Get-CanonicalPath $OutDir
+    if ([string]::Equals($srcFull, $outFull, [StringComparison]::OrdinalIgnoreCase)) { throw 'Thư mục nguồn trùng thư mục xuất.' }
+    [void][System.IO.Directory]::CreateDirectory($outFull)
+    $result = [pscustomobject]@{ Added = 0; Skipped = 0; Failed = 0; Cancelled = $false; AddedIds = @(); SkippedIds = @(); Errors = @(); Warnings = @() }
+    $errors = New-Object System.Collections.Generic.List[string]; $warnings = New-Object System.Collections.Generic.List[string]
+    $pending = New-Object System.Collections.Generic.List[string]; $skippedIds = New-Object System.Collections.Generic.List[string]
+    $files = @([System.IO.DirectoryInfo]::new($srcFull).GetFiles('*-3-hoan-chinh.mp4') | Where-Object { $_.Name -match '^\d+-3-hoan-chinh\.mp4$' } | Sort-Object Name)
+    $srcCache = Join-Path $srcFull '.cache'; $dstCache = Join-Path $outFull '.cache'
+    $progressFailed = $false
+    $done = 0
+    foreach ($file in $files) {
+        if ($CancelToken.IsCancellationRequested) { $result.Cancelled = $true; break }
+        $id = ([string]$file.Name) -replace '-3-hoan-chinh\.mp4$', ''
+        $done++
+        if ($Progress) {
+            try { & $Progress ([pscustomobject]@{ Done = $done; Total = $files.Count; Id = $id }) }
+            catch { if (-not $progressFailed) { $progressFailed = $true; $warnings.Add("Hàm báo tiến độ lỗi: $($_.Exception.Message)") } }
+        }
+        try {
+            $dest = Join-Path $outFull $file.Name
+            $copy = Copy-KhoFileNoOverwrite -Source $file.FullName -Dest $dest -CancelToken $CancelToken
+            if ($copy -eq 'exists') {
+                $same = ([System.IO.FileInfo]::new($dest).Length -eq $file.Length) -and ((Get-KhoFileSha256 $dest) -eq (Get-KhoFileSha256 $file.FullName))
+                if (-not $same) { $skippedIds.Add($id); continue }
+            }
+            foreach ($leaf in @("$id-1-video-goc.mp4", "$id-2-am-thanh-tho.m4a")) {
+                if ([System.IO.File]::Exists((Join-Path $dstCache $leaf)) -or [System.IO.File]::Exists((Join-Path $outFull $leaf))) { continue }
+                $from = @((Join-Path $srcCache $leaf), (Join-Path $srcFull $leaf)) | Where-Object { [System.IO.File]::Exists($_) } | Select-Object -First 1
+                if (-not $from) { continue }
+                try {
+                    if (-not [System.IO.Directory]::Exists($dstCache)) {
+                        [void][System.IO.Directory]::CreateDirectory($dstCache)
+                        try { [System.IO.File]::SetAttributes($dstCache, [System.IO.FileAttributes]::Directory -bor [System.IO.FileAttributes]::Hidden) }
+                        catch { $warnings.Add("Không đặt được thuộc tính ẩn cho .cache: $($_.Exception.Message)") }
+                    }
+                    [void](Copy-KhoFileNoOverwrite -Source $from -Dest (Join-Path $dstCache $leaf) -CancelToken $CancelToken)
+                } catch {
+                    if ($CancelToken.IsCancellationRequested) { throw }
+                    $warnings.Add("Reel #$id`: không chép được $leaf ($($_.Exception.Message)); vẫn thêm video nhưng không sửa lại logo/GIF được.")
+                }
+            }
+            $pending.Add($id)
+        } catch {
+            if ($CancelToken.IsCancellationRequested) { $result.Cancelled = $true; break }
+            $result.Failed++; $errors.Add("Reel #$id`: $($_.Exception.Message)")
+        }
+    }
+    if ($pending.Count) {
+        $source = $null
+        try { $source = Get-ReupMetadata -OutDir $srcFull }
+        catch { $warnings.Add("Không đọc được reup-status.json của thư mục nguồn; chỉ gán kho, không chép lịch sử đăng. $($_.Exception.Message)") }
+        $ids = $pending.ToArray()
+        try {
+            [void](Update-ReupMetadata -OutDir $outFull -Change {
+                param($meta)
+                $any = $false
+                foreach ($id in $ids) {
+                    $theirs = if ($source) { $source.PSObject.Properties[$id] } else { $null }
+                    $theirs = if ($theirs) { $theirs.Value } else { $null }
+                    $mine = $meta.PSObject.Properties[$id]
+                    $mine = if ($mine) { $mine.Value } else { $null }
+                    if ($null -eq $mine -and $theirs) {
+                        $clone = ConvertFrom-Json -InputObject (ConvertTo-Json -InputObject $theirs -Depth 12 -Compress)
+                        foreach ($name in @('Kho', 'KhoManual')) { if ($clone.PSObject.Properties[$name]) { [void]$clone.PSObject.Properties.Remove($name) } }
+                        $meta | Add-Member -MemberType NoteProperty -Name $id -Force -Value $clone
+                        $any = $true
+                    } elseif ($mine -and $theirs -and $theirs.Source -eq 'autotok-history') {
+                        # Union of history by key; our own entry wins on the same key.
+                        $have = @{}
+                        foreach ($h in @($mine.History)) { if ($h) { $have[[string]$h.key] = $true } }
+                        $extra = @(@($theirs.History) | Where-Object { $_ -and [string]$_.key -and -not $have.ContainsKey([string]$_.key) } | ForEach-Object { ConvertTo-TikTokHistoryEntry $_ })
+                        if ($extra.Count) {
+                            $union = @(@($mine.History | Where-Object { $_ }) + $extra | Sort-Object { Get-TikTokSortKey ([string]$_.created_at) } -Descending)
+                            if (Set-TikTokItemHistory $meta $id $union '') { $any = $true }
+                        }
+                    }
+                    $cur = $meta.PSObject.Properties[$id]
+                    $cur = if ($cur) { $cur.Value } else { $null }
+                    if ($cur -and (([string]$cur.Kho).StartsWith('acct:') -or $cur.KhoManual -eq $true)) { continue }
+                    if ($KhoId -ne 'default' -and (Set-MetaKho $meta $id $KhoId $false)) { $any = $true }
+                }
+                return $any
+            })
+            $result.Added = $ids.Count
+            $result.AddedIds = $ids
+        } catch {
+            # Files stay; running the import again finishes the metadata step (identical files are recognised).
+            $result.Failed += $ids.Count
+            $errors.Add("Đã chép $($ids.Count) video nhưng chưa ghi được thông tin kho: $($_.Exception.Message) Chạy lại để hoàn tất.")
+        }
+    }
+    $result.Skipped = $skippedIds.Count; $result.SkippedIds = $skippedIds.ToArray()
+    $result.Errors = $errors.ToArray(); $result.Warnings = $warnings.ToArray()
+    return $result
+}
+
+# Functions a background runspace needs to run Import-KhoFolder (build an InitialSessionState from these, like the TikTok worker).
+$script:khoImportFunctions = @('Get-CanonicalPath', 'Get-FileStamp', 'Get-ReupMutexName', 'Get-ReupMetadata', 'Update-ReupMetadata', 'Set-ReupField',
+    'Get-ReupManualState', 'Update-ReupAggregate', 'Format-TikTokTime', 'Get-TikTokSortKey', 'ConvertTo-TikTokHistoryEntry', 'Get-TikTokHistorySignature',
+    'Set-TikTokItemHistory', 'Test-KhoId', 'Set-MetaKho', 'Get-KhoFileSha256', 'Copy-KhoFileNoOverwrite', 'Import-KhoFolder')
+
 # ------------------------------------------------------------- hang doi: dong bang + 7 buoc ----
 $script:stepNames = @('Kiểm tra công cụ', 'Kiểm tra thiết bị', 'Đọc ID và thời lượng', 'Chọn lồng tiếng Việt', 'Thu âm từ Android', 'Cắt và chuẩn hóa âm', 'Ghép và xuất MP4')
 $script:queueStatusText = @{
@@ -1531,15 +2066,22 @@ $script:tikTokWorker = {
         $probe=Invoke-Probes $candidates ([string]$Data.probe_cursor)
         $result.ProbeCursor=[string]$probe.Cursor
         $perVideo=@{}
+        $busy=New-Object Collections.Generic.List[string]  # videos that can get a history: backend entries or local receipts
+        $receiptIndex=New-TikTokReceiptIndex $receipts  # once per pass: receipts by video, not a scan per video
         $signature=New-Object Text.StringBuilder
         foreach($v in $identities.Items){
             $vid=[string]$v.reel_id
-            if(-not $lookup.Rows.ContainsKey($vid)){[void]$signature.Append($vid).Append("|stale`n");continue}
-            $entries=New-Object Collections.Generic.List[object]
-            foreach($e in @($lookup.Rows[$vid])){$entries.Add($e)}
-            foreach($r in $receipts){if([string]$r.VideoId -eq $vid -and $probe.Found.ContainsKey([string]$r.RequestId)){$entries.Add($probe.Found[[string]$r.RequestId])}}
-            $perVideo[$vid]=$entries.ToArray()
-            [void]$signature.Append($vid).Append('|').Append([string]$v.sha256).Append("`n").Append((Get-TikTokHistorySignature @($entries.ToArray() | ForEach-Object {ConvertTo-TikTokHistoryEntry $_})))
+            $rows=$lookup.Rows[$vid]
+            if($null -eq $rows){[void]$signature.Append($vid).Append("|stale`n");continue}
+            $mine=$receiptIndex.ByVideo[$vid]
+            [void]$signature.Append($vid).Append('|').Append([string]$v.sha256).Append("`n")
+            # Nothing at all for this video: empty history, empty signature (the common case in a large Kho).
+            if(-not $rows.Length -and $null -eq $mine){$perVideo[$vid]=@();continue}
+            $entries=[Collections.Generic.List[object]]::new()
+            foreach($e in $rows){$entries.Add($e)}
+            foreach($r in $mine){if($probe.Found.ContainsKey([string]$r.RequestId)){$entries.Add($probe.Found[[string]$r.RequestId])}}
+            $perVideo[$vid]=$entries.ToArray();$busy.Add($vid)
+            if($entries.Count){[void]$signature.Append((Get-TikTokHistorySignature @($entries.ToArray() | ForEach-Object {ConvertTo-TikTokHistoryEntry $_})))}
         }
         foreach($r in $receipts){
             $id=[string]$r.RequestId
@@ -1554,13 +2096,19 @@ $script:tikTokWorker = {
         $update=Update-ReupMetadata -OutDir $outDir -Change {
             param($meta)
             $any=$false
-            foreach($vid in @($perVideo.Keys)){
+            # Only these can change: videos with entries or receipts, and stored successes (kept when the backend lists nothing).
+            # Every other video would merge to an empty history, which stores nothing.
+            $todo=@{};foreach($vid in $busy){$todo[$vid]=$true}
+            foreach($p in $meta.PSObject.Properties){if($perVideo.ContainsKey($p.Name) -and $p.Value.Source -eq 'autotok-history' -and @($p.Value.History | Where-Object {$_ -and [string]$_.status -eq 'succeeded'}).Count){$todo[$p.Name]=$true}}
+            foreach($vid in @($todo.Keys)){
                 $old=$meta.PSObject.Properties[$vid]
-                $history=@(Merge-TikTokVideoHistory $vid $perVideo[$vid] $receipts $(if($old){$old.Value}else{$null}) $probe.Missing $now)
+                $history=@(Merge-TikTokVideoHistory $vid $perVideo[$vid] $receipts $(if($old){$old.Value}else{$null}) $probe.Missing $now $receiptIndex)
                 $merged[$vid]=$history
                 if(Set-TikTokItemHistory $meta $vid $history ([string]$result.Hashes[$vid])){$any=$true}
             }
-            return $any
+            foreach($vid in $perVideo.Keys){if(-not $merged.ContainsKey($vid)){$merged[$vid]=@()}}
+            $assigned=Invoke-KhoAutoAssign $meta
+            return ($any -or $assigned)
         }
         $result.Changed=[bool]$update.Changed;$result.FileStamp=[string]$update.Stamp;$result.InputSig=$inputSig;$result.Videos=$merged
         $failures=New-Object Collections.Generic.List[object]
@@ -1618,19 +2166,12 @@ $script:tikTokWorker = {
                     if($null -eq $h){continue}
                     $hit=$jobs[[string]$h.request_id]
                     if(-not $hit -or $hit.VideoId -ne $vid){$h;continue}
-                    # Same entry (key, created_at, sha256 kept); everything the backend reports is taken from it.
-                    $e=ConvertTo-TikTokHistoryEntry $h;$j=$hit.Job
-                    $e.status=[string]$j.status;$e.publish_uncertain=[bool]$j.publish_uncertain;$e.prior_uncertain=[bool]$j.prior_uncertain
-                    if($j.username){$e.username=[string]$j.username}
-                    if($j.planned_for){$e.planned_for=[string]$j.planned_for}
-                    $e.accepted_at=[string]$j.accepted_at;$e.post_url=[string]$j.post_url;$e.post_id=[string]$j.post_id;$e.link_state=[string]$j.link_state
-                    $e.tiktok_schedule_time=[string]$j.tiktok_schedule_time;$e.schedule_mode=[string]$j.schedule_mode
-                    if($j.time_source){$e.time_source=[string]$j.time_source}
-                    $e
+                    Update-TikTokEntryFromJob $h $hit.Job
                 })
                 if(Set-TikTokItemHistory $meta $vid $history ''){$any=$true}
             }
-            return $any
+            $assigned=Invoke-KhoAutoAssign $meta
+            return ($any -or $assigned)
         }
         $result.Changed=[bool]$update.Changed;$result.Stamp=[string]$update.Stamp;$result.Active=@(Get-ActiveRequests $update.Metadata)
         return $result
@@ -1701,7 +2242,8 @@ $script:tikTokWorker = {
 # Functions the background runspace needs besides the worker itself (metadata merge/write runs off the UI thread).
 $script:tikTokWorkerFunctions = @('Get-CanonicalPath', 'Get-FileStamp', 'Get-ReupMutexName', 'Get-ReupMetadata', 'Update-ReupMetadata',
     'Set-ReupField', 'Get-ReupManualState', 'Update-ReupAggregate', 'Format-TikTokTime', 'Get-TikTokSortKey', 'ConvertTo-TikTokHistoryEntry',
-    'Get-TikTokHistorySignature', 'Get-TikTokReceiptAge', 'Get-TikTokReceiptState', 'Merge-TikTokVideoHistory', 'Set-TikTokItemHistory')
+    'Get-TikTokHistorySignature', 'Get-TikTokReceiptAge', 'Get-TikTokReceiptState', 'Merge-TikTokVideoHistory', 'Set-TikTokItemHistory',
+    'Test-TikTokStaleDowngrade', 'Update-TikTokEntryFromJob', 'New-TikTokReceiptIndex', 'Get-KhoAccountId', 'Invoke-KhoAutoAssign')
 
 function Get-TikTokWorkerSessionState {
     # Functions are defined through the session state (not a prepended statement): a multi-statement batch runs on a
@@ -1997,14 +2539,51 @@ function Get-TikTokReceiptState {
     return 'preparing'
 }
 
+function Test-TikTokStaleDowngrade {
+    # A stored success is never replaced by non-terminal data for the same request (A2). Entries carry no attempt id and a
+    # retry is a new request_id, so there is no "newer attempt" to tell apart.
+    param($Stored, [string]$IncomingStatus)
+    return [bool]($Stored -and [string]$Stored.status -eq 'succeeded' -and $IncomingStatus -in @('preparing', 'pending', 'queued', 'running'))
+}
+
+function Update-TikTokEntryFromJob {
+    # Fast path: the stored entry (key, created_at, sha256 kept) with everything the backend reports for the same request.
+    # Stale non-terminal data does not undo a stored success.
+    param($Stored, $Job)
+    $e = ConvertTo-TikTokHistoryEntry $Stored
+    if (Test-TikTokStaleDowngrade $Stored ([string]$Job.status)) { return $e }
+    $e.status = [string]$Job.status; $e.publish_uncertain = [bool]$Job.publish_uncertain; $e.prior_uncertain = [bool]$Job.prior_uncertain
+    if ($Job.username) { $e.username = [string]$Job.username }
+    if ($Job.planned_for) { $e.planned_for = [string]$Job.planned_for }
+    $e.accepted_at = [string]$Job.accepted_at; $e.post_url = [string]$Job.post_url; $e.post_id = [string]$Job.post_id; $e.link_state = [string]$Job.link_state
+    $e.tiktok_schedule_time = [string]$Job.tiktok_schedule_time; $e.schedule_mode = [string]$Job.schedule_mode
+    if ($Job.time_source) { $e.time_source = [string]$Job.time_source }
+    return $e
+}
+
+function New-TikTokReceiptIndex {
+    # Built once per sync pass: receipts by VideoId and the upload-hash map, so no pass scans all receipts per video (A7).
+    param([object[]]$Receipts)
+    $byVideo = @{}; $uploads = @{}
+    foreach ($r in @($Receipts)) {
+        if (-not $r) { continue }
+        if ($r.UploadSha256 -and $r.SourceSha256) { $uploads[[string]$r.RequestId] = $r }
+        $vid = [string]$r.VideoId
+        if (-not $byVideo.ContainsKey($vid)) { $byVideo[$vid] = New-Object System.Collections.Generic.List[object] }
+        $byVideo[$vid].Add($r)
+    }
+    return @{ ByVideo = $byVideo; Uploads = $uploads }
+}
+
 function Merge-TikTokVideoHistory {
     # Backend entries + confirmed successes kept from the stored item + local receipts not yet known to the backend.
-    param([string]$VideoId, [object[]]$Entries, [object[]]$Receipts, $OldItem, [hashtable]$NotFound = @{}, [DateTime]$NowUtc = [DateTime]::UtcNow)
+    # $Index (New-TikTokReceiptIndex) is optional: a sync pass builds it once; a single call builds its own.
+    param([string]$VideoId, [object[]]$Entries, [object[]]$Receipts, $OldItem, [hashtable]$NotFound = @{}, [DateTime]$NowUtc = [DateTime]::UtcNow, [hashtable]$Index = $null)
+    if (-not $Index) { $Index = New-TikTokReceiptIndex $Receipts }
     $all = New-Object System.Collections.Generic.List[object]
-    $keys = @{}; $requests = @{}
+    $keys = @{}; $requests = @{}   # value = position in $all
     # The backend hashes the uploaded metadata-clean copy; map that hash back to the original -3 file (D5 comparison).
-    $uploads = @{}
-    foreach ($r in @($Receipts)) { if ($r -and $r.UploadSha256 -and $r.SourceSha256) { $uploads[[string]$r.RequestId] = $r } }
+    $uploads = $Index.Uploads
     foreach ($e in @($Entries)) {
         if ($null -eq $e) { continue }
         $h = ConvertTo-TikTokHistoryEntry $e
@@ -2012,25 +2591,34 @@ function Merge-TikTokVideoHistory {
         if ($upload -and [string]::Equals($h.sha256, [string]$upload.UploadSha256, [StringComparison]::OrdinalIgnoreCase)) { $h.sha256 = [string]$upload.SourceSha256 }
         if (-not $h.key -and $h.request_id) { $h.key = 'request:' + $h.request_id }
         if (-not $h.key -or $keys.ContainsKey($h.key)) { continue }
-        $keys[$h.key] = $true
-        if ($h.request_id) { $requests[$h.request_id] = $true }
+        $keys[$h.key] = $all.Count
+        if ($h.request_id) { $requests[$h.request_id] = $all.Count }
         $all.Add($h)
     }
     if ($OldItem -and $OldItem.Source -eq 'autotok-history') {
         # A success the backend no longer reports (deleted history row) must not make the video look unposted.
         foreach ($old in @($OldItem.History)) {
-            if (-not $old -or [string]$old.status -ne 'succeeded' -or -not [string]$old.key -or $keys.ContainsKey([string]$old.key)) { continue }
-            if ($old.request_id -and $requests.ContainsKey([string]$old.request_id)) { continue }
+            if (-not $old -or [string]$old.status -ne 'succeeded' -or -not [string]$old.key) { continue }
+            $slot = $null
+            if ($keys.ContainsKey([string]$old.key)) { $slot = $keys[[string]$old.key] }
+            elseif ($old.request_id -and $requests.ContainsKey([string]$old.request_id)) { $slot = $requests[[string]$old.request_id] }
+            if ($null -ne $slot) {
+                # Same request already in the incoming data: a stale non-terminal copy must not undo the stored success (A2).
+                if (Test-TikTokStaleDowngrade $old ([string]$all[$slot].status)) { $all[$slot] = ConvertTo-TikTokHistoryEntry $old }
+                continue
+            }
             $h = ConvertTo-TikTokHistoryEntry $old
-            $keys[$h.key] = $true
+            $keys[$h.key] = $all.Count
+            # Also claim the request: a local receipt of an already confirmed request is not listed again.
+            if ($h.request_id) { $requests[$h.request_id] = $all.Count }
             $all.Add($h)
         }
     }
-    foreach ($r in @($Receipts)) {
-        if (-not $r -or [string]$r.VideoId -ne $VideoId) { continue }
+    foreach ($r in $Index.ByVideo[$VideoId]) {   # not @(...): that fails on a List[object] in Windows PowerShell 5.1
+        if (-not $r) { continue }
         $id = [string]$r.RequestId
         if ($requests.ContainsKey($id) -or [string]$r.Status -eq 'posted') { continue }
-        $requests[$id] = $true
+        $requests[$id] = $all.Count
         $all.Add([pscustomobject]@{
             key = 'local:' + $id; request_id = $id; username = [string]$r.Username; status = (Get-TikTokReceiptState $r ([bool]$NotFound[$id]) $NowUtc)
             publish_uncertain = $false; prior_uncertain = $false; planned_for = [string]$r.ScheduledFor; accepted_at = ''
@@ -2158,7 +2746,9 @@ function Add-TikTokLocalReceiptHistory {
         param($meta)
         $old = $meta.PSObject.Properties[$VideoId]
         $history = @(Merge-TikTokVideoHistory $VideoId $Entries @($view) $(if ($old) { $old.Value } else { $null }))
-        return (Set-TikTokItemHistory $meta $VideoId $history '')
+        $historyChanged = [bool](Set-TikTokItemHistory $meta $VideoId $history '')
+        $assigned = Invoke-KhoAutoAssign $meta
+        return ($historyChanged -or $assigned)
     }
     return [bool]$localUpdate.Changed
 }
@@ -4169,7 +4759,7 @@ function Remove-ReelFiles {
 
 # ------------------------------------------------------------- cap nhat kho video & loc ----
 function Test-GalleryActionsBusy {
-    return [bool]($script:ps -or ($script:queue -and $script:queue.Count -gt 0))
+    return [bool]($script:ps -or $script:importBusy -or ($script:queue -and $script:queue.Count -gt 0))
 }
 
 function Get-DeleteConfirmText {
@@ -4702,6 +5292,8 @@ function New-GalleryItem {
     $entry = if ($Metadata -and $Metadata.PSObject.Properties[$id]) { $Metadata.$id } else { $null }
     $postUrl = ''; $postId = ''; $linkKey = ''; $linkState = ''
     $manual = Get-ReupManualState $entry
+    $khoId = Get-KhoEffectiveId $entry
+    $khoManual = [bool]($entry -and $entry.KhoManual -eq $true)
     if ($entry -and $entry.Source -eq 'autotok-history') {
         # Synced TikTok history (D3/D5): the badge is posted when marked manually OR a post succeeded.
         $history = @($entry.History | Where-Object { $null -ne $_ })
@@ -4731,8 +5323,9 @@ function New-GalleryItem {
         PostedMultiline = $postedShort.Contains("`n")
         Thumb = $thumb; ThumbPath = $thumbPath; File = $File
         PostUrl = $postUrl; PostId = $postId; LinkKey = $linkKey; LinkState = $linkState
+        Kho = $khoId; KhoManual = $khoManual
         # Chu ky hien thi: giong nhau -> giu nguyen doi tuong cu (khong tao lai the, giu cuon/chon).
-        Signature = ([string]$File.Stamp + '|' + $metaText + '|' + $detail + '|' + $postedText + '|' + $postedShort + '|' + [bool]$manual.Posted + '|' + $thumbPath + '|' + $postUrl + '|' + $postId + '|' + $linkState)
+        Signature = ([string]$File.Stamp + '|' + $metaText + '|' + $detail + '|' + $postedText + '|' + $postedShort + '|' + [bool]$manual.Posted + '|' + $thumbPath + '|' + $postUrl + '|' + $postId + '|' + $linkState + '|' + $khoId + '|' + $khoManual)
     }
 }
 
@@ -5597,6 +6190,10 @@ function Start-RecordingAgain {
         Show-Toast 'Hãy dừng hoặc đợi hàng đợi hoàn tất trước khi ghi âm lại.' -Kind warning
         return
     }
+    if ($script:importBusy) {
+        Show-Toast 'Đang thêm video từ thư mục — hãy đợi xong rồi ghi âm lại.' -Kind warning
+        return
+    }
     $redoFile = $script:lastOut
     if (-not $redoFile -or -not (Test-Path -LiteralPath $redoFile -PathType Leaf)) {
         Show-Toast 'Chọn video đã xuất trong Kho trước khi ghi âm lại.' -Kind warning
@@ -5618,6 +6215,7 @@ function Start-RecordingAgain {
     $script:queue = @('https://www.facebook.com/reel/' + $match.Groups[1].Value + '/')
     $script:idx = 0; $script:giu = 0; $script:bo = 0; $script:loi = 0; $script:chuaXN = 0; $script:boTruoc = 0; $script:skipExisting = 0; $script:queueFinalizedIdx = -1
     $script:failedLinks = @(); $script:lastCompletedOut = $redoFile
+    $script:queueKhoId = $null   # record again never assigns a kho
     # Ghi am lai la yeu cau ro rang cua nguoi dung: bo qua lich su loai cho link nay (CONTRACT §2).
     $script:forceRetryRejected = $true
     # Dong danh dau Origin=redo: nut "Thu lai" se chay lai dung luong Ghi am lai (G-R4).
@@ -5629,6 +6227,7 @@ function Start-RecordingAgain {
 
 function Start-Reedit {
     if ($script:ps) { return }
+    if ($script:importBusy) { Show-Toast 'Đang thêm video từ thư mục — hãy đợi xong rồi sửa video.' -Kind warning; return }
     if (-not $script:lastOut -or -not (Test-Path -LiteralPath $script:lastOut)) {
         Show-Toast 'Chọn video đã xuất trong Kho trước khi sửa lại.' -Kind warning
         return
@@ -5820,6 +6419,7 @@ function Register-QueueOutcome {
             $script:giu++
             Add-Log ("Đã lưu ($n/$total): $($Outcome.Video)") 'Success'
             if ($sync.Text) { Add-Log ("  " + $sync.Text) $(if ($sync.Warn) { 'Warning' } else { 'Muted' }) }
+            Add-QueueVideoToKho ([string]$Outcome.Video)
             $rowChanges.Status = 'ok'; $rowChanges.Step = 7; $rowChanges.Video = [string]$Outcome.Video
             $rowChanges.Message = 'Đã lưu ' + [IO.Path]::GetFileName([string]$Outcome.Video) + $(if ($Outcome.Message) { ' · ' + $Outcome.Message } else { '' })
         }
@@ -8425,6 +9025,7 @@ function Start-QueueFromLinks {
     # Loc link da loai truoc + (tuy lua chon o the Tom tat) video da co trong kho, dung bang hang doi va chay.
     param([string[]]$Links, [bool]$SkipExisting = $true)
     if ($script:ps) { Show-Toast 'Đang chạy tác vụ — hãy đợi hoàn tất.' -Kind warning; return }
+    if ($script:importBusy) { Show-Toast 'Đang thêm video từ thư mục — hãy đợi xong rồi bắt đầu.' -Kind warning; return }
     if ($script:queue -and $script:queue.Count -gt 0) { Show-Toast 'Hãy dừng hoặc đợi hàng đợi hiện tại hoàn tất trước khi bắt đầu.' -Kind warning; return }
     $links = @($Links | Where-Object { $_ })
     if ($links.Count -eq 0) {
@@ -8484,6 +9085,7 @@ function Start-QueueFromLinks {
     $script:queue = $links; $script:idx = 0; $script:giu = 0; $script:bo = 0
     $script:loi = 0; $script:chuaXN = 0; $script:failedLinks = @(); $script:lastCompletedOut = ''
     $script:boTruoc = $preRejectedCount; $script:skipExisting = $skipExistingCount; $script:queueFinalizedIdx = -1; $script:forceRetryRejected = $false
+    $script:queueKhoId = Get-KhoDownloadTarget
     if ($preRejectedCount) { Add-Log "$preRejectedCount video đã bị loại trước đây — bỏ qua." 'Warning' }
     if ($skipExistingCount) { Add-Log "$skipExistingCount video đã có trong kho — bỏ qua theo lựa chọn ở trang Nguồn." 'Warning' }
     Add-Log 'Chế độ tự động: lưu từng video rồi chạy tiếp đến hết danh sách; bấm Dừng để kết thúc sớm.' 'Info'
@@ -8520,7 +9122,7 @@ $tUpd.Interval = [TimeSpan]::FromMilliseconds(400)
 
 function Test-AppBusy {
     # Dang chay engine (hang doi, sua video, kiem tra, cai dat) hoac con muc trong hang doi.
-    return [bool]($script:ps -or $script:stopping -or ($script:queue -and $script:queue.Count -gt 0))
+    return [bool]($script:ps -or $script:stopping -or $script:importBusy -or ($script:queue -and $script:queue.Count -gt 0))
 }
 
 function Set-UpdateButtonText {
