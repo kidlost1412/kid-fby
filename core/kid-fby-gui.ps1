@@ -580,7 +580,7 @@ $script:uiNames = @(
     'NavSource','NavBrand','NavQueue','NavLibrary','NavSettings','PageHost',
     'ViewSource','BtnPasteLinks','BtnImportLinks','BtnClearLinks','TxtLinks','TxtLinksPlaceholder','TxtLinkSummary','TxtDuplicateWarning',
     'TxtSumLinks','TxtSumDup','TxtSumRejected','TxtSumRun',
-    'PanelDupChoice','RbDupSkip','RbDupRedownload','TxtOut','BtnPick','BtnOpenOut','TxtLanguagePolicy',
+    'PanelDupChoice','RbDupSkip','RbDupRedownload','TxtOut','BtnOpenOut','TxtLanguagePolicy',
     'ViewBrand','TxtWatermarkSummary','ChkWatermark','ImgLogoPreview','TxtLogoName','TxtLogoPath','TxtLogoDefaultHint','BtnPickLogo','BtnDefaultLogo',
     'SldLogoSize','TxtLogoSize','SldLogoFade','TxtLogoFade','CmbLogoMode','PanelLogoPosition','CmbLogoPosition',
     'ChkGif','ImgGifPreview','TxtGifName','TxtGifPath','BtnPickGif','SldGifSize','TxtGifSize','CmbGifPosition','BtnGifFullFrame',
@@ -654,7 +654,6 @@ $script:dragStartSize = $null
 $script:loggedErrors  = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 $script:cancelRequested = $false
 $script:closeAfterStop = $false
-$script:txtOutWasEnabled = $true
 $script:activeTrack   = 'B'
 $script:filterDate    = 'all'
 $script:filterKho     = 'all'  # 'all' hoac ma kho
@@ -671,9 +670,7 @@ $script:settingsLoading = $false
 $script:settingsPath  = Join-Path $root 'data\settings.json'
 $script:settingsReadLocked = $false  # doc settings.json bi loi IO (khong phai file hong) -> khong ghi trong phien
 $script:settingsReady = $false   # chi luu sau khi da nap xong, tranh ghi de file cua nguoi dung bang mac dinh
-$script:redoRestoreOutDir = $null      # thu muc xuat cua nguoi dung trong luc "Ghi am lai" doi tam
-$script:settingsOutDirPreserved = $null # outDir trong file khong ton tai luc mo app -> giu nguyen khi luu
-$script:outDirAfterImport = $null
+
 $script:tSettings     = $null
 # Mo hinh du lieu giao dien (ObservableCollection cua PSCustomObject; chi cap nhat tren UI thread/Dispatcher).
 $script:queueRows     = New-Object 'System.Collections.ObjectModel.ObservableCollection[object]'
@@ -769,10 +766,8 @@ function Write-KidSettings {
 }
 
 function Get-SettingsOutDir {
-    # 1) Dang "Ghi am lai": thu muc tam khong duoc luu -> dung thu muc goc cua nguoi dung.
-    if ($null -ne $script:redoRestoreOutDir) { return $script:redoRestoreOutDir }
-    # 2) outDir trong file khong ton tai luc mo app (o rut/USB): giu nguyen gia tri goc cho toi khi nguoi dung tu doi.
-    if ($script:settingsOutDirPreserved -and [string]$ui.TxtOut.Text -eq [string]$script:outDirAfterImport) { return $script:settingsOutDirPreserved }
+    # outDir trong settings.json la gia tri TUONG THICH = thu muc cua kho tai ve (TxtOut an, dong bo bang Sync-OutDirFromKho).
+    # Ban cu cua app doc lai duoc file; ban nay chi dung no de tao kho "Output cũ" o lan mo dau tien.
     return [string]$ui.TxtOut.Text
 }
 
@@ -827,13 +822,8 @@ function Import-UserSettings {
     if ($s.PSObject.Properties['__readLocked']) { $script:settingsReadLocked = $true; return $false }   # doc loi IO tam thoi: dung mac dinh, khong ghi trong phien
     $script:settingsLoading = $true
     try {
-        $script:settingsOutDirPreserved = $null
-        if ($s.outDir -and [System.IO.Directory]::Exists([string]$s.outDir)) { $ui.TxtOut.Text = [string]$s.outDir }
-        elseif ($s.outDir) {
-            $script:settingsOutDirPreserved = [string]$s.outDir
-            Add-Log "Thư mục xuất đã lưu không tồn tại ('$($s.outDir)'); tạm dùng '$($ui.TxtOut.Text)', giữ nguyên giá trị đã lưu." 'Warning'
-        }
-        $script:outDirAfterImport = [string]$ui.TxtOut.Text
+        # outDir da luu = thu muc cua kho "Output cũ" khi chua co data\kho.json (dung ca khi o rut: kho giu nguyen duong dan, khong doi sang mac dinh).
+        if ($s.outDir) { $script:khoLegacyOutDir = [string]$s.outDir }
         $l = $s.logo
         if ($l) {
             if ($null -ne $l.enabled) { $ui.ChkWatermark.IsChecked = [bool]$l.enabled }
@@ -1189,7 +1179,9 @@ function ConvertTo-KhoRegistry {
 }
 
 function Get-KhoLegacyOutDir {
-    if (-not [string]::IsNullOrWhiteSpace($script:khoLegacyOutDir)) { return [string]$script:khoLegacyOutDir }
+    $saved = ([string]$script:khoLegacyOutDir).Trim()
+    if ($saved -match '^[A-Za-z]:[\/]' -or $saved.StartsWith('\')) { return $saved }
+    if ($saved) { Write-FileLog "WARN outDir đã lưu '$saved' không phải đường dẫn đầy đủ; dùng thư mục output mặc định cho kho 'Output cũ'." }
     return (Join-Path $root 'output')
 }
 
@@ -1384,6 +1376,14 @@ function Set-KhoDownloadTarget {
     # Locked kho.json: the choice only lasts for this session.
     if (-not $script:khoRegistryReady) { $reg.downloadTarget = $Id; return }
     Invoke-KhoRegistryChange { param($r) $r.downloadTarget = $Id }
+}
+
+function Sync-OutDirFromKho {
+    # TxtOut (an) = thu muc cua kho tai ve. Chi la gia tri tuong thich cho ma cu va settings.json; hang doi dang chay da chup duong dan rieng.
+    if (-not $ui -or -not $ui.TxtOut) { return }
+    $path = Get-KhoDownloadPath
+    if ([string]$ui.TxtOut.Text -ceq $path) { return }
+    $ui.TxtOut.Text = $path
 }
 
 function Get-KhoDefaultFolder {
@@ -1936,6 +1936,22 @@ function Resume-KhoMoves {
     return @{ Done = $done; Pending = $pending.ToArray() }
 }
 
+function Initialize-KhoStartup {
+    # Luc khoi dong, TRUOC khi quet kho va truoc khi dong bo TikTok chay: nap (hoac tao/chuyen doi) data\kho.json, hoan tat cac lan chuyen kho
+    # dang do tu nhat ky, roi dong bo duong dan tuong thich. Khong nem loi.
+    $script:khoRegistry = $null
+    try { [void](Get-KhoRegistry) } catch { Write-FileLog "ERR  Nạp kho.json: $($_.Exception.Message)" -Immediate; $script:khoRegistryReady = $false }
+    try {
+        $r = Resume-KhoMoves
+        if ($r.Done) { Add-Log "Đã hoàn tất $($r.Done) lần chuyển video dở dang từ lần chạy trước." 'Info' }
+        if ($r.Pending.Count) {
+            foreach ($m in $r.Pending) { Add-Log "Chuyển kho dở dang chưa xử lý được: $m" 'Warning' }
+            Show-Toast 'Có lần chuyển video giữa các kho chưa hoàn tất. Hai kho liên quan bị khóa chuyển/xóa; xem Cài đặt › Nhật ký.' -Kind warning
+        }
+    } catch { Write-FileLog "ERR  Khôi phục chuyển kho: $($_.Exception.Message)`r`n$($_.ScriptStackTrace)" -Immediate; Add-Log "Không khôi phục được chuyển kho dở dang: $($_.Exception.Message)" 'Warning' }
+    Sync-OutDirFromKho
+}
+
 function Move-KhoVideos {
     # PRE: the caller checked Test-KhoQuiet and paused the sync. Moves each video (serially, one journal each) into $ToRoot.
     # $Videos: @{ Id; From }. -Manual: a video that already has a confirmed post gets KhoPinned (auto-move leaves it).
@@ -2013,7 +2029,7 @@ function Test-KhoQuiet {
     if ($script:ps -or $script:stopping -or ($script:queue -and @($script:queue).Count -gt 0)) { return 'đang tải, ghi âm hoặc sửa video' }
     if ($script:importBusy) { return 'đang thêm video từ thư mục' }
     if ($script:khoExclusive -gt 0) { return 'đang mở hộp thoại đăng, rải lịch hoặc dọn dẹp' }
-    if (Test-AutotokUpgradeActive) { return 'đang cài hoặc cập nhật bộ đăng' }
+    if ($script:autotokInstall -or (Test-AutotokUpgradeActive)) { return 'đang cài hoặc cập nhật bộ đăng' }
     return ''
 }
 
@@ -2439,6 +2455,7 @@ function Start-AutotokInstall {
     if ($script:autotokInstall) { return }
     $s = Get-AutotokInstallState
     if ($s.Installing) { Show-Toast 'Đang có một lần cài bộ đăng TikTok chạy.' -Kind warning; return }
+    if ($script:khoMoveRunning) { Show-Toast 'Đang chuyển kho. Thử lại sau.' -Kind warning; return }
     if ($s.EnvStarter) { Show-Toast 'Đang dùng KID_FBY_AUTOTOK_STARTER; bản cài một chạm không thay được cấu hình này.' -Kind warning; return }
     if (-not $s.BundleSha) { Show-Toast 'Bản này chưa kèm gói bộ đăng TikTok. Vào Cập nhật để nhận bản mới.' -Kind warning; return }
     if (-not $s.Chrome) { Show-Toast 'Cần cài Google Chrome trước (https://www.google.com/chrome/).' -Kind warning; Update-AutotokSection; return }
@@ -3777,6 +3794,7 @@ function Start-TikTokBackgroundJob {
 function Restart-TikTokTransfer {
     # "Thử chuyển lại" (G3/R2): re-runs the SAME .job, so the backend sees the same request_id and replays, never duplicates.
     param([string]$OutDir, [string]$RequestId)
+    if ($script:khoMoveRunning) { throw 'Đang chuyển kho. Thử lại sau.' }
     if ($RequestId -notmatch '^[a-f0-9]{32}$') { throw 'Mã yêu cầu không hợp lệ.' }
     $dir = Join-Path (Get-CanonicalPath $OutDir) '.cache\tiktok-posts'
     $jobFile = Join-Path $dir ($RequestId + '.job')
@@ -3794,6 +3812,7 @@ function Restart-TikTokTransfer {
 function Move-TikTokReceiptToArchive {
     # "Bỏ biên nhận" (G3): rename, never delete, so the receipt stays inspectable/recoverable.
     param([string]$OutDir, [string]$RequestId)
+    if ($script:khoMoveRunning) { throw 'Đang chuyển kho. Thử lại sau.' }
     if ($RequestId -notmatch '^[a-f0-9]{32}$') { throw 'Mã yêu cầu không hợp lệ.' }
     if (Test-TikTokWorkerAlive $OutDir $RequestId) { throw 'Video này đang được chuyển. Đợi một chút rồi bấm Làm mới.' }
     $dir = Join-Path (Get-CanonicalPath $OutDir) '.cache\tiktok-posts'
@@ -4049,13 +4068,14 @@ function Get-TikTokTimeChips {
 }
 
 function Get-TikTokCaptionTemplate {
-    # Caption + hashtag mau cua kho dich: kho tai khoan (acct:<u>) neu da dang ky, neu khong thi kho tuy chinh hien tai cua video. '' neu khong co.
+    # Caption + hashtag mau cua kho dich (S10): kho gan voi tai khoan (truong account cua kho) neu co; neu khong thi kho khong-tai-khoan ma video
+    # dang nam trong do (VideoKhoId = ma kho). '' neu khong co mau.
     param([string]$Account, [string]$VideoKhoId, [object[]]$Libraries)
-    $u = ([string]$Account).Trim().TrimStart('@').ToLowerInvariant()
+    $u = ConvertTo-KhoUsername $Account
     $target = $null
-    if ($u) { $target = @($Libraries | Where-Object { $_ -and [string]$_.id -ceq ('acct:' + $u) }) | Select-Object -First 1 }
-    if (-not $target -and $VideoKhoId -and -not $VideoKhoId.StartsWith('acct:') -and $VideoKhoId -ne 'default') {
-        $target = @($Libraries | Where-Object { $_ -and [string]$_.id -ceq $VideoKhoId }) | Select-Object -First 1
+    if ($u) { $target = @($Libraries | Where-Object { $_ -and [string]$_.account -and [string]::Equals([string]$_.account, $u, [StringComparison]::OrdinalIgnoreCase) }) | Select-Object -First 1 }
+    if (-not $target -and $VideoKhoId) {
+        $target = @($Libraries | Where-Object { $_ -and [string]$_.id -ceq $VideoKhoId -and -not [string]$_.account }) | Select-Object -First 1
     }
     if (-not $target) { return '' }
     $parts = New-Object 'System.Collections.Generic.List[string]'
@@ -4084,16 +4104,20 @@ function Get-TikTokRepostWarning {
 }
 
 function Get-TikTokBusyTimes {
-    # Gio (gio may) cua cac muc DA HEN/DANG CHO cua tai khoan nay tren moi video trong $Metadata (reup-status.json) va $ExtraEntries.
+    # Gio (gio may) cua cac muc DA HEN/DANG CHO cua tai khoan nay tren moi video trong $Metadata (MOT hoac NHIEU reup-status.json: moi thu muc kho mot cai)
+    # va $ExtraEntries. Muc lich su co cung key (cung mot lan dang) chi tinh MOT lan: luc dang chuyen kho, lich su co the nam o hai thu muc.
     param($Metadata, [string]$Account, [DateTime]$Now = [DateTime]::Now, [object[]]$ExtraEntries = @())
     $u = ([string]$Account).Trim().TrimStart('@')
     $active = @('pending', 'queued', 'running', 'preparing')
     $all = New-Object 'System.Collections.Generic.List[object]'
-    if ($Metadata) { foreach ($p in $Metadata.PSObject.Properties) { foreach ($h in @($p.Value.History)) { if ($h) { $all.Add($h) } } } }
+    foreach ($m in @($Metadata)) { if ($m) { foreach ($p in $m.PSObject.Properties) { foreach ($h in @($p.Value.History)) { if ($h) { $all.Add($h) } } } } }
     foreach ($h in @($ExtraEntries)) { if ($h) { $all.Add($h) } }
+    $seen = @{}
     $busy = New-Object 'System.Collections.Generic.List[DateTime]'
     foreach ($h in $all) {
         if (-not [string]$h.username -or [string]$h.username -ine $u) { continue }
+        $key = [string]$h.key
+        if ($key) { if ($seen.ContainsKey($key)) { continue }; $seen[$key] = $true }
         $t = ConvertTo-TikTokLocalTime ([string]$h.tiktok_schedule_time)
         if ($null -eq $t) { $t = ConvertTo-TikTokLocalTime ([string]$h.planned_for) }
         # Bai khong hen gio (dang ngay): tinh tai luc backend nhan (accepted_at), chua co thi luc tao.
@@ -4108,6 +4132,13 @@ function Get-TikTokBusyTimes {
         elseif ($st -in $active -or ($st -eq 'succeeded' -and ($t -gt $Now -or $today))) { $busy.Add($t) }
     }
     return $busy.ToArray()
+}
+
+function Get-TikTokAccountBusyTimes {
+    # S7: gio ban cua mot tai khoan tren MOI kho (doc moi reup-status.json cua tung thu muc kho, hoac $MetaByRoot da co), loai trung theo key.
+    param([string]$Account, [DateTime]$Now = [DateTime]::Now, [object[]]$ExtraEntries = @(), $MetaByRoot = $null)
+    if ($null -eq $MetaByRoot) { $MetaByRoot = Get-GalleryMetaByRoot }
+    return @(Get-TikTokBusyTimes -Metadata @($MetaByRoot.Values) -Account $Account -Now $Now -ExtraEntries $ExtraEntries)
 }
 
 function Get-NextFreeTikTokSlot {
@@ -4180,11 +4211,13 @@ function Set-TikTokSpreadTimes {
 
 function Get-TikTokAutoScheduleItems {
     # "Tự hẹn lịch" của kho tài khoản: video Chờ đăng của kho, KHÔNG có mục lịch sử nào, cũ nhất trước.
-    param([object[]]$Items, [string]$KhoId, $Metadata)
+    # $MetaByRoot: thu muc kho -> reup-status.json (moi video doc lich su o thu muc cua chinh no).
+    param([object[]]$Items, [string]$KhoId, $MetaByRoot)
     $out = New-Object 'System.Collections.Generic.List[object]'
     foreach ($it in @($Items)) {
         if (-not $it -or [string]$it.Kho -cne $KhoId -or (Get-GalleryBucket $it) -ne 'pending') { continue }
-        $p = if ($Metadata) { $Metadata.PSObject.Properties[[string]$it.Id] } else { $null }
+        $metadata = $(if ($MetaByRoot) { $MetaByRoot[[string]$it.Root] } else { $null })
+        $p = if ($metadata) { $metadata.PSObject.Properties[[string]$it.Id] } else { $null }
         if ($p -and @(@($p.Value.History) | Where-Object { $_ }).Count) { continue }
         $out.Add($it)
     }
@@ -4389,10 +4422,12 @@ function Show-TikTokPublishDialog {
     $c.FileLabel.Text=[IO.Path]::GetFileName($source)
     $state=@{Task=$null;SelectedAccount='';Entries=@();Tags=@(Read-TikTokHashtags);Ready=$false;Native=$false;SelectedDay=[DateTime]::Today;Month=[DateTime]::Today.AddDays(1-[DateTime]::Today.Day);Submitted=$false;FileSha='';Prefs=(Read-TikTokPrefs);Dirty=$false;Programmatic=$false;Libraries=@();VideoKho='';Chips=@()}
     # Kho data for the caption template / account preselect; failures are logged and the dialog works without them.
-    $metaSnap=$script:galleryMeta
+    # The video's folder IS its kho: history is read from / written to this folder; busy times for "next free slot" come from every kho (S7).
+    $state.VideoKhoAccount=''
     try{
         $state.Libraries=@((Get-KhoRegistry).libraries)
-        if($metaSnap){$vp=$metaSnap.PSObject.Properties[[string]$videoId];if($vp){$state.VideoKho=Get-KhoEffectiveId $vp.Value}}
+        $videoLib=Get-KhoByPath $outDir
+        if($videoLib){$state.VideoKho=[string]$videoLib.id;$state.VideoKhoAccount=[string]$videoLib.account}
     }catch{Write-FileLog ('WARN TikTok dialog kho info: '+$_.Exception.Message)}
     $updateSelection={
         $blocking=@('pending','queued','running','preparing')
@@ -4521,6 +4556,9 @@ function Show-TikTokPublishDialog {
         $key=([string]$state.SelectedAccount).ToLowerInvariant();$times=$null
         if($key -and $state.Prefs.times.ContainsKey($key)){$times=$state.Prefs.times[$key]}
         $state.Chips=@(Get-TikTokTimeChips $times)
+        # Khung gio da dat cho kho cua tai khoan (Quan ly kho) thay cho gio hay dung.
+        $slotLib=Get-KhoForAccount $state.SelectedAccount
+        if($slotLib -and @($slotLib.slots).Count){$state.Chips=@($slotLib.slots)}
         foreach($time in $state.Chips){$b=New-Object Windows.Controls.Button;$b.Content=$time;$b.Tag=$time;$b.Margin=[Windows.Thickness]::new(0,0,6,6);$b.Add_Click({param($sender,$eventArgs) $parts=([string]$sender.Tag).Split(':');$c.Hour.Text=$parts[0];$c.Minute.Text=$parts[1]}.GetNewClosure());[void]$c.TimePresets.Children.Add($b)}
     }.GetNewClosure()
     & $renderPresets
@@ -4536,8 +4574,7 @@ function Show-TikTokPublishDialog {
     $c.NextFree.Add_Click({
         if(-not $state.SelectedAccount){$c.ScheduleHint.Text='Chọn tài khoản trước.';return}
         try{
-            $meta=$metaSnap;if($null -eq $meta){$meta=Get-ReupMetadata -OutDir $outDir}
-            $busy=@(Get-TikTokBusyTimes -Metadata $meta -Account $state.SelectedAccount -ExtraEntries @($state.Entries))
+            $busy=@(Get-TikTokAccountBusyTimes -Account $state.SelectedAccount -ExtraEntries @($state.Entries))
             $slot=Get-NextFreeTikTokSlot -Favorites @($state.Chips) -Busy $busy
         }catch{Write-FileLog ('WARN TikTok next free slot: '+$_.Exception.Message);$c.Status.Text='Không đọc được lịch để tìm giờ trống: '+$_.Exception.Message;return}
         if($null -eq $slot){$c.ScheduleHint.Text='Các giờ yêu thích trong 10 ngày tới đều đã có bài hẹn. Chọn giờ khác bằng tay.';return}
@@ -4651,7 +4688,7 @@ function Show-TikTokPublishDialog {
             $state.Ready=$true
             if($c.Accounts.Children.Count){
                 # Order of preference: the account already chosen (refresh), the video's account kho, the last used account, then the first.
-                $want=@();if($state.SelectedAccount){$want+=$state.SelectedAccount};if(([string]$state.VideoKho).StartsWith('acct:')){$want+=([string]$state.VideoKho).Substring(5)};if($state.Prefs.lastAccount){$want+=$state.Prefs.lastAccount}
+                $want=@();if($state.SelectedAccount){$want+=$state.SelectedAccount};if($state.VideoKhoAccount){$want+=$state.VideoKhoAccount};if($state.Prefs.lastAccount){$want+=$state.Prefs.lastAccount}
                 $pre=$null
                 foreach($w in $want){$pre=@($c.Accounts.Children | Where-Object {$_.Tag.Username -ieq $w})[0];if($pre){break}}
                 if(-not $pre){$pre=$c.Accounts.Children[0]}
@@ -4665,7 +4702,9 @@ function Show-TikTokPublishDialog {
     & $calendar.Render
     & $refresh
     $timer.Start()
-    [void]$dlg.ShowDialog()
+    # Hop thoai dang giu video/thu muc: khong cho chuyen kho / xoa kho / don dep chay xen vao (Test-KhoQuiet).
+    $script:khoExclusive++
+    try { [void]$dlg.ShowDialog() } finally { $script:khoExclusive-- }
 }
 
 function Show-TikTokSpreadDialog {
@@ -4676,7 +4715,8 @@ function Show-TikTokSpreadDialog {
     if (-not (Test-TikTokEnabled)) { Show-Toast 'Chưa kết nối bộ đăng TikTok.' -Kind warning; return }
     if ($script:stopping) { Show-Toast 'Đợi tác vụ hiện tại dừng hẳn trước khi đăng video.' -Kind warning; return }
     if (-not $items.Count) { Show-Toast 'Chọn video trong Kho trước khi rải lịch.' -Kind warning; return }
-    $outDir = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath([string]$items[0].Path))
+    # Moi dong co thu muc kho rieng (lich su doc/ghi o do); gio ban, tran moi ngay va khoang cach tinh tren MOI kho cua tai khoan (S7).
+    $roots = @($items | ForEach-Object { [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath([string]$_.Path)) } | Select-Object -Unique)
     $markup = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Rải lịch đăng TikTok" Width="760" Height="820" MinWidth="600" MinHeight="460" WindowStartupLocation="CenterOwner" ShowInTaskbar="False" Background="{DynamicResource Surface0}" Foreground="{DynamicResource TextPrimary}" FontFamily="{DynamicResource FontUi}" FontSize="15" Language="vi-VN">
  <Grid Margin="24"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -4708,14 +4748,16 @@ function Show-TikTokSpreadDialog {
     if ($ownerWin -and $ownerWin.IsVisible) { $dlg.Owner = $ownerWin }
     $dlg.MaxHeight = [Math]::Max(460, [Windows.SystemParameters]::WorkArea.Height - 40)
     $c = @{}; foreach ($name in @('Sub', 'Accounts', 'Days', 'Cap', 'Spacing', 'Hours', 'Caption', 'Rows', 'Summary', 'Close', 'Stop', 'Confirm', 'Status')) { $c[$name] = $dlg.FindName($name) }
-    $state = @{ Task = $null; Ready = $false; Native = $false; Account = ''; Prefs = (Read-TikTokPrefs); Libraries = @(); Meta = $script:galleryMeta; Rows = @(); Unplaced = 0; Chips = @(); Busy = @(); Run = $null
+    $state = @{ Task = $null; Ready = $false; Native = $false; Account = ''; Prefs = (Read-TikTokPrefs); Libraries = @(); MetaByRoot = $null; PrepQueue = (New-Object System.Collections.Generic.Queue[string]); AccountsLoaded = $false; Rows = @(); Unplaced = 0; Chips = @(); Busy = @(); Run = $null
                 Dirty = $false; Programmatic = $false; Rendering = $false; Replan = $null; Done = $false }
     try { $state.Libraries = @((Get-KhoRegistry).libraries) } catch { Write-FileLog ('WARN Rải lịch kho: ' + $_.Exception.Message) }
     $c.Sub.Text = $items.Count.ToString() + ' video đã chọn. Mỗi video được gửi lên TikTok lần lượt và hẹn đúng giờ trong bảng dưới; TikTok giữ bài và tự đăng.'
 
+    try { $state.MetaByRoot = Get-GalleryMetaByRoot } catch { Write-FileLog ('WARN Rải lịch đọc lịch sử các kho: ' + $_.Exception.Message); $state.MetaByRoot = @{} }
     $rows = New-Object 'System.Collections.Generic.List[object]'
     foreach ($it in $items) {
-        $hist = @(); $meta = $state.Meta
+        $hist = @(); $itemRoot = Get-CanonicalPath ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath([string]$it.Path)))
+        $meta = $state.MetaByRoot[$itemRoot]
         if ($meta) { $p = $meta.PSObject.Properties[[string]$it.Id]; if ($p) { $hist = @(@($p.Value.History) | Where-Object { $_ }) } }
         $warn = Get-TikTokSpreadWarn -History $hist -Posted ([bool]$it.Posted)
         if (-not $warn -and (Test-TikTokTransferActive ([string]$it.Path))) { $warn = 'active' }
@@ -4724,7 +4766,7 @@ function Show-TikTokSpreadDialog {
             $ok = @($hist | Where-Object { [string]$_.status -eq 'succeeded' -and $_.publish_uncertain -ne $true -and [string]$_.username } | Select-Object -First 1)
             if ($ok.Count) { $other = '@' + [string]$ok[0].username }
         }
-        $rows.Add([pscustomobject]@{ Id = [string]$it.Id; Path = [string]$it.Path; Kho = [string]$it.Kho; Warn = $warn; Include = ($warn -eq ''); When = $null; Other = $other; History = $hist })
+        $rows.Add([pscustomobject]@{ Id = [string]$it.Id; Path = [string]$it.Path; Root = $itemRoot; Kho = [string]$it.Kho; Warn = $warn; Include = ($warn -eq ''); When = $null; Other = $other; History = $hist })
     }
     $state.Rows = $rows.ToArray()
 
@@ -4790,9 +4832,11 @@ function Show-TikTokSpreadDialog {
             $key = $state.Account.ToLowerInvariant()
             $times = $(if ($state.Prefs.times.ContainsKey($key)) { $state.Prefs.times[$key] } else { $null })
             $state.Chips = @(Get-TikTokTimeChips $times)
-            $state.Busy = @(Get-TikTokBusyTimes -Metadata $state.Meta -Account $state.Account)
+            $slotLib = Get-KhoForAccount $state.Account
+            if ($slotLib -and @($slotLib.slots).Count) { $state.Chips = @($slotLib.slots) }
+            $state.Busy = @(Get-TikTokAccountBusyTimes -Account $state.Account -MetaByRoot $state.MetaByRoot)
             $state.Unplaced = Set-TikTokSpreadTimes -Rows $state.Rows -Favorites $state.Chips -Busy $state.Busy -Days $days -DailyCap $cap -MinSpacingMinutes ($gap * 60)
-            $c.Hours.Text = 'Giờ yêu thích dùng để xếp: ' + ($state.Chips -join ', ') + ' (theo giờ bạn hay dùng cho @' + $state.Account + ').'
+            $c.Hours.Text = 'Giờ yêu thích dùng để xếp: ' + ($state.Chips -join ', ') + $(if ($slotLib -and @($slotLib.slots).Count) { ' (khung giờ đã đặt cho kho @' + $state.Account + ').' } else { ' (theo giờ bạn hay dùng cho @' + $state.Account + ').' })
             $c.Status.Text = ''
         } catch { Write-FileLog ('WARN Rải lịch xếp giờ: ' + $_.Exception.Message); $c.Status.Text = 'Không xếp được giờ: ' + $_.Exception.Message }
         & $render
@@ -4820,7 +4864,8 @@ function Show-TikTokSpreadDialog {
         $acct = [string]$state.Run.Account
         try { Add-TikTokHashtagsFromCaption ([string]$state.Run.Caption) -Account $acct } catch { Write-FileLog ('WARN Rải lịch hashtag: ' + $_.Exception.Message) }
         try { Register-TikTokPrefsSubmit -Username $acct -Time ([DateTime]$row.When).ToString('HH:mm') } catch { Write-FileLog ('WARN Rải lịch prefs: ' + $_.Exception.Message) }
-        try { [void](Add-TikTokLocalReceiptHistory $outDir ([string]$row.Id) @($row.History) $job.Record) } catch { Write-FileLog ('WARN Rải lịch lịch sử cục bộ: ' + $_.Exception.Message) }
+        # Lich su cuc bo ghi vao thu muc kho CUA CHINH video (job.Record.OutDir), khong phai kho cua dong dau tien.
+        try { [void](Add-TikTokLocalReceiptHistory ([string]$job.Record.OutDir) ([string]$row.Id) @($row.History) $job.Record) } catch { Write-FileLog ('WARN Rải lịch lịch sử cục bộ: ' + $_.Exception.Message) }
         try { Update-GalleryItemsFromMeta -Ids @([string]$row.Id) } catch { Write-FileLog ('WARN Rải lịch làm mới kho: ' + $_.Exception.Message) }
     }.GetNewClosure()
     $finish = {
@@ -4838,7 +4883,7 @@ function Show-TikTokSpreadDialog {
     $verifier = { param($row, $job, $proc) Get-TikTokSpreadSendResult -OutDir ([string]$job.Record.OutDir) -RequestId ([string]$job.Record.RequestId) -ExitCode $proc.ExitCode }
     $historyReader = {
         param($row)
-        $m = Get-ReupMetadata -OutDir $outDir
+        $m = Get-ReupMetadata -OutDir ([string]$row.Root)
         $p = $(if ($m) { $m.PSObject.Properties[[string]$row.Id] } else { $null })
         [pscustomobject]@{ History = @($(if ($p) { @($p.Value.History) | Where-Object { $_ } })); Posted = [bool]($p -and $p.Value.Posted); TransferActive = (Test-TikTokTransferActive ([string]$row.Path)) }
     }.GetNewClosure()
@@ -4849,28 +4894,38 @@ function Show-TikTokSpreadDialog {
                 $result = Complete-TikTokTask $task
                 $state.Native = [bool]$result.native_schedule
                 if ($result.changed) { try { Update-Gallery } catch { Write-FileLog ('WARN Rải lịch làm mới kho: ' + $_.Exception.Message) } }
-                try { $fresh = Get-ReupMetadata -OutDir $outDir; if ($fresh) { $state.Meta = $fresh } } catch { Write-FileLog ('WARN Rải lịch đọc siêu dữ liệu: ' + $_.Exception.Message) }
-                foreach ($r in $state.Rows) { Update-TikTokSpreadRowFromMeta -Row $r -Meta $state.Meta }
-                $c.Accounts.Children.Clear(); $group = 'SpreadAccount' + [Guid]::NewGuid().ToString('N')
-                $accounts = @($result.accounts | Where-Object has_valid_session)
-                foreach ($a in $accounts) {
-                    $b = New-Object Windows.Controls.RadioButton; $b.Style = $dlg.FindResource('SegButton'); $b.GroupName = $group; $b.Content = '@' + $a.username; $b.Tag = [string]$a.username
-                    $b.MinHeight = 48; $b.Padding = [Windows.Thickness]::new(16, 0, 16, 0); $b.Margin = [Windows.Thickness]::new(0, 0, 8, 8)
-                    $b.Add_Checked($accountChecked); [void]$c.Accounts.Children.Add($b)
+                try { $state.MetaByRoot = Get-GalleryMetaByRoot } catch { Write-FileLog ('WARN Rải lịch đọc siêu dữ liệu: ' + $_.Exception.Message) }
+                foreach ($r in $state.Rows) { Update-TikTokSpreadRowFromMeta -Row $r -Meta $state.MetaByRoot[[string]$r.Root] }
+                if (-not $state.AccountsLoaded) {
+                    $state.AccountsLoaded = $true
+                    $c.Accounts.Children.Clear(); $group = 'SpreadAccount' + [Guid]::NewGuid().ToString('N')
+                    $accounts = @($result.accounts | Where-Object has_valid_session)
+                    foreach ($a in $accounts) {
+                        $b = New-Object Windows.Controls.RadioButton; $b.Style = $dlg.FindResource('SegButton'); $b.GroupName = $group; $b.Content = '@' + $a.username; $b.Tag = [string]$a.username
+                        $b.MinHeight = 48; $b.Padding = [Windows.Thickness]::new(16, 0, 16, 0); $b.Margin = [Windows.Thickness]::new(0, 0, 8, 8)
+                        $b.Add_Checked($accountChecked); [void]$c.Accounts.Children.Add($b)
+                    }
+                    $state.Native = [bool]$result.native_schedule
+                    $state.Ready = $true
+                    if ($c.Accounts.Children.Count) {
+                        $want = @(); if ($Account) { $want += $Account }
+                        # Tai khoan cua kho: neu moi video nam trong cung mot kho co tai khoan thi chon san tai khoan do (S10).
+                        $khoAccounts = @($state.Rows | ForEach-Object { $k = $_.Kho; @($state.Libraries | Where-Object { [string]$_.id -ceq $k } | ForEach-Object { [string]$_.account }) } | Select-Object -Unique)
+                        if ($khoAccounts.Count -eq 1 -and $khoAccounts[0]) { $want += $khoAccounts[0] }
+                        if ($state.Prefs.lastAccount) { $want += $state.Prefs.lastAccount }
+                        $pre = $null
+                        foreach ($w in $want) { $pre = @($c.Accounts.Children | Where-Object { $_.Tag -ieq $w })[0]; if ($pre) { break } }
+                        if (-not $pre) { $pre = $c.Accounts.Children[0] }
+                        $pre.IsChecked = $true
+                        $c.Status.Text = $(if ($state.Native) { '' } else { 'Bộ đăng nền chưa hỗ trợ hẹn giờ trên TikTok. Cập nhật bộ đăng nền rồi khởi động lại.' })
+                    } else { $c.Status.Text = 'Chưa có tài khoản sẵn sàng. Mở Tài khoản / Lịch đăng để đăng nhập.' }
                 }
-                $state.Ready = $true
-                if ($c.Accounts.Children.Count) {
-                    $want = @(); if ($Account) { $want += $Account }
-                    $khos = @($state.Rows | ForEach-Object { $_.Kho } | Select-Object -Unique)
-                    if ($khos.Count -eq 1 -and ([string]$khos[0]).StartsWith('acct:')) { $want += ([string]$khos[0]).Substring(5) }
-                    if ($state.Prefs.lastAccount) { $want += $state.Prefs.lastAccount }
-                    $pre = $null
-                    foreach ($w in $want) { $pre = @($c.Accounts.Children | Where-Object { $_.Tag -ieq $w })[0]; if ($pre) { break } }
-                    if (-not $pre) { $pre = $c.Accounts.Children[0] }
-                    $pre.IsChecked = $true
-                    $c.Status.Text = $(if ($state.Native) { '' } else { 'Bộ đăng nền chưa hỗ trợ hẹn giờ trên TikTok. Cập nhật bộ đăng nền rồi khởi động lại.' })
-                } else { $c.Status.Text = 'Chưa có tài khoản sẵn sàng. Mở Tài khoản / Lịch đăng để đăng nhập.' }
                 & $state.Replan
+                # Con thu muc kho khac (video chon tu nhieu kho): lam moi lich su tung kho mot, roi xep lai.
+                if ($state.PrepQueue.Count) {
+                    try { $state.Task = Start-TikTokTask 'prepare' (Get-TikTokHistoryPayload ($state.PrepQueue.Dequeue())) }
+                    catch { Write-FileLog ('WARN Rải lịch làm mới kho khác: ' + $_.Exception.Message) }
+                }
             } catch { $c.Status.Text = $_.Exception.Message; Write-FileLog ('WARN Rải lịch chuẩn bị: ' + $_.Exception.Message); $state.Ready = $false }
         }
         if ($state.Run -and -not $state.Run.Finished) {
@@ -4917,9 +4972,13 @@ function Show-TikTokSpreadDialog {
     }.GetNewClosure())
     $c.Status.Text = 'Đang kiểm tra tài khoản…'
     & $render
-    try { $state.Task = Start-TikTokTask 'prepare' (Get-TikTokHistoryPayload $outDir) } catch { $c.Status.Text = $_.Exception.Message; Write-FileLog ('WARN Rải lịch: ' + $_.Exception.Message) }
+    try {
+        foreach ($r in @($roots | Select-Object -Skip 1)) { $state.PrepQueue.Enqueue([string]$r) }
+        $state.Task = Start-TikTokTask 'prepare' (Get-TikTokHistoryPayload ([string]$roots[0]))
+    } catch { $c.Status.Text = $_.Exception.Message; Write-FileLog ('WARN Rải lịch: ' + $_.Exception.Message) }
     $timer.Start()
-    [void]$dlg.ShowDialog()
+    $script:khoExclusive++
+    try { [void]$dlg.ShowDialog() } finally { $script:khoExclusive-- }
 }
 
 function Set-TikTokPostingUi {
@@ -5704,11 +5763,9 @@ function Set-Busy {
     # Nut chinh khong bi khoa: dang chay thi no la nut Dung (Update-PrimaryButton).
     foreach ($ctl in @($ui.BtnCheck, $ui.BtnInstallAllTools, $ui.BtnInstallScrcpy, $ui.BtnInstallAdb, $ui.BtnInstallYtdlp,
                        $ui.BtnInstallFfmpeg, $ui.BtnInstallWhisper, $ui.BtnOpenUninstall,
-                       $ui.TxtLinks, $ui.BtnPasteLinks, $ui.BtnImportLinks, $ui.BtnClearLinks, $ui.RbDupSkip, $ui.RbDupRedownload, $ui.BtnPick, $ui.CmbDownloadKho)) {
+                       $ui.TxtLinks, $ui.BtnPasteLinks, $ui.BtnImportLinks, $ui.BtnClearLinks, $ui.RbDupSkip, $ui.RbDupRedownload, $ui.CmbDownloadKho)) {
         if ($ctl) { $ctl.IsEnabled = -not $On }
     }
-    if ($On) { $script:txtOutWasEnabled = $ui.TxtOut.IsEnabled; $ui.TxtOut.IsEnabled = $false }
-    else { $ui.TxtOut.IsEnabled = $script:txtOutWasEnabled }
     if ($ui.ChkWatermark) { $ui.ChkWatermark.IsEnabled = -not $On }
     foreach ($logoControl in @($ui.TxtLogoPath,$ui.BtnPickLogo,$ui.BtnDefaultLogo,$ui.SldLogoSize,$ui.SldLogoFade,$ui.CmbLogoMode,$ui.CmbLogoPosition)) {
         if ($logoControl) { $logoControl.IsEnabled = -not $On }
@@ -7374,6 +7431,9 @@ function Start-KhoImportJob {
     $blocked = Test-KhoImportBlocked
     if ($blocked) { throw $blocked }
     if (-not (Get-KhoByPath $OutDir)) { throw 'Kho này không còn trong danh sách. Chọn lại kho.' }
+    # Mot lan chuyen kho dang do dang giu thu muc nay: khong chep vao luc do.
+    $journalBlock = Get-KhoJournalBlock @($OutDir)
+    if ($journalBlock) { throw $journalBlock }
     $iss = [Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
     foreach ($name in $script:khoImportFunctions) {
         $iss.Commands.Add([Management.Automation.Runspaces.SessionStateFunctionEntry]::new($name, (Get-Item -LiteralPath "function:$name").ScriptBlock.ToString()))
@@ -7428,45 +7488,62 @@ function Format-KhoImportSummary {
 }
 
 function Show-KhoManagerDialog {
+    # Quan ly kho (kho = thu muc that): chon kho, xem/mo thu muc, doi ten, gan tai khoan TikTok, mau caption/hashtag, khung gio dang,
+    # kho tai ve, them kho (thu muc), xoa kho (video vao Thung rac), them video tu thu muc khac.
     param([string]$Kho = '', [switch]$StartImport)
     $markup = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Quản lý kho" Width="780" Height="820" MinWidth="560" MinHeight="420" WindowStartupLocation="CenterOwner" ShowInTaskbar="False" Background="{DynamicResource Surface0}" Foreground="{DynamicResource TextPrimary}" FontFamily="{DynamicResource FontUi}" FontSize="15" Language="vi-VN">
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Quản lý kho" Width="780" Height="860" MinWidth="560" MinHeight="420" WindowStartupLocation="CenterOwner" ShowInTaskbar="False" Background="{DynamicResource Surface0}" Foreground="{DynamicResource TextPrimary}" FontFamily="{DynamicResource FontUi}" FontSize="15" Language="vi-VN">
  <Grid Margin="24">
   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
   <StackPanel>
    <TextBlock Text="Quản lý kho" Style="{DynamicResource TextHeading}" FontSize="25"/>
-   <TextBlock Text="Kho chỉ là nhãn gắn cho video: file video không bao giờ bị chuyển hay xóa." Style="{DynamicResource TextMutedStyle}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+   <TextBlock Text="Mỗi kho là một thư mục thật chứa video của nó. Chuyển video sang kho khác là chuyển file; xóa video hoặc xóa kho đưa file vào Thùng rác của Windows." Style="{DynamicResource TextMutedStyle}" TextWrapping="Wrap" Margin="0,4,0,0"/>
    <Border x:Name="WarnBox" Visibility="Collapsed" Background="{DynamicResource DangerSubtle}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" CornerRadius="14" Padding="12,8" Margin="0,10,0,0"><TextBlock x:Name="Warn" TextWrapping="Wrap" FontWeight="SemiBold"/></Border>
   </StackPanel>
   <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"><StackPanel Margin="0,14,10,0">
    <TextBlock Text="Chọn kho" FontWeight="ExtraBold"/>
    <WrapPanel x:Name="KhoChips" Margin="0,8,0,12"/>
    <Border Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource InkFaint}" BorderThickness="1" CornerRadius="16" Padding="14" Margin="0,0,0,16"><StackPanel>
-    <TextBlock x:Name="DetailTitle" FontWeight="ExtraBold" FontSize="17"/>
+    <TextBlock x:Name="DetailTitle" FontWeight="ExtraBold" FontSize="17" TextWrapping="Wrap"/>
+    <DockPanel Margin="0,6,0,0">
+     <Button x:Name="BtnOpenFolder" Content="Mở thư mục" DockPanel.Dock="Right" Margin="8,0,0,0" AutomationProperties.Name="Mở thư mục kho"/>
+     <TextBlock x:Name="PathText" Style="{DynamicResource TextMutedStyle}" TextWrapping="Wrap" VerticalAlignment="Center"/>
+    </DockPanel>
     <DockPanel Margin="0,8,0,12">
-     <Button x:Name="BtnDelete" Content="Xóa kho" DockPanel.Dock="Right" Margin="8,0,0,0" ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Xóa kho đang chọn"/>
+     <Button x:Name="BtnDelete" Content="Xóa kho…" DockPanel.Dock="Right" Margin="8,0,0,0" ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Xóa kho đang chọn"/>
      <Button x:Name="BtnRename" Content="Đổi tên" DockPanel.Dock="Right" Margin="8,0,0,0" ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Đổi tên kho"/>
      <TextBox x:Name="NameBox" MaxLength="60" MinHeight="44" VerticalContentAlignment="Center" ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Tên kho"/>
+    </DockPanel>
+    <TextBlock Text="Tài khoản TikTok của kho (để trống nếu kho không gắn tài khoản)" FontWeight="SemiBold"/>
+    <DockPanel Margin="0,6,0,10">
+     <Button x:Name="BtnSetAccount" Content="Lưu tài khoản" DockPanel.Dock="Right" Margin="8,0,0,0"/>
+     <TextBox x:Name="AccountBox" MaxLength="60" MinHeight="44" VerticalContentAlignment="Center" AutomationProperties.Name="Tài khoản TikTok của kho"/>
     </DockPanel>
     <TextBlock Text="Mẫu caption" FontWeight="SemiBold"/>
     <TextBox x:Name="CaptionBox" AcceptsReturn="True" TextWrapping="Wrap" MaxLength="2200" Height="92" VerticalScrollBarVisibility="Auto" Margin="0,6,0,10" AutomationProperties.Name="Mẫu caption"/>
     <TextBlock Text="Hashtag mặc định (cách nhau bằng dấu cách)" FontWeight="SemiBold"/>
     <TextBox x:Name="TagsBox" MinHeight="44" VerticalContentAlignment="Center" Margin="0,6,0,10" AutomationProperties.Name="Hashtag mặc định"/>
+    <TextBlock Text="Khung giờ đăng của kho (HH:mm, cách nhau bằng dấu cách; dùng cho Rải lịch)" FontWeight="SemiBold"/>
+    <TextBox x:Name="SlotsBox" MinHeight="44" VerticalContentAlignment="Center" Margin="0,6,0,10" AutomationProperties.Name="Khung giờ đăng"/>
     <StackPanel Orientation="Horizontal">
      <TextBlock Text="Báo sắp hết khi còn dưới" VerticalAlignment="Center"/>
      <TextBox x:Name="LowBox" Width="68" MinHeight="44" Padding="4,8" VerticalContentAlignment="Center" MaxLength="3" TextAlignment="Center" Margin="10,0,10,0" AutomationProperties.Name="Ngưỡng sắp hết"/>
      <TextBlock Text="video chờ đăng" VerticalAlignment="Center"/>
     </StackPanel>
     <WrapPanel Margin="0,12,0,0">
-     <Button x:Name="BtnSaveOpts" Content="Lưu mẫu và ngưỡng" Style="{DynamicResource BtnMint}" Margin="0,0,8,0"/>
-     <Button x:Name="BtnAutoSchedule" Content="Tự hẹn lịch…" Visibility="Collapsed" ToolTip="Xếp các video Chờ đăng chưa từng đăng của kho này vào giờ yêu thích trong vài ngày tới (xem trước, bấm xác nhận mới gửi)" AutomationProperties.Name="Tự hẹn lịch cho kho tài khoản"/>
+     <Button x:Name="BtnSaveOpts" Content="Lưu mẫu, giờ đăng và ngưỡng" Style="{DynamicResource BtnMint}" Margin="0,0,8,8"/>
+     <Button x:Name="BtnSetTarget" Content="Dùng làm kho tải về" Margin="0,0,8,8" ToolTip="Video tải về từ trang Nguồn sẽ lưu vào kho này" AutomationProperties.Name="Đặt làm kho tải về"/>
+     <Button x:Name="BtnAutoSchedule" Content="Tự hẹn lịch…" Visibility="Collapsed" Margin="0,0,8,8" ToolTip="Xếp các video Chờ đăng chưa từng đăng của kho này vào giờ yêu thích trong vài ngày tới (xem trước, bấm xác nhận mới gửi)" AutomationProperties.Name="Tự hẹn lịch cho kho tài khoản"/>
     </WrapPanel>
    </StackPanel></Border>
    <TextBlock Text="Thêm kho mới" FontWeight="ExtraBold"/>
-   <DockPanel Margin="0,8,0,16">
-    <Button x:Name="BtnAdd" Content="Thêm kho" DockPanel.Dock="Right" Margin="8,0,0,0"/>
-    <TextBox x:Name="AddBox" MaxLength="60" MinHeight="44" VerticalContentAlignment="Center" AutomationProperties.Name="Tên kho mới"/>
+   <TextBlock Text="Mỗi kho là một thư mục trên cùng ổ đĩa với các kho khác. Để trống ô thư mục: app tạo thư mục 'Kho &lt;tên&gt;' cạnh kho tải về." Style="{DynamicResource TextMutedStyle}" TextWrapping="Wrap" Margin="0,4,0,8"/>
+   <TextBox x:Name="AddBox" MaxLength="60" MinHeight="44" VerticalContentAlignment="Center" Margin="0,0,0,8" AutomationProperties.Name="Tên kho mới"/>
+   <DockPanel Margin="0,0,0,8">
+    <Button x:Name="BtnBrowse" Content="Chọn thư mục…" DockPanel.Dock="Right" Margin="8,0,0,0" AutomationProperties.Name="Chọn thư mục cho kho mới"/>
+    <TextBox x:Name="AddPathBox" MinHeight="44" VerticalContentAlignment="Center" AutomationProperties.Name="Thư mục kho mới"/>
    </DockPanel>
+   <Button x:Name="BtnAdd" Content="Thêm kho" HorizontalAlignment="Left" Margin="0,0,0,16"/>
    <StackPanel x:Name="AcctPanel" Visibility="Collapsed" Margin="0,0,0,16">
     <TextBlock Text="Thêm kho cho tài khoản TikTok" FontWeight="ExtraBold"/>
     <DockPanel Margin="0,8,0,4">
@@ -7477,7 +7554,7 @@ function Show-KhoManagerDialog {
     <TextBlock x:Name="AcctStatus" Style="{DynamicResource TextMutedStyle}" TextWrapping="Wrap"/>
    </StackPanel>
    <TextBlock Text="Thêm video từ thư mục" FontWeight="ExtraBold"/>
-   <TextBlock Text="Chép các file &lt;ID&gt;-3-hoan-chinh.mp4 từ một thư mục vào thư mục xuất và gán vào kho đang chọn. Video đã có thì bỏ qua; thư mục nguồn không bị đổi." Style="{DynamicResource TextMutedStyle}" TextWrapping="Wrap" Margin="0,4,0,8"/>
+   <TextBlock Text="Chép các file &lt;ID&gt;-3-hoan-chinh.mp4 từ một thư mục vào kho đang chọn. Video đã có thì bỏ qua; thư mục nguồn không bị đổi." Style="{DynamicResource TextMutedStyle}" TextWrapping="Wrap" Margin="0,4,0,8"/>
    <WrapPanel>
     <Button x:Name="BtnImport" Content="Thêm video từ thư mục…" Margin="0,0,8,8"/>
     <Button x:Name="BtnImportStop" Content="Dừng" Visibility="Collapsed" Margin="0,0,8,8"/>
@@ -7497,33 +7574,36 @@ function Show-KhoManagerDialog {
     if ($win -and $win.IsVisible) { $dlg.Owner = $win }
     $dlg.MaxHeight = [Math]::Max(460, [Windows.SystemParameters]::WorkArea.Height - 40)
     $c = @{}
-    foreach ($name in @('WarnBox', 'Warn', 'KhoChips', 'DetailTitle', 'BtnDelete', 'BtnRename', 'NameBox', 'CaptionBox', 'TagsBox', 'LowBox', 'BtnSaveOpts', 'BtnAutoSchedule', 'AddBox', 'BtnAdd',
+    foreach ($name in @('WarnBox', 'Warn', 'KhoChips', 'DetailTitle', 'PathText', 'BtnOpenFolder', 'BtnDelete', 'BtnRename', 'NameBox', 'AccountBox', 'BtnSetAccount', 'CaptionBox', 'TagsBox', 'SlotsBox', 'LowBox',
+                        'BtnSaveOpts', 'BtnSetTarget', 'BtnAutoSchedule', 'AddBox', 'AddPathBox', 'BtnBrowse', 'BtnAdd',
                         'AcctPanel', 'BtnAddAcct', 'BtnLoadAcct', 'CmbAcct', 'AcctStatus', 'BtnImport', 'BtnImportStop', 'ImportBar', 'ImportText', 'Close', 'Status')) { $c[$name] = $dlg.FindName($name) }
-    $state = @{ Selected = $(if ($Kho -and $script:khoKnown.ContainsKey($Kho)) { $Kho } else { 'default' }); Rendering = $false; Job = $null; AcctTask = $null; Fill = $null; Render = $null; Writable = (Test-KhoRegistryWritable); TikTok = (Test-TikTokEnabled) }
+    $firstKho = @(Get-KhoList)[0]
+    $state = @{ Selected = $(if ($Kho -and (Get-KhoById $Kho)) { $Kho } else { [string]$firstKho.id }); Rendering = $false; Job = $null; AcctTask = $null; Fill = $null; Render = $null; Writable = (Test-KhoRegistryWritable); TikTok = (Test-TikTokEnabled) }
 
     # Fill the detail panel for the selected kho and enable/disable the controls.
     $state.Fill = {
-        $lib = @((Get-KhoRegistry).libraries | Where-Object { $_.id -ceq $state.Selected })
-        if (-not $lib.Count) { $state.Selected = 'default'; $lib = @((Get-KhoRegistry).libraries | Where-Object { $_.id -ceq 'default' }) }
-        $lib = $lib[0]
-        $isDefault = ($lib.id -eq 'default')
+        $lib = Get-KhoById $state.Selected
+        if (-not $lib) { $lib = @(Get-KhoList)[0]; $state.Selected = [string]$lib.id }
         $importing = [bool]$state.Job
-        $c.DetailTitle.Text = [string]$lib.name + ' · ' + (Get-KhoTotalCount ([string]$lib.id)) + ' video' + $(if ($lib.account) { ' · tài khoản @' + $lib.account } else { '' })
+        $isTarget = ([string]$lib.id -ceq (Get-KhoDownloadTarget))
+        $only = (@(Get-KhoList).Count -le 1)
+        $c.DetailTitle.Text = [string]$lib.name + ' · ' + (Get-KhoTotalCount ([string]$lib.id)) + ' video' + $(if ($lib.account) { ' · tài khoản @' + $lib.account } else { '' }) + $(if ($isTarget) { ' · kho tải về' } else { '' })
+        $c.PathText.Text = [string]$lib.path
         $c.NameBox.Text = [string]$lib.name
+        $c.AccountBox.Text = $(if ($lib.account) { '@' + $lib.account } else { '' })
         $c.CaptionBox.Text = [string]$lib.caption
         $c.TagsBox.Text = (@($lib.hashtags) -join ' ')
+        $c.SlotsBox.Text = (@($lib.slots) -join ' ')
         $c.LowBox.Text = [string]$lib.lowStock
         $w = $state.Writable
-        $c.NameBox.IsEnabled = ($w -and -not $isDefault)
-        $c.BtnRename.IsEnabled = ($w -and -not $isDefault)
-        $c.BtnDelete.IsEnabled = ($w -and -not $isDefault -and -not $importing)
-        $c.BtnRename.ToolTip = $(if ($isDefault) { 'Kho chung luôn có, không đổi tên hay xóa được.' } else { $null })
-        $c.BtnDelete.ToolTip = $(if ($isDefault) { 'Kho chung luôn có, không đổi tên hay xóa được.' } else { 'Video trong kho này sẽ về Kho chung; không xóa file nào' })
-        $c.NameBox.ToolTip = $(if ($isDefault) { 'Kho chung luôn có, không đổi tên hay xóa được.' } else { $null })
-        foreach ($ctl in @($c.CaptionBox, $c.TagsBox, $c.LowBox, $c.BtnSaveOpts, $c.AddBox, $c.BtnAdd)) { $ctl.IsEnabled = $w }
+        $c.BtnRename.IsEnabled = $w
+        $c.BtnDelete.IsEnabled = ($w -and -not $only -and -not $importing)
+        $c.BtnDelete.ToolTip = $(if ($only) { 'Luôn phải có ít nhất một kho; không xóa được kho cuối cùng.' } else { 'Xóa kho và mọi video trong kho vào Thùng rác (khôi phục được từ Thùng rác)' })
+        foreach ($ctl in @($c.NameBox, $c.AccountBox, $c.BtnSetAccount, $c.CaptionBox, $c.TagsBox, $c.SlotsBox, $c.LowBox, $c.BtnSaveOpts, $c.AddBox, $c.AddPathBox, $c.BtnBrowse, $c.BtnAdd)) { $ctl.IsEnabled = $w }
+        $c.BtnSetTarget.IsEnabled = ($w -and -not $isTarget)
         $c.BtnAddAcct.IsEnabled = ($w -and $c.CmbAcct.Items.Count -gt 0)
         $c.BtnImport.IsEnabled = (-not $importing)
-        $c.BtnAutoSchedule.Visibility = $(if ($state.TikTok -and ([string]$lib.id).StartsWith('acct:')) { 'Visible' } else { 'Collapsed' })
+        $c.BtnAutoSchedule.Visibility = $(if ($state.TikTok -and $lib.account) { 'Visible' } else { 'Collapsed' })
         $c.BtnAutoSchedule.IsEnabled = (-not $importing)
     }.GetNewClosure()
 
@@ -7539,7 +7619,7 @@ function Show-KhoManagerDialog {
         try {
             $c.KhoChips.Children.Clear()
             $group = 'KhoMgr' + [Guid]::NewGuid().ToString('N')
-            foreach ($lib in @((Get-KhoRegistry).libraries)) {
+            foreach ($lib in @(Get-KhoList)) {
                 $rb = New-Object Windows.Controls.RadioButton
                 $rb.Style = $dlg.FindResource('SegButton'); $rb.GroupName = $group
                 $rb.Content = [string]$lib.name + ' (' + (Get-KhoTotalCount ([string]$lib.id)) + ')'
@@ -7558,22 +7638,49 @@ function Show-KhoManagerDialog {
 
     $c.BtnAdd.Add_Click({
         try {
-            $lib = New-Kho $c.AddBox.Text
-            $c.AddBox.Text = ''; $state.Selected = [string]$lib.id
+            $lib = New-Kho -Name $c.AddBox.Text -Path ([string]$c.AddPathBox.Text).Trim()
+            $c.AddBox.Text = ''; $c.AddPathBox.Text = ''; $state.Selected = [string]$lib.id
+            Update-Gallery
             & $afterChange
-            $c.Status.Text = "Đã thêm kho '$($lib.name)'."
+            $c.Status.Text = "Đã thêm kho '$($lib.name)' tại $($lib.path)."
         } catch { & $fail $_ }
+    }.GetNewClosure())
+    $c.BtnBrowse.Add_Click({
+        try {
+            $picker = New-Object System.Windows.Forms.FolderBrowserDialog
+            $picker.Description = 'Chọn (hoặc tạo) thư mục cho kho mới'
+            if ($picker.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $c.AddPathBox.Text = $picker.SelectedPath }
+        } catch { & $fail $_ }
+    }.GetNewClosure())
+    $c.BtnOpenFolder.Add_Click({
+        $lib = Get-KhoById $state.Selected
+        if ($lib) { Open-FolderSafe ([string]$lib.path) }
     }.GetNewClosure())
     $c.BtnRename.Add_Click({
         try {
             Rename-Kho -Id $state.Selected -Name $c.NameBox.Text
             Update-KhoCardsAfterRename -KhoId ([string]$state.Selected)
             & $afterChange
-            $c.Status.Text = 'Đã đổi tên kho.'
+            $c.Status.Text = 'Đã đổi tên kho (tên thư mục không đổi).'
         } catch { & $fail $_ }
     }.GetNewClosure())
-    # Enter: tên = đổi tên, ô thêm = thêm kho, hashtag/ngưỡng = lưu. Esc: đóng hộp thoại.
-    $enterClicks = @{ NameBox = 'BtnRename'; AddBox = 'BtnAdd'; TagsBox = 'BtnSaveOpts'; LowBox = 'BtnSaveOpts' }
+    $c.BtnSetAccount.Add_Click({
+        try {
+            Set-KhoAccount -Id $state.Selected -Account ([string]$c.AccountBox.Text)
+            & $afterChange
+            $c.Status.Text = $(if (([string]$c.AccountBox.Text).Trim()) { 'Đã gán tài khoản cho kho.' } else { 'Đã bỏ tài khoản khỏi kho.' })
+        } catch { & $fail $_ }
+    }.GetNewClosure())
+    $c.BtnSetTarget.Add_Click({
+        try {
+            Set-KhoDownloadTarget $state.Selected
+            Sync-OutDirFromKho
+            & $afterChange
+            $c.Status.Text = 'Video tải về từ trang Nguồn sẽ lưu vào kho này.'
+        } catch { & $fail $_ }
+    }.GetNewClosure())
+    # Enter: tên = đổi tên, tài khoản = lưu tài khoản, ô thêm = thêm kho, hashtag/giờ/ngưỡng = lưu. Esc: đóng hộp thoại.
+    $enterClicks = @{ NameBox = 'BtnRename'; AccountBox = 'BtnSetAccount'; AddBox = 'BtnAdd'; AddPathBox = 'BtnAdd'; TagsBox = 'BtnSaveOpts'; SlotsBox = 'BtnSaveOpts'; LowBox = 'BtnSaveOpts' }
     foreach ($boxName in $enterClicks.Keys) {
         $target = $c[$enterClicks[$boxName]]
         $c[$boxName].Add_KeyDown({
@@ -7590,32 +7697,42 @@ function Show-KhoManagerDialog {
     }.GetNewClosure())
     $c.BtnDelete.Add_Click({
         try {
-            $lib = @((Get-KhoRegistry).libraries | Where-Object { $_.id -ceq $state.Selected })
-            if (-not $lib.Count -or $lib[0].id -eq 'default') { return }
-            if (-not (Confirm-KhoDelete -Owner $dlg -Name ([string]$lib[0].name))) { return }
-            $moved = Remove-KhoAndRefresh -Id ([string]$lib[0].id)
-            $state.Selected = 'default'
-            & $afterChange
-            $c.Status.Text = "Đã xóa kho '$($lib[0].name)'; $moved video về Kho chung. Không có file nào bị xóa."
+            $lib = Get-KhoById $state.Selected
+            if (-not $lib) { return }
+            $name = [string]$lib.name; $count = Get-KhoTotalCount ([string]$lib.id)
+            if (-not (Confirm-KhoDelete -Owner $dlg -Name $name -Count $count)) { return }
+            $r = Remove-KhoAndRefresh -Id ([string]$lib.id)
+            if ($r.Success) {
+                $state.Selected = [string]@(Get-KhoList)[0].id
+                & $afterChange
+                $c.Status.Text = "Đã xóa kho '$name' và $($r.Deleted) video vào Thùng rác." + $(if ($r.FolderRecycled) { ' Thư mục kho cũng vào Thùng rác.' } else { ' Thư mục kho được giữ lại trên ổ đĩa.' })
+            } else {
+                & $afterChange
+                $why = [string]$r.Why
+                if (@($r.Failed).Count) { $why += ' ' + (@($r.Failed | Select-Object -First 2 | ForEach-Object { "Reel #$($_.Id): $($_.Errors -join '; ')" }) -join ' | ') }
+                $c.Status.Text = $why
+                Write-FileLog "WARN Xóa kho '$name' chưa hoàn tất: $why"
+            }
         } catch { & $fail $_ }
     }.GetNewClosure())
     $c.BtnSaveOpts.Add_Click({
         try {
             $low = 0
             if (-not [int]::TryParse(([string]$c.LowBox.Text).Trim(), [ref]$low) -or $low -lt 0 -or $low -gt 999) { throw 'Ngưỡng sắp hết phải là số từ 0 đến 999.' }
-            Set-KhoOptions -Id $state.Selected -Caption ([string]$c.CaptionBox.Text) -Hashtags @(ConvertTo-KhoHashtagList $c.TagsBox.Text) -LowStock $low
+            $slots = @(([string]$c.SlotsBox.Text -split '[\s,;]+') | Where-Object { $_ })
+            Set-KhoOptions -Id $state.Selected -Caption ([string]$c.CaptionBox.Text) -Hashtags @(ConvertTo-KhoHashtagList $c.TagsBox.Text) -LowStock $low -Slots $slots
             & $state.Fill
-            $c.Status.Text = 'Đã lưu mẫu caption, hashtag và ngưỡng.'
+            $c.Status.Text = 'Đã lưu mẫu caption, hashtag, khung giờ đăng và ngưỡng.'
         } catch { & $fail $_ }
     }.GetNewClosure())
 
     $c.BtnAutoSchedule.Add_Click({
         try {
-            $lib = @((Get-KhoRegistry).libraries | Where-Object { $_.id -ceq $state.Selected })
-            if (-not $lib.Count -or -not ([string]$lib[0].id).StartsWith('acct:')) { return }
-            $cand = @(Get-TikTokAutoScheduleItems -Items @($script:galleryAll) -KhoId ([string]$lib[0].id) -Metadata $script:galleryMeta)
+            $lib = Get-KhoById $state.Selected
+            if (-not $lib -or -not [string]$lib.account) { return }
+            $cand = @(Get-TikTokAutoScheduleItems -Items @($script:galleryAll) -KhoId ([string]$lib.id) -MetaByRoot (Get-GalleryMetaByRoot))
             if (-not $cand.Count) { $c.Status.Text = 'Kho này không có video Chờ đăng nào chưa từng đăng.'; return }
-            Show-TikTokSpreadDialog -Items $cand -Account ([string]$lib[0].account) -Owner $dlg
+            Show-TikTokSpreadDialog -Items $cand -Account ([string]$lib.account) -Owner $dlg
             & $state.Render
         } catch { & $fail $_ }
     }.GetNewClosure())
@@ -7638,21 +7755,24 @@ function Show-KhoManagerDialog {
                 $state.Selected = [string]$lib.id
                 $c.CmbAcct.Items.Remove($sel)
                 if ($c.CmbAcct.Items.Count) { $c.CmbAcct.SelectedIndex = 0 }
+                Update-Gallery
                 & $afterChange
-                $c.Status.Text = "Đã thêm kho '$($lib.name)'."
+                $c.Status.Text = "Đã thêm kho '$($lib.name)' tại $($lib.path)."
             } catch { & $fail $_ }
         }.GetNewClosure())
     }
 
-    # Folder import (background runspace; progress polled by the timer below).
+    # Folder import (background runspace; progress polled by the timer below). The kho being imported into is reserved (importBusy).
     $c.BtnImport.Add_Click({
         $blocked = Test-KhoImportBlocked
         if ($blocked) { $c.Status.Text = $blocked; return }
         try {
+            $lib = Get-KhoById $state.Selected
+            if (-not $lib) { throw 'Chọn một kho trước.' }
             $picker = New-Object System.Windows.Forms.FolderBrowserDialog
             $picker.Description = 'Chọn thư mục chứa video đã làm xong (<ID>-3-hoan-chinh.mp4)'
             if ($picker.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
-            $state.Job = Start-KhoImportJob -SourceDir $picker.SelectedPath -KhoId $state.Selected -OutDir ([string]$ui.TxtOut.Text)
+            $state.Job = Start-KhoImportJob -SourceDir $picker.SelectedPath -OutDir ([string]$lib.path)
             $c.ImportBar.Visibility = 'Visible'; $c.ImportBar.Value = 0
             $c.BtnImportStop.Visibility = 'Visible'
             $c.ImportText.Text = 'Đang chuẩn bị…'; $c.Status.Text = ''
@@ -7668,10 +7788,10 @@ function Show-KhoManagerDialog {
             $task = $state.AcctTask; $state.AcctTask = $null
             try {
                 $accounts = @(Complete-TikTokTask $task | Where-Object { $_ -and [string]$_.username })
-                $have = @{}; foreach ($lib in @((Get-KhoRegistry).libraries)) { $have[[string]$lib.id] = $true }
+                $have = @{}; foreach ($lib in @(Get-KhoList)) { if ([string]$lib.account) { $have[([string]$lib.account).ToLowerInvariant()] = $true } }
                 $c.CmbAcct.Items.Clear()
                 foreach ($a in $accounts) {
-                    if ($have.ContainsKey((Get-KhoAccountId ([string]$a.username)))) { continue }
+                    if ($have.ContainsKey((ConvertTo-KhoUsername ([string]$a.username)).ToLowerInvariant())) { continue }
                     $ci = New-Object Windows.Controls.ComboBoxItem
                     $ci.Content = '@' + $a.username + $(if ($a.has_valid_session -eq $false) { ' (chưa đăng nhập)' } else { '' })
                     $ci.Tag = [string]$a.username
@@ -7971,7 +8091,7 @@ function Start-Engine {
             }
             $script:queue = @()
             $script:forceRetryRejected = $false
-            Restore-RedoOutDir
+            $script:queueOutDir = ''
         }
         Set-Busy $false
         Add-Line ("LỖI KHỞI ĐỘNG: $startError")
@@ -8109,6 +8229,13 @@ function Start-Link {
         Show-Toast 'Không có video đang chờ xử lý trong hàng đợi.' -Kind warning
         return
     }
+    if ([string]::IsNullOrWhiteSpace($script:queueOutDir) -or -not [IO.Path]::IsPathRooted($script:queueOutDir)) {
+        # Khong bao gio doan thu muc: hang doi nao cung phai co thu muc dich da chup luc bat dau.
+        Write-FileLog "ERR  Start-Link: queueOutDir trống ('$($script:queueOutDir)')" -Immediate
+        Show-Toast 'Không xác định được kho để lưu video. Đã dừng hàng đợi; chọn kho ở trang Nguồn rồi bấm Bắt đầu lại.' -Kind error
+        $script:queue = @(); Set-Busy $false; Update-ActionBar
+        return
+    }
     Clear-Player
     $script:currentStep = 0
     [void](Update-QueueRow -QueueIdx $script:idx -Changes @{ Status = 'running'; Step = 0; Message = 'Đang khởi động…'; SyncText = ''; SyncWarn = $false; ActionOverride = '' })
@@ -8127,7 +8254,7 @@ function Start-Link {
     $gifCustY  = if ($null -ne $script:gifCustomY -and ([string]$script:gifCustomY).Trim().Length -gt 0 -and [double]$script:gifCustomY -ge 0.0) { [double]$script:gifCustomY } else { -1.0 }
 
     $namedArgs = @{
-        OutDir             = $ui.TxtOut.Text;
+        OutDir             = [string]$script:queueOutDir;   # chup luc bat dau hang doi (kho tai ve) hoac thu muc cua video khi ghi am lai; khong doc lai TxtOut
         Watermark          = [bool]$ui.ChkWatermark.IsChecked;
         LogoFile           = $ui.TxtLogoPath.Text;
         LogoSize           = [int]$ui.SldLogoSize.Value;
@@ -8206,16 +8333,15 @@ function Start-RecordingAgain {
     }
     # The explicit retry is a one-item queue targeting the selected video's folder.
     # Existing files remain intact until the engine successfully publishes replacements.
-    # Doi thu muc xuat TAM cho muc redo: khong luu vao settings, khoi phuc khi muc ket thuc (Restore-RedoOutDir).
+    # Thu muc dich = chinh thu muc cua video (truyen thang cho engine); TxtOut / kho tai ve khong bi dong den.
     $redoDir = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($redoFile))
-    if (-not $script:redoRestoreOutDir) { $script:redoRestoreOutDir = [string]$ui.TxtOut.Text }
-    $wasLoading = $script:settingsLoading
-    $script:settingsLoading = $true
-    try { $ui.TxtOut.Text = $redoDir } finally { $script:settingsLoading = $wasLoading }
+    if ($script:khoMoveRunning -or $script:khoExclusive -gt 0) { Show-Toast 'Đang chuyển kho hoặc mở hộp thoại đăng/dọn dẹp. Thử lại sau.' -Kind warning; return }
+    $jBlock = Get-KhoJournalBlock @($redoDir)
+    if ($jBlock) { Show-Toast $jBlock -Kind warning; return }
+    $script:queueOutDir = $redoDir
     $script:queue = @('https://www.facebook.com/reel/' + $match.Groups[1].Value + '/')
     $script:idx = 0; $script:giu = 0; $script:bo = 0; $script:loi = 0; $script:chuaXN = 0; $script:boTruoc = 0; $script:skipExisting = 0; $script:queueFinalizedIdx = -1
     $script:failedLinks = @(); $script:lastCompletedOut = $redoFile
-    $script:queueKhoId = $null   # record again never assigns a kho
     # Ghi am lai la yeu cau ro rang cua nguoi dung: bo qua lich su loai cho link nay (CONTRACT §2).
     $script:forceRetryRejected = $true
     # Dong danh dau Origin=redo: nut "Thu lai" se chay lai dung luong Ghi am lai (G-R4).
@@ -8228,10 +8354,13 @@ function Start-RecordingAgain {
 function Start-Reedit {
     if ($script:ps) { return }
     if ($script:importBusy) { Show-Toast 'Đang thêm video từ thư mục — hãy đợi xong rồi sửa video.' -Kind warning; return }
+    if ($script:khoMoveRunning -or $script:khoExclusive -gt 0) { Show-Toast 'Đang chuyển kho hoặc mở hộp thoại đăng/dọn dẹp. Thử lại sau.' -Kind warning; return }
     if (-not $script:lastOut -or -not (Test-Path -LiteralPath $script:lastOut)) {
         Show-Toast 'Chọn video đã xuất trong Kho trước khi sửa lại.' -Kind warning
         return
     }
+    $jBlock = Get-KhoJournalBlock @([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath([string]$script:lastOut)))
+    if ($jBlock) { Show-Toast $jBlock -Kind warning; return }
 
     $posIdx = if ($ui.CmbLogoPosition -and $ui.CmbLogoPosition.SelectedIndex -ge 0 -and $ui.CmbLogoPosition.SelectedIndex -le 4) { $ui.CmbLogoPosition.SelectedIndex } else { [int]$script:logoLastPresetIdx }
     $gifPosIdx = if ($ui.CmbGifPosition -and $ui.CmbGifPosition.SelectedIndex -ge 0 -and $ui.CmbGifPosition.SelectedIndex -le 4) { $ui.CmbGifPosition.SelectedIndex } else { [int]$script:gifLastPresetIdx }
@@ -8419,7 +8548,6 @@ function Register-QueueOutcome {
             $script:giu++
             Add-Log ("Đã lưu ($n/$total): $($Outcome.Video)") 'Success'
             if ($sync.Text) { Add-Log ("  " + $sync.Text) $(if ($sync.Warn) { 'Warning' } else { 'Muted' }) }
-            Add-QueueVideoToKho ([string]$Outcome.Video)
             $rowChanges.Status = 'ok'; $rowChanges.Step = 7; $rowChanges.Video = [string]$Outcome.Video
             $rowChanges.Message = 'Đã lưu ' + [IO.Path]::GetFileName([string]$Outcome.Video) + $(if ($Outcome.Message) { ' · ' + $Outcome.Message } else { '' })
         }
@@ -8477,19 +8605,9 @@ function Complete-QueueItem {
     Next-Link
 }
 
-function Restore-RedoOutDir {
-    # Tra lai thu muc xuat cua nguoi dung sau "Ghi am lai" (thanh cong/loi/dung), khong kich hoat luu settings.
-    if ($null -eq $script:redoRestoreOutDir) { return }
-    $orig = $script:redoRestoreOutDir
-    $script:redoRestoreOutDir = $null
-    $wasLoading = $script:settingsLoading
-    $script:settingsLoading = $true
-    try { $ui.TxtOut.Text = $orig } finally { $script:settingsLoading = $wasLoading }
-}
-
 function Stop-QueueSummary {
     param([switch]$Stopped)
-    Restore-RedoOutDir
+    $script:queueOutDir = ''
     Add-Log ''
     Add-Log (Format-QueueSummary -Stopped:$Stopped) $(if ($Stopped) { 'Warning' } else { 'Success' })
     foreach ($failedUrl in $script:failedLinks) { Add-Log ("Link chưa hoàn tất: $failedUrl") 'Warning' }
@@ -8552,7 +8670,7 @@ function Invoke-EngineTickError {
     }
     if ($script:mode -ne 'run' -or -not $script:queue -or $script:queue.Count -eq 0) { return }
     if ($WasStopping -or $script:cancelRequested) {
-        try { Stop-QueueSummary -Stopped } catch { $script:queue = @(); Restore-RedoOutDir; Set-Busy $false }
+        try { Stop-QueueSummary -Stopped } catch { $script:queue = @(); $script:queueOutDir = ''; Set-Busy $false }
         return
     }
     $reason = $msg
@@ -8572,7 +8690,7 @@ function Invoke-EngineTickError {
     }
     if (-not $script:ps -and $script:queue -and $script:queue.Count -gt 0) {
         foreach ($pendingUrl in @($script:queue | Select-Object -Skip ($script:idx + 1))) { Add-Log ("Chưa khởi động: $pendingUrl") 'Warning' }
-        try { Stop-QueueSummary -Stopped } catch { $script:queue = @(); Restore-RedoOutDir; Set-Busy $false }
+        try { Stop-QueueSummary -Stopped } catch { $script:queue = @(); $script:queueOutDir = ''; Set-Busy $false }
     }
 }
 
@@ -8598,7 +8716,7 @@ function Invoke-EngineTick {
                 if ($script:mode -eq 'run' -and $script:queue -and $script:queue.Count -gt 0) { Stop-QueueSummary -Stopped }
                 $script:queue = @()
                 $script:forceRetryRejected = $false
-                Restore-RedoOutDir
+                $script:queueOutDir = ''
                 try { Update-Gallery } catch { Add-Log 'Không cập nhật được kho sau khi dừng; các file đã lưu vẫn được giữ nguyên.' 'Warning' }
                 $ui.PanelRev.Visibility = 'Collapsed'
                 if ($ui.TxtStat -and $script:mode -ne 'run') { $ui.TxtStat.Text = 'Đã dừng theo yêu cầu'; $ui.TxtStat.Foreground = (Get-Brush 'WarningText') }
@@ -8854,7 +8972,7 @@ $ui.CmbDownloadKho.Add_SelectionChanged({
     if ($script:updatingCombo) { return }
     $sel = $ui.CmbDownloadKho.SelectedItem
     if (-not $sel) { return }
-    try { Set-KhoDownloadTarget ([string]$sel.Tag) }
+    try { Set-KhoDownloadTarget ([string]$sel.Tag); Sync-OutDirFromKho }
     catch {
         Add-Log "Không lưu được kho tải về: $($_.Exception.Message)" 'Danger'
         Show-Toast ('Không lưu được kho tải về: ' + (Get-FriendlyError $_.Exception.Message)) -Kind error
@@ -8992,44 +9110,77 @@ function Format-Bytes {
 }
 
 function Get-LegacyIntermediateFiles {
-    # File -1/-2 cua ban cu con nam o GOC thu muc xuat (khong tu xoa/di chuyen; chi liet ke).
+    # File -1/-2 cua ban cu con nam o GOC mot thu muc kho (khong tu xoa/di chuyen; chi liet ke).
     param([string]$OutDir)
     if ([string]::IsNullOrWhiteSpace($OutDir) -or -not [System.IO.Directory]::Exists($OutDir)) { return @() }
     $di = [System.IO.DirectoryInfo]::new($OutDir)
     return @($di.GetFiles() | Where-Object { $_.Name -match '-1-video-goc\.mp4$' -or $_.Name -match '-2-am-thanh-tho\.m4a$' })
 }
 
-function Get-CacheSummary {
-    param([string]$OutDir)
-    $r = [pscustomobject]@{ CacheDir = ''; CacheExists = $false; CacheFiles = 0; CacheBytes = [double]0; ReeditCount = 0
-                            LegacyFiles = @(); LegacyBytes = [double]0; LegacyThumbs = '' }
-    if ([string]::IsNullOrWhiteSpace($OutDir)) { return $r }
-    $r.CacheDir = Get-ReelCacheDir $OutDir
-    if ([System.IO.Directory]::Exists($r.CacheDir)) {
-        $r.CacheExists = $true
-        $sources = 0
-        foreach ($f in [System.IO.DirectoryInfo]::new($r.CacheDir).GetFiles('*', [System.IO.SearchOption]::AllDirectories)) {
-            if ($f.FullName.StartsWith((Join-Path $r.CacheDir 'tiktok-posts') + '\', [StringComparison]::OrdinalIgnoreCase)) { continue }
-            $r.CacheFiles++; $r.CacheBytes += $f.Length
-            if ($f.Name -match '-1-video-goc\.mp4$' -and $f.DirectoryName -eq $r.CacheDir) { $sources++ }
-        }
-        $r.ReeditCount = $sources
+function Get-CacheScope {
+    # Pham vi don cache / file cu / Don o: kho dang chon o trang Kho (mot kho) hoac tat ca kho. Luon noi ro pham vi trong chu hien cho nguoi dung.
+    # Tra ve @{ Roots = @(thu muc kho); Label; Single }.
+    $libs = @((Get-KhoRegistry).libraries)
+    if ($script:filterKho -and [string]$script:filterKho -ne 'all') {
+        $one = @($libs | Where-Object { [string]$_.id -ceq [string]$script:filterKho })
+        if ($one.Count) { return @{ Roots = @([string]$one[0].path); Label = "kho '$($one[0].name)'"; Single = $true } }
     }
-    $r.LegacyFiles = @(Get-LegacyIntermediateFiles $OutDir)
-    foreach ($f in $r.LegacyFiles) { $r.LegacyBytes += $f.Length }
-    $oldThumbs = Join-Path $OutDir '.thumbs'
-    if ([System.IO.Directory]::Exists($oldThumbs)) { $r.LegacyThumbs = $oldThumbs }
+    $label = $(if ($libs.Count -eq 1) { "kho '$($libs[0].name)'" } else { "tất cả $($libs.Count) kho" })
+    return @{ Roots = @($libs | ForEach-Object { [string]$_.path }); Label = $label; Single = $false }
+}
+
+function Get-KhoJournalPaths {
+    # Duong dan day du cua MOI file ma mot nhat ky chuyen kho dang ton tai nhac toi (nguon va dich). Don dep khong bao gio dung toi chung.
+    # Tra ve $null khi co nhat ky khong doc duoc: khi do moi thao tac don dep phai tu choi.
+    $set = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($e in @(Read-KhoJournals)) {
+        if (-not $e.Journal) { return $null }
+        foreach ($r in @($e.Journal.renames)) {
+            foreach ($p in @($r.src, $r.dst)) { if ($p) { [void]$set.Add([IO.Path]::GetFullPath([string]$p)) } }
+        }
+    }
+    return , $set
+}
+
+function Get-CacheSummary {
+    # Tong hop .cache (tru tiktok-posts va file ma nhat ky chuyen kho nhac toi), file -1/-2 cu o goc va .thumbs cu cua cac thu muc kho trong $Roots.
+    param([string[]]$Roots)
+    $r = [pscustomobject]@{ CacheDirs = @(); CacheExists = $false; CacheFiles = 0; CacheBytes = [double]0; ReeditCount = 0
+                            LegacyFiles = @(); LegacyBytes = [double]0; LegacyThumbs = @() }
+    $roots = @(@($Roots) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if (-not $roots.Count) { return $r }
+    $protected = Get-KhoJournalPaths
+    $dirs = New-Object System.Collections.Generic.List[string]; $legacy = New-Object System.Collections.Generic.List[object]; $thumbs = New-Object System.Collections.Generic.List[string]
+    foreach ($root in $roots) {
+        $cacheDir = Get-ReelCacheDir $root
+        if ([System.IO.Directory]::Exists($cacheDir)) {
+            $r.CacheExists = $true; $dirs.Add($cacheDir)
+            $posts = (Join-Path $cacheDir 'tiktok-posts') + '\'
+            foreach ($f in [System.IO.DirectoryInfo]::new($cacheDir).GetFiles('*', [System.IO.SearchOption]::AllDirectories)) {
+                if ($f.FullName.StartsWith($posts, [StringComparison]::OrdinalIgnoreCase)) { continue }
+                if ($protected -and $protected.Contains($f.FullName)) { continue }
+                $r.CacheFiles++; $r.CacheBytes += $f.Length
+                if ($f.Name -match '-1-video-goc\.mp4$' -and $f.DirectoryName -eq $cacheDir) { $r.ReeditCount++ }
+            }
+        }
+        foreach ($f in @(Get-LegacyIntermediateFiles $root)) { $legacy.Add($f); $r.LegacyBytes += $f.Length }
+        $oldThumbs = Join-Path $root '.thumbs'
+        if ([System.IO.Directory]::Exists($oldThumbs)) { $thumbs.Add($oldThumbs) }
+    }
+    $r.CacheDirs = $dirs.ToArray(); $r.LegacyFiles = $legacy.ToArray(); $r.LegacyThumbs = $thumbs.ToArray()
     return $r
 }
 
 function Update-CacheInfo {
     if (-not $ui.TxtCacheInfo) { return }
     try {
-        $s = Get-CacheSummary ([string]$ui.TxtOut.Text)
+        $scope = Get-CacheScope
+        $s = Get-CacheSummary $scope.Roots
+        $head = "Phạm vi: $($scope.Label) (đổi bằng ô chọn kho ở trang Kho)"
         $cacheText = if ($s.CacheExists) { ".cache: $($s.CacheFiles) file · $(Format-Bytes $s.CacheBytes) · sửa lại được $($s.ReeditCount) video" } else { '.cache: chưa có (video mới sẽ cất file gốc vào đây)' }
-        $legacyText = if ($s.LegacyFiles.Count) { "File trung gian cũ ở thư mục xuất: $($s.LegacyFiles.Count) file · $(Format-Bytes $s.LegacyBytes)" } else { 'Không có file trung gian cũ ở thư mục xuất.' }
-        $ui.TxtCacheInfo.Text = $cacheText + "`n" + $legacyText
-        if ($ui.BtnCleanLegacy) { $ui.BtnCleanLegacy.IsEnabled = [bool]($s.LegacyFiles.Count -or $s.LegacyThumbs) }
+        $legacyText = if ($s.LegacyFiles.Count) { "File trung gian cũ ở thư mục kho: $($s.LegacyFiles.Count) file · $(Format-Bytes $s.LegacyBytes)" } else { 'Không có file trung gian cũ ở thư mục kho.' }
+        $ui.TxtCacheInfo.Text = $head + "`n" + $cacheText + "`n" + $legacyText
+        if ($ui.BtnCleanLegacy) { $ui.BtnCleanLegacy.IsEnabled = [bool]($s.LegacyFiles.Count -or $s.LegacyThumbs.Count) }
         if ($ui.BtnClearCache) { $ui.BtnClearCache.IsEnabled = ($s.CacheFiles -gt 0) }
     } catch {
         $ui.TxtCacheInfo.Text = 'Không đọc được dung lượng .cache: ' + $_.Exception.Message
@@ -9038,7 +9189,12 @@ function Update-CacheInfo {
 }
 
 function Test-CacheActionBlocked {
+    # Don dep (cache, file cu, Don o) tu choi khi ung dung dang ban, dang chuyen kho, hoac mot nhat ky chuyen kho dang do con giu cac thu muc nay.
+    param([string[]]$Roots = @())
     if (Test-AppBusy) { Show-Toast 'Đang xử lý — hãy đợi hàng đợi hoặc tác vụ hoàn tất rồi dọn.' -Kind warning; return $true }
+    if ($script:khoMoveRunning -or $script:khoExclusive -gt 0) { Show-Toast 'Đang chuyển kho hoặc mở hộp thoại đăng/dọn dẹp — thử lại sau.' -Kind warning; return $true }
+    $block = Get-KhoJournalBlock @($Roots)
+    if ($block) { Show-Toast $block -Kind warning; return $true }
     return $false
 }
 
@@ -9048,105 +9204,124 @@ function Release-PlayerFromCache {
     try {
         if ($ui.Player -and $ui.Player.Source -and $ui.Player.Source.IsFile) {
             $src = [IO.Path]::GetFullPath($ui.Player.Source.LocalPath)
-            $root = [IO.Path]::GetFullPath($CacheDir).TrimEnd('\') + '\'
-            if ($src.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { Clear-Player }
+            $cacheRoot = [IO.Path]::GetFullPath($CacheDir).TrimEnd('\') + '\'
+            if ($src.StartsWith($cacheRoot, [StringComparison]::OrdinalIgnoreCase)) { Clear-Player }
         }
     } catch { Write-FileLog "WARN Release-PlayerFromCache: $($_.Exception.Message)" }
 }
 
 function Invoke-CleanLegacyFiles {
-    # Quyet dinh 2: dem file -1/-2 cu o goc; hop thoai 2 lua chon (mac dinh: chuyen vao .cache), Huy la nut mac dinh.
-    if (Test-CacheActionBlocked) { return }
-    $outDir = [string]$ui.TxtOut.Text
-    $s = Get-CacheSummary $outDir
-    if (-not $s.LegacyFiles.Count -and -not $s.LegacyThumbs) { Show-Toast 'Không có file trung gian cũ nào ở thư mục xuất.' -Kind info; Update-CacheInfo; return }
-    $msg = "Thư mục xuất có $($s.LegacyFiles.Count) file trung gian cũ (-1 video gốc, -2 âm thanh) · $(Format-Bytes $s.LegacyBytes).`r`n$outDir" +
-        $(if ($s.LegacyThumbs) { "`r`n`r`nThư mục .thumbs cũ (ảnh thu nhỏ, tự tạo lại) cũng sẽ được dọn." } else { '' }) +
+    # Quyet dinh 2: dem file -1/-2 cu o goc cac kho trong pham vi; hop thoai 2 lua chon (mac dinh: chuyen vao .cache cua CHINH kho do), Huy la nut mac dinh.
+    $scope = Get-CacheScope
+    if (Test-CacheActionBlocked $scope.Roots) { return }
+    $s = Get-CacheSummary $scope.Roots
+    if (-not $s.LegacyFiles.Count -and -not $s.LegacyThumbs.Count) { Show-Toast "Không có file trung gian cũ nào ở $($scope.Label)." -Kind info; Update-CacheInfo; return }
+    $msg = "Phạm vi: $($scope.Label)`r`nCó $($s.LegacyFiles.Count) file trung gian cũ (-1 video gốc, -2 âm thanh) · $(Format-Bytes $s.LegacyBytes) ở gốc thư mục kho." +
+        $(if ($s.LegacyThumbs.Count) { "`r`n`r`nThư mục .thumbs cũ (ảnh thu nhỏ, tự tạo lại) cũng sẽ được dọn." } else { '' }) +
         "`r`n`r`nChọn cách dọn:"
     $choice = Show-ChoiceDialog -Title 'Dọn file trung gian cũ?' -Message $msg -ConfirmText 'Dọn' -Kind info `
         -Choices @('Chuyển vào .cache (vẫn sửa lại được)', 'Xóa vĩnh viễn (không sửa lại logo/GIF được nữa)') -Default 0
     if ($choice -lt 0) { return }
-    $cacheDir = Get-ReelCacheDir $outDir
-    Release-PlayerFromCache $cacheDir
-    $moved = 0; $deleted = 0; $skipped = 0; $failed = 0; $freed = [double]0
-    if ($choice -eq 0) {
-        try {
-            $created = -not [System.IO.Directory]::Exists($cacheDir)
-            [void][System.IO.Directory]::CreateDirectory($cacheDir)
-            if ($created) {
-                try { [System.IO.File]::SetAttributes($cacheDir, [System.IO.FileAttributes]::Directory -bor [System.IO.FileAttributes]::Hidden) }
-                catch { Add-Log "Không đặt được thuộc tính ẩn cho .cache: $($_.Exception.Message)" 'Warning' }
+    # Tu luc xac nhan toi luc ket thuc khong co chuyen kho / hop thoai khac chen vao.
+    if (Test-CacheActionBlocked $scope.Roots) { return }
+    $script:khoExclusive++
+    try {
+        foreach ($cd in @($s.LegacyFiles | ForEach-Object { Get-ReelCacheDir ([string]$_.DirectoryName) } | Select-Object -Unique)) { Release-PlayerFromCache $cd }
+        $moved = 0; $deleted = 0; $skipped = 0; $failed = 0; $freed = [double]0
+        foreach ($f in $s.LegacyFiles) {
+            try {
+                if ($choice -eq 0) {
+                    $cacheDir = Get-ReelCacheDir ([string]$f.DirectoryName)
+                    Initialize-KhoCacheDir $cacheDir
+                    $dest = Join-Path $cacheDir $f.Name
+                    # Khong ghi de ban trong .cache (co the la ban moi hon do engine tao).
+                    if ([System.IO.File]::Exists($dest)) { $skipped++; Add-Log "Giữ nguyên $($f.Name): .cache đã có file cùng tên." 'Warning'; continue }
+                    [System.IO.File]::Move($f.FullName, $dest)
+                    $moved++
+                } else {
+                    $len = $f.Length
+                    [System.IO.File]::Delete($f.FullName)
+                    $deleted++; $freed += $len
+                }
+            } catch {
+                $failed++
+                Add-Log "Không dọn được $($f.Name): $($_.Exception.Message)" 'Danger'
             }
-        } catch {
-            Add-Log "Không tạo được thư mục .cache: $($_.Exception.Message)" 'Danger'
-            Show-Toast 'Không tạo được thư mục .cache; chưa dọn gì.' -Kind error
-            return
         }
-    }
-    foreach ($f in $s.LegacyFiles) {
-        try {
-            if ($choice -eq 0) {
-                $dest = Join-Path $cacheDir $f.Name
-                # Khong ghi de ban trong .cache (co the la ban moi hon do engine dot 4 tao).
-                if ([System.IO.File]::Exists($dest)) { $skipped++; Add-Log "Giữ nguyên $($f.Name): .cache đã có file cùng tên." 'Warning'; continue }
-                [System.IO.File]::Move($f.FullName, $dest)
-                $moved++
-            } else {
-                $len = $f.Length
-                [System.IO.File]::Delete($f.FullName)
-                $deleted++; $freed += $len
-            }
-        } catch {
-            $failed++
-            Add-Log "Không dọn được $($f.Name): $($_.Exception.Message)" 'Danger'
+        foreach ($t in @($s.LegacyThumbs)) {
+            try { Remove-Item -LiteralPath $t -Recurse -Force -ErrorAction Stop }
+            catch { $failed++; Add-Log "Không xóa được thư mục .thumbs cũ '$t': $($_.Exception.Message)" 'Warning' }
         }
-    }
-    if ($s.LegacyThumbs) {
-        try { Remove-Item -LiteralPath $s.LegacyThumbs -Recurse -Force -ErrorAction Stop }
-        catch { $failed++; Add-Log "Không xóa được thư mục .thumbs cũ: $($_.Exception.Message)" 'Warning' }
-    }
-    $summary = if ($choice -eq 0) { "Đã chuyển $moved file vào .cache" } else { "Đã xóa $deleted file · giải phóng $(Format-Bytes $freed)" }
-    if ($skipped) { $summary += " · giữ nguyên $skipped file trùng tên" }
-    if ($failed) { $summary += " · $failed mục lỗi (xem Nhật ký)" }
-    Add-Log $summary $(if ($failed) { 'Warning' } else { 'Success' })
-    Show-Toast ($summary + '.') -Kind $(if ($failed) { 'warning' } else { 'success' })
+        $summary = if ($choice -eq 0) { "Đã chuyển $moved file vào .cache" } else { "Đã xóa $deleted file · giải phóng $(Format-Bytes $freed)" }
+        if ($skipped) { $summary += " · giữ nguyên $skipped file trùng tên" }
+        if ($failed) { $summary += " · $failed mục lỗi (xem Nhật ký)" }
+        Add-Log $summary $(if ($failed) { 'Warning' } else { 'Success' })
+        Show-Toast ($summary + '.') -Kind $(if ($failed) { 'warning' } else { 'success' })
+    } finally { $script:khoExclusive-- }
     Update-CacheInfo
     Update-Gallery
 }
 
+function Clear-KhoCacheDir {
+    # Xoa moi file trong <kho>\.cache TRU tiktok-posts (bien nhan = lich su ben vung) va file ma nhat ky chuyen kho dang do nhac toi,
+    # roi thu muc rong. Tiep tuc khi mot file loi. Tra ve @{ Deleted; Kept; Errors }.
+    param([string]$CacheDir, $Protected)
+    $r = @{ Deleted = 0; Kept = 0; Errors = New-Object System.Collections.Generic.List[string] }
+    if (-not [System.IO.Directory]::Exists($CacheDir)) { return $r }
+    $posts = (Join-Path $CacheDir 'tiktok-posts') + '\'
+    foreach ($f in [System.IO.DirectoryInfo]::new($CacheDir).GetFiles('*', [System.IO.SearchOption]::AllDirectories)) {
+        if ($f.FullName.StartsWith($posts, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        if ($Protected -and $Protected.Contains($f.FullName)) { $r.Kept++; continue }
+        try { [System.IO.File]::Delete($f.FullName); $r.Deleted++ }
+        catch { $r.Errors.Add("$($f.Name): $($_.Exception.Message)"); Write-FileLog "WARN Dọn cache không xóa được '$($f.FullName)': $($_.Exception.Message)" }
+    }
+    foreach ($d in @([System.IO.DirectoryInfo]::new($CacheDir).GetDirectories('*', [System.IO.SearchOption]::AllDirectories) | Sort-Object { $_.FullName.Length } -Descending)) {
+        if (($d.FullName + '\').StartsWith($posts, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        try { if (-not $d.GetFileSystemInfos().Count) { [System.IO.Directory]::Delete($d.FullName) } }
+        catch { Write-FileLog "WARN Dọn cache không xóa được thư mục '$($d.FullName)': $($_.Exception.Message)" }
+    }
+    try { if (-not [System.IO.DirectoryInfo]::new($CacheDir).GetFileSystemInfos().Count) { [System.IO.Directory]::Delete($CacheDir) } }
+    catch { Write-FileLog "WARN Dọn cache không xóa được '$CacheDir': $($_.Exception.Message)" }
+    return $r
+}
+
 function Invoke-ClearReeditCache {
-    # Xoa toan bo <thu muc xuat>\.cache sau xac nhan; noi ro se mat kha nang sua lai logo/GIF cho video cu.
-    if (Test-CacheActionBlocked) { return }
-    $outDir = [string]$ui.TxtOut.Text
-    $s = Get-CacheSummary $outDir
-    if (-not $s.CacheExists) { Show-Toast 'Chưa có thư mục .cache để dọn.' -Kind info; Update-CacheInfo; return }
-    $cacheDir = $s.CacheDir
-    $full = [IO.Path]::GetFullPath($cacheDir).TrimEnd('\')
-    $parent = [IO.Path]::GetFullPath($outDir).TrimEnd('\')
-    if (-not [string]::Equals([IO.Path]::GetDirectoryName($full), $parent, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($full) -ne $script:reelCacheName) {
-        Show-Toast 'Đường dẫn .cache không hợp lệ; không xóa.' -Kind error
-        return
+    # Xoa .cache cua cac kho trong pham vi sau xac nhan; noi ro se mat kha nang sua lai logo/GIF cho video cu.
+    $scope = Get-CacheScope
+    if (Test-CacheActionBlocked $scope.Roots) { return }
+    $s = Get-CacheSummary $scope.Roots
+    if (-not $s.CacheExists) { Show-Toast "Chưa có thư mục .cache nào ở $($scope.Label)." -Kind info; Update-CacheInfo; return }
+    foreach ($cd in $s.CacheDirs) {
+        $full = [IO.Path]::GetFullPath($cd).TrimEnd('\')
+        $okShape = ([IO.Path]::GetFileName($full) -ceq $script:reelCacheName) -and (@($scope.Roots | Where-Object { Test-SamePath ([IO.Path]::GetDirectoryName($full)) $_ }).Count -eq 1)
+        if (-not $okShape) { Show-Toast 'Đường dẫn .cache không hợp lệ; không xóa.' -Kind error; return }
     }
     $ok = Show-ConfirmDialog -Title 'Dọn cache sửa lại?' -Danger -ConfirmText 'Dọn cache' -Message (
-        "Xóa vĩnh viễn cache sửa lại trong:`r`n$cacheDir`r`n`r`n$($s.CacheFiles) file · $(Format-Bytes $s.CacheBytes)" +
+        "Xóa vĩnh viễn cache sửa lại của $($scope.Label):`r`n$(($s.CacheDirs) -join "`r`n")`r`n`r`n$($s.CacheFiles) file · $(Format-Bytes $s.CacheBytes)" +
         " (video gốc -1, âm thanh -2 và ảnh thu nhỏ).`r`n`r`nSau khi xóa, $($s.ReeditCount) video cũ sẽ KHÔNG sửa lại logo/GIF được nữa; " +
         "muốn sửa phải tải và ghi âm lại. Video hoàn chỉnh (-3) và biên nhận đăng TikTok được giữ nguyên.")
     if (-not $ok) { return }
-    Release-PlayerFromCache $cacheDir
+    if (Test-CacheActionBlocked $scope.Roots) { return }
+    $protected = Get-KhoJournalPaths
+    if ($null -eq $protected) { Show-Toast 'Có nhật ký chuyển kho không đọc được; chưa dọn gì.' -Kind warning; return }
+    $script:khoExclusive++
     try {
-        # Posting receipts are durable history, not disposable media cache.
-        foreach ($entry in @(Get-ChildItem -LiteralPath $cacheDir -Force | Where-Object Name -NE 'tiktok-posts')) {
-            Remove-Item -LiteralPath $entry.FullName -Recurse -Force -ErrorAction Stop
+        $deleted = 0; $errors = New-Object System.Collections.Generic.List[string]
+        foreach ($cd in $s.CacheDirs) {
+            Release-PlayerFromCache $cd
+            $one = Clear-KhoCacheDir -CacheDir $cd -Protected $protected
+            $deleted += $one.Deleted
+            foreach ($e in $one.Errors) { $errors.Add($e) }
         }
-        if (-not @(Get-ChildItem -LiteralPath $cacheDir -Force).Count) { Remove-Item -LiteralPath $cacheDir -Force -ErrorAction Stop }
-
         $script:probeCache = @{}; $script:thumbCache = @{}
-        Add-Log "Đã dọn cache sửa lại ($($s.CacheFiles) file · $(Format-Bytes $s.CacheBytes)): $cacheDir" 'Success'
-        Show-Toast "Đã dọn .cache · giải phóng $(Format-Bytes $s.CacheBytes)." -Kind success
-    } catch {
-        Add-Log "Không xóa hết .cache '$cacheDir': $($_.Exception.Message)" 'Danger'
-        Show-Toast "Không xóa hết .cache: $(Get-FriendlyError $_.Exception.Message)" -Kind error
-    }
+        if ($errors.Count) {
+            Add-Log "Không xóa hết .cache ($($errors.Count) lỗi): $($errors[0])" 'Danger'
+            Show-Toast "Đã xóa $deleted file nhưng $($errors.Count) file chưa xóa được: $(Get-FriendlyError $errors[0])" -Kind error
+        } else {
+            Add-Log "Đã dọn cache sửa lại của $($scope.Label) ($deleted file · $(Format-Bytes $s.CacheBytes))." 'Success'
+            Show-Toast "Đã dọn .cache · giải phóng $(Format-Bytes $s.CacheBytes)." -Kind success
+        }
+    } finally { $script:khoExclusive-- }
     if ($script:lastOut -and $ui.BtnReedit) { $ui.BtnReedit.IsEnabled = (-not $script:uiBusy -and (Test-ReeditInputs $script:lastOut)) }
     Update-CacheInfo
     Update-Gallery
@@ -9171,16 +9346,17 @@ function ConvertFrom-ManualPostedDate {
 
 function Get-KhoCleanupCandidates {
     # Don o: video co bai dang xac nhan MOI NHAT (hoac ngay danh dau thu cong) cu hon $Days ngay VA con file trung gian -1/-2
-    # (.cache hoac file cu o goc). Chi doc dia de xem file nao con. Khong bao gio tra -3.
-    # Gio dang = tiktok_schedule_time neu co, khong thi accepted_at; muc succeeded khong ro gio => bo video (khong doan tuoi).
-    param($Items, $Metadata, [int]$Days, [DateTime]$Now, [string]$OutDir, [string]$KhoId = 'all')
+    # (.cache hoac file cu o goc cua CHINH kho chua video). Chi doc dia de xem file nao con. Khong bao gio tra -3.
+    # $MetaByRoot: thu muc kho -> reup-status.json. Gio dang = tiktok_schedule_time neu co, khong thi accepted_at; muc succeeded khong ro gio => bo video.
+    param($Items, $MetaByRoot, [int]$Days, [DateTime]$Now, [string]$KhoId = 'all')
     $cutoff = $Now.AddDays(-$Days)
     $result = New-Object System.Collections.Generic.List[object]
     foreach ($it in @($Items)) {
         if ($null -eq $it -or -not [string]$it.Id) { continue }
         if ($KhoId -and $KhoId -ne 'all' -and [string]$it.Kho -cne $KhoId) { continue }
         $id = [string]$it.Id
-        $entry = if ($Metadata -and $Metadata.PSObject.Properties[$id]) { $Metadata.$id } else { $null }
+        $metadata = $(if ($MetaByRoot) { $MetaByRoot[[string]$it.Root] } else { $null })
+        $entry = if ($metadata -and $metadata.PSObject.Properties[$id]) { $metadata.$id } else { $null }
         if ($null -eq $entry) { continue }
         $times = New-Object System.Collections.Generic.List[DateTime]
         $unknown = $false
@@ -9198,25 +9374,25 @@ function Get-KhoCleanupCandidates {
         if ($unknown -or $times.Count -eq 0) { continue }
         $newest = ($times | Sort-Object -Descending | Select-Object -First 1)
         if ($newest -gt $cutoff) { continue }
-        $virtual = Join-Path $OutDir "$id-3-hoan-chinh.mp4"
-        $files = @(Get-ReelMediaFiles -VideoPath $virtual -Existing | Where-Object { $_.Kind -ne 'final' } |
+        $files = @(Get-ReelMediaFiles -VideoPath ([string]$it.Path) -Existing | Where-Object { $_.Kind -ne 'final' } |
             ForEach-Object { [pscustomobject]@{ Path = $_.Path; Leaf = $_.Leaf; Length = [double][IO.FileInfo]::new($_.Path).Length } })
         if (-not $files.Count) { continue }
         $bytes = [double]0; foreach ($f in $files) { $bytes += $f.Length }
-        $result.Add([pscustomobject]@{ Id = $id; Path = [string]$it.Path; Kho = [string]$it.Kho; PostedAt = $newest; Files = $files; Bytes = $bytes })
+        $result.Add([pscustomobject]@{ Id = $id; Path = [string]$it.Path; Kho = [string]$it.Kho; Root = [string]$it.Root; PostedAt = $newest; Files = $files; Bytes = $bytes })
     }
     return $result.ToArray()
 }
 
 function Remove-KhoCleanupFiles {
-    # Xoa -1/-2 cua cac ung vien. Bo qua video dang co luot chuyen TikTok chay. Tiep tuc khi mot file loi.
+    # Xoa -1/-2 cua cac ung vien. Bo qua video dang co luot chuyen TikTok chay va file ma nhat ky chuyen kho dang do nhac toi. Tiep tuc khi mot file loi.
     # Chi xoa dung file ten -1-video-goc.mp4 / -2-am-thanh-tho.m4a; -3, anh thu nho, .kidfby-publish-* khong bao gio bi cham.
-    param($Candidates)
+    param($Candidates, $Protected = $null)
     $r = @{ Deleted = 0; Failed = 0; Skipped = 0; Freed = [double]0; Errors = New-Object System.Collections.Generic.List[string] }
     foreach ($c in @($Candidates)) {
         if (Test-TikTokTransferActive -FilePath ([string]$c.Path)) { $r.Skipped++; Write-FileLog "Dọn ổ: bỏ qua $($c.Id) vì đang chuyển TikTok."; continue }
         foreach ($f in @($c.Files)) {
             if ($f.Leaf -notmatch '^.+-(1-video-goc\.mp4|2-am-thanh-tho\.m4a)$') { $r.Failed++; $r.Errors.Add("$($f.Leaf): không phải file trung gian"); continue }
+            if ($Protected -and $Protected.Contains([IO.Path]::GetFullPath([string]$f.Path))) { $r.Skipped++; Write-FileLog "Dọn ổ: giữ '$($f.Path)' vì một nhật ký chuyển kho đang nhắc tới."; continue }
             try {
                 Remove-Item -LiteralPath $f.Path -Force -ErrorAction Stop
                 $r.Deleted++; $r.Freed += $f.Length
@@ -9230,38 +9406,42 @@ function Remove-KhoCleanupFiles {
 }
 
 function Invoke-KhoCleanup {
-    if (Test-AppBusy) { Show-Toast 'Đang xử lý (hàng đợi, sửa lại hoặc nhập video) — đợi xong rồi dọn ổ.' -Kind warning; return }
-    $outDir = [string]$ui.TxtOut.Text
-    if ([string]::IsNullOrWhiteSpace($outDir)) { Show-Toast 'Chưa chọn thư mục xuất.' -Kind warning; return }
     $days = 0
     if (-not [int]::TryParse(([string]$ui.TxtCleanupDays.Text).Trim(), [ref]$days) -or $days -lt 7 -or $days -gt 365) {
         Show-Toast 'Số ngày phải từ 7 đến 365.' -Kind warning; return
     }
-    $scope = 'all'
+    $scopeId = 'all'; $scopeText = 'tất cả kho'
     if ($script:filterKho -and $script:filterKho -ne 'all') {
         $khoName = if ($script:khoNames -and $script:khoNames.ContainsKey($script:filterKho)) { [string]$script:khoNames[$script:filterKho] } else { [string]$script:filterKho }
         $pick = Show-ChoiceDialog -Title 'Dọn ổ: phạm vi' -Kind info -ConfirmText 'Tiếp tục' -Choices @("Chỉ kho đang chọn ($khoName)", 'Tất cả kho') -Default 0 `
             -Message "Chọn phạm vi tìm video đã đăng hơn $days ngày."
         if ($pick -lt 0) { return }
-        if ($pick -eq 0) { $scope = [string]$script:filterKho }
+        if ($pick -eq 0) { $scopeId = [string]$script:filterKho; $scopeText = "kho '$khoName'" }
     }
-    try { $meta = Get-ReupMetadata } catch { Show-Toast 'Không đọc được lịch sử đăng; chưa dọn gì.' -Kind error; Write-FileLog "WARN Dọn ổ Get-ReupMetadata: $($_.Exception.Message)"; return }
-    $cands = @(Get-KhoCleanupCandidates -Items @($script:galleryAll) -Metadata $meta -Days $days -Now (Get-Date) -OutDir $outDir -KhoId $scope)
+    $scopeRoots = @($(if ($scopeId -eq 'all') { Get-KhoRoots } else { (Get-KhoById $scopeId).path }))
+    if (Test-CacheActionBlocked $scopeRoots) { return }
+    $metaByRoot = Get-GalleryMetaByRoot
+    $cands = @(Get-KhoCleanupCandidates -Items @($script:galleryAll) -MetaByRoot $metaByRoot -Days $days -Now (Get-Date) -KhoId $scopeId)
     $cands = @($cands | Where-Object { -not (Test-TikTokTransferActive -FilePath ([string]$_.Path)) })
-    if (-not $cands.Count) { Show-Toast "Không có video nào đã đăng hơn $days ngày còn file trung gian." -Kind info; return }
+    if (-not $cands.Count) { Show-Toast "Không có video nào đã đăng hơn $days ngày còn file trung gian ($scopeText)." -Kind info; return }
     $total = [double]0; foreach ($c in $cands) { $total += $c.Bytes }
     $ok = Show-ConfirmDialog -Title 'Dọn ổ?' -Danger -ConfirmText 'Xóa file trung gian' -Message (
-        "Xóa file trung gian (để ghi âm lại) của $($cands.Count) video đã đăng hơn $days ngày, giải phóng $(Format-Bytes $total). " +
+        "Xóa file trung gian (để ghi âm lại) của $($cands.Count) video đã đăng hơn $days ngày ($scopeText), giải phóng $(Format-Bytes $total). " +
         "Video hoàn chỉnh (-3) được giữ nguyên. Sau khi xóa sẽ không ghi âm lại/sửa lại được các video này.")
     if (-not $ok) { return }
-    if (Test-AppBusy) { Show-Toast 'Vừa có tác vụ bắt đầu chạy — chưa dọn gì.' -Kind warning; return }
-    Release-PlayerFromCache (Get-ReelCacheDir $outDir)
-    $r = Remove-KhoCleanupFiles -Candidates $cands
-    $summary = "Dọn ổ: đã xóa $($r.Deleted) file · giải phóng $(Format-Bytes $r.Freed) · lỗi $($r.Failed)"
-    if ($r.Skipped) { $summary += " · bỏ qua $($r.Skipped) video đang chuyển TikTok" }
-    Add-Log $summary $(if ($r.Failed) { 'Warning' } else { 'Success' })
-    foreach ($e in $r.Errors) { Add-Log "Dọn ổ lỗi: $e" 'Warning' }
-    Show-Toast ($summary + '.') -Kind $(if ($r.Failed) { 'warning' } else { 'success' })
+    if (Test-CacheActionBlocked $scopeRoots) { return }
+    $protected = Get-KhoJournalPaths
+    if ($null -eq $protected) { Show-Toast 'Có nhật ký chuyển kho không đọc được; chưa dọn gì.' -Kind warning; return }
+    $script:khoExclusive++
+    try {
+        foreach ($root in @($cands | ForEach-Object { $_.Root } | Select-Object -Unique)) { Release-PlayerFromCache (Get-ReelCacheDir $root) }
+        $r = Remove-KhoCleanupFiles -Candidates $cands -Protected $protected
+        $summary = "Dọn ổ: đã xóa $($r.Deleted) file · giải phóng $(Format-Bytes $r.Freed) · lỗi $($r.Failed)"
+        if ($r.Skipped) { $summary += " · bỏ qua $($r.Skipped) mục đang chuyển TikTok hoặc chuyển kho dở dang" }
+        Add-Log $summary $(if ($r.Failed) { 'Warning' } else { 'Success' })
+        foreach ($e in $r.Errors) { Add-Log "Dọn ổ lỗi: $e" 'Warning' }
+        Show-Toast ($summary + '.') -Kind $(if ($r.Failed) { 'warning' } else { 'success' })
+    } finally { $script:khoExclusive-- }
     Update-CacheInfo
     Update-Gallery
 }
@@ -9290,7 +9470,7 @@ function Get-RejectedLinkMatches {
 
 function Get-LinkSummary {
     # Mot nguon duy nhat cho the Tom tat (trang Nguon) va nut Bat dau.
-    param([string]$Text, [string]$OutDir, [bool]$SkipExisting = $true)
+    param([string]$Text, [string[]]$OutDir, [bool]$SkipExisting = $true)
     $raw = @()
     if (Get-Command Get-FacebookInputLinks -CommandType Function -ErrorAction SilentlyContinue) { $raw = @(Get-FacebookInputLinks -Text $Text -KeepDuplicates) }
     else { $raw = @($Text -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
@@ -9315,7 +9495,7 @@ function Update-LinkDuplicateWarning {
     $text = [string]$ui.TxtLinks.Text
     if ($ui.TxtLinksPlaceholder) { $ui.TxtLinksPlaceholder.Visibility = $(if ([string]::IsNullOrEmpty($text)) { 'Visible' } else { 'Collapsed' }) }
     try {
-        $s = Get-LinkSummary -Text $text -OutDir $ui.TxtOut.Text -SkipExisting ([bool]$ui.RbDupSkip.IsChecked)
+        $s = Get-LinkSummary -Text $text -OutDir @(Get-KhoRoots) -SkipExisting ([bool]$ui.RbDupSkip.IsChecked)
         $script:linkSummary = $s
         # 4 sticker so to: Link · Trung · Da loai truoc · Se chay
         if ($ui.TxtSumLinks) { $ui.TxtSumLinks.Text = [string]$s.Raw }
@@ -9339,7 +9519,7 @@ function Update-LinkDuplicateWarning {
         $ui.TxtDuplicateWarning.Visibility = $(if ($details.Count) { 'Visible' } else { 'Collapsed' })
         $ui.PanelDupChoice.Visibility = $(if ($s.Downloaded.Count) { 'Visible' } else { 'Collapsed' })
     } catch {
-        $ui.TxtLinkSummary.Text = 'Không kiểm tra được danh sách link. Kiểm tra lại thư mục xuất và lịch sử loại.'
+        $ui.TxtLinkSummary.Text = 'Không kiểm tra được danh sách link. Kiểm tra lại các thư mục kho và lịch sử loại.'
         $ui.TxtLinkSummary.Foreground = Get-Brush 'WarningText'
         Write-FileLog "WARN Update-LinkDuplicateWarning: $($_.Exception.Message)"
     }
@@ -9352,7 +9532,6 @@ $tLinkWarning.Add_Tick({
     $tLinkWarning.Stop()
     try { Update-LinkDuplicateWarning } catch { Add-Log "Không kiểm tra được danh sách link: $($_.Exception.Message)" 'Warning' }
 })
-$ui.TxtOut.Add_TextChanged({ $tLinkWarning.Stop(); $tLinkWarning.Start() })
 $ui.TxtLinks.Add_TextChanged({
     if ($ui.TxtLinksPlaceholder) { $ui.TxtLinksPlaceholder.Visibility = $(if ([string]::IsNullOrEmpty($ui.TxtLinks.Text)) { 'Visible' } else { 'Collapsed' }) }
     $tLinkWarning.Stop(); $tLinkWarning.Start()
@@ -9397,20 +9576,6 @@ $ui.BtnClearLinks.Add_Click({
     $ui.TxtLinks.SelectAll()
     $ui.TxtLinks.SelectedText = ''
     Show-Toast 'Đã xóa danh sách link (Ctrl+Z để hoàn tác).'
-})
-
-$ui.BtnPick.Add_Click({
-    try {
-        $d = New-Object System.Windows.Forms.FolderBrowserDialog
-        $d.Description = 'Chọn thư mục xuất video'
-        if ($ui.TxtOut -and (Test-Path -LiteralPath $ui.TxtOut.Text)) { $d.SelectedPath = $ui.TxtOut.Text }
-        if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-            if ($ui.TxtOut) { $ui.TxtOut.Text = $d.SelectedPath }
-            Update-Gallery
-        }
-    } catch {
-        Add-Log "Không mở được hộp chọn thư mục: $($_.Exception.Message)" 'Warning'
-    }
 })
 
 function Update-ResponsiveLayout {
@@ -10764,7 +10929,7 @@ try {
 function Open-FolderSafe([string]$targetPath) {
     try {
         if (-not $targetPath -or $targetPath.Trim() -eq '') {
-            $targetPath = if ($ui.TxtOut -and $ui.TxtOut.Text) { $ui.TxtOut.Text } else { Join-Path $root 'output' }
+            $targetPath = Get-KhoDownloadPath
         }
         $p = [System.IO.Path]::GetFullPath($targetPath)
         if (-not (Test-Path -LiteralPath $p)) {
@@ -10779,8 +10944,12 @@ function Open-FolderSafe([string]$targetPath) {
     }
 }
 
-$ui.BtnOpenOut.Add_Click({ Open-FolderSafe $ui.TxtOut.Text })
-$ui.BtnFolder.Add_Click({  Open-FolderSafe $ui.TxtOut.Text })
+$ui.BtnOpenOut.Add_Click({ Open-FolderSafe (Get-KhoDownloadPath) })
+# "Mo thu muc" duoi video: thu muc kho chua video dang xem; chua xem video nao thi mo kho tai ve.
+$ui.BtnFolder.Add_Click({
+    $dir = $(if ($script:lastOut) { [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath([string]$script:lastOut)) } else { Get-KhoDownloadPath })
+    Open-FolderSafe $dir
+})
 function Invoke-DeviceCheck {
     # ShowLogs: chi chuyen sang tab Logs khi nguoi dung bam nut; kiem tra nen luc khoi dong giu tab hien tai.
     param([switch]$ShowLogs)
@@ -11001,12 +11170,14 @@ function Get-MiddleTrimmedPath {
     return $cand
 }
 function Update-OutPathDisplay {
+    # Duong dan kho tai ve (TxtOut an) hien rut gon GIUA trong the "Kho tai ve"; day du trong tooltip.
     if (-not $ui.TxtOutShort -or -not $ui.TxtOut) { return }
-    $w = $ui.TxtOut.ActualWidth - 30.0
+    $pane = $ui.TxtOutShort.Parent
+    $w = $(if ($pane) { $pane.ActualWidth - 30.0 } else { 0.0 })
     $ui.TxtOutShort.Text = Get-MiddleTrimmedPath -Path ([string]$ui.TxtOut.Text) -MaxWidth $w -Block $ui.TxtOutShort
 }
 $ui.TxtOut.Add_TextChanged({ Update-OutPathDisplay })
-$ui.TxtOut.Add_SizeChanged({ Update-OutPathDisplay })
+if ($ui.TxtOutShort.Parent) { $ui.TxtOutShort.Parent.Add_SizeChanged({ Update-OutPathDisplay }) }
 Update-OutPathDisplay
 
 $ui.BtnDeleteCurrent.Add_Click({
@@ -11193,6 +11364,13 @@ function Start-QueueFromLinks {
     if ($script:ps) { Show-Toast 'Đang chạy tác vụ — hãy đợi hoàn tất.' -Kind warning; return }
     if ($script:importBusy) { Show-Toast 'Đang thêm video từ thư mục — hãy đợi xong rồi bắt đầu.' -Kind warning; return }
     if ($script:queue -and $script:queue.Count -gt 0) { Show-Toast 'Hãy dừng hoặc đợi hàng đợi hiện tại hoàn tất trước khi bắt đầu.' -Kind warning; return }
+    if ($script:khoMoveRunning -or $script:khoExclusive -gt 0) { Show-Toast 'Đang chuyển kho hoặc mở hộp thoại đăng/dọn dẹp — thử lại sau.' -Kind warning; return }
+    # Kho dich chup MOT lan luc bat dau: doi kho tai ve giua chung khong doi noi luu cua hang doi nay; kho nay bi giu (khong chuyen/xoa) toi khi xong.
+    $targetLib = Get-KhoById (Get-KhoDownloadTarget)
+    if (-not $targetLib) { Show-Toast 'Chưa có kho để lưu video. Mở Quản lý kho để tạo hoặc chọn kho.' -Kind error; return }
+    $targetDir = [string]$targetLib.path
+    $jBlock = Get-KhoJournalBlock @($targetDir)
+    if ($jBlock) { Show-Toast $jBlock -Kind warning; return }
     $links = @($Links | Where-Object { $_ })
     if ($links.Count -eq 0) {
         Show-Page 'source'
@@ -11227,8 +11405,8 @@ function Start-QueueFromLinks {
     $duplicateReport = $null
     $skipExistingCount = 0
     if (Get-Command Get-FacebookLinkDuplicateReport -ErrorAction SilentlyContinue) {
-        try { $duplicateReport = Get-FacebookLinkDuplicateReport -Text ($links -join "`n") -OutDir $ui.TxtOut.Text }
-        catch { Show-Toast 'Không kiểm tra được ID đã tải. Kiểm tra lại thư mục xuất.' -Kind error; return }
+        try { $duplicateReport = Get-FacebookLinkDuplicateReport -Text ($links -join "`n") -OutDir @(Get-KhoRoots) }
+        catch { Show-Toast 'Không kiểm tra được ID đã tải. Kiểm tra lại các thư mục kho.' -Kind error; return }
         $links = @($duplicateReport.Links)
         if ($duplicateReport.DownloadedIds.Count -gt 0 -and $SkipExisting) {
             # Lua chon "Bo qua / Tai lai" nam o the Tom tat (trang Nguon), khong hien hop thoai.
@@ -11239,9 +11417,9 @@ function Start-QueueFromLinks {
             if ($links.Count -eq 0) { Show-Toast 'Tất cả video trong danh sách đã có trong kho — không có video mới.' -Kind info; return }
         }
     }
-    if (-not (Test-Path -LiteralPath $ui.TxtOut.Text)) {
-        try { [void][System.IO.Directory]::CreateDirectory($ui.TxtOut.Text) }
-        catch { Show-Toast "Không tạo được thư mục xuất: $($_.Exception.Message)" -Kind error; Add-Log "Không tạo được thư mục xuất '$($ui.TxtOut.Text)': $($_.Exception.Message)" 'Danger'; return }
+    if (-not [System.IO.Directory]::Exists($targetDir)) {
+        try { [void][System.IO.Directory]::CreateDirectory($targetDir) }
+        catch { Show-Toast "Không tạo được thư mục kho: $($_.Exception.Message)" -Kind error; Add-Log "Không tạo được thư mục kho '$targetDir': $($_.Exception.Message)" 'Danger'; return }
     }
     Clear-LogBatch
     if ($ui.TxtLog) { $ui.TxtLog.Clear() }; [void]$script:runLog.Clear()
@@ -11251,7 +11429,7 @@ function Start-QueueFromLinks {
     $script:queue = $links; $script:idx = 0; $script:giu = 0; $script:bo = 0
     $script:loi = 0; $script:chuaXN = 0; $script:failedLinks = @(); $script:lastCompletedOut = ''
     $script:boTruoc = $preRejectedCount; $script:skipExisting = $skipExistingCount; $script:queueFinalizedIdx = -1; $script:forceRetryRejected = $false
-    $script:queueKhoId = Get-KhoDownloadTarget
+    $script:queueOutDir = $targetDir
     if ($preRejectedCount) { Add-Log "$preRejectedCount video đã bị loại trước đây — bỏ qua." 'Warning' }
     if ($skipExistingCount) { Add-Log "$skipExistingCount video đã có trong kho — bỏ qua theo lựa chọn ở trang Nguồn." 'Warning' }
     Add-Log 'Chế độ tự động: lưu từng video rồi chạy tiếp đến hết danh sách; bấm Dừng để kết thúc sớm.' 'Info'
@@ -11447,7 +11625,9 @@ $engine" -Title 'Thiếu file' | Out-Null
         $win.Add_SizeChanged({ Request-SaveSettings })
         $win.Add_StateChanged({ Request-SaveSettings })
     }
-    # Khoi dong: trang Nguon, quet kho nen (chi sau khi settings da nap -> dung thu muc xuat cua nguoi dung), trang thai cong cu.
+    # Kho la thu muc that: nap registry (chuyen "Output cũ" lan dau) va hoan tat chuyen kho dang do TRUOC khi quet kho / chay dong bo.
+    Initialize-KhoStartup
+    # Khoi dong: trang Nguon, quet kho nen (chi sau khi settings da nap -> dung thu muc kho cua nguoi dung), trang thai cong cu.
     Show-Page 'source'
     $script:galleryScanReady = $true
     Update-Gallery
@@ -11477,7 +11657,7 @@ $engine" -Title 'Thiếu file' | Out-Null
         foreach ($styleKey in @('BtnPrimary','BtnSecondary','BtnGhost','BtnDanger','BtnDangerSolid','BtnIcon','NavButton','SegButton','Icon','StatusBadge','StickerCard','ToggleSwitch','NotePaper')) {
             if (-not ($win.TryFindResource($styleKey) -is [System.Windows.Style])) { throw "Thieu style: $styleKey" }
         }
-        if ($ui.TxtOut.Text -ne (Join-Path $root 'output')) { throw 'Thu muc xuat khoi tao khong dung.' }
+        if (-not $ui.TxtOut.Text -or $ui.TxtOut.Text -cne (Get-KhoDownloadPath)) { throw 'Thu muc tai ve (TxtOut) khong khop kho tai ve.' }
         if ($ui.TxtAppVersion.Text -ne "v$($script:verLocal)") { throw 'Nhan phien ban khoi tao khong dung.' }
         $ud = Join-Path $scriptDir '_update'
         if (-not (Test-Path -LiteralPath $ud)) { New-Item -ItemType Directory -Path $ud -Force | Out-Null }

@@ -269,7 +269,8 @@ function Get-ReelLanguageDecision {
 }
 
 function Get-FacebookLinkDuplicateReport {
-    param([string]$Text, [string]$OutDir)
+    # OutDir: mot hoac nhieu thu muc kho; "da co" khi BAT KY thu muc nao co <id>-3-hoan-chinh.mp4.
+    param([string]$Text, [string[]]$OutDir)
 
     $inputLinks = @(Get-FacebookInputLinks -Text $Text -KeepDuplicates)
     $uniqueLinks = New-Object 'System.Collections.Generic.List[string]'
@@ -297,13 +298,16 @@ function Get-FacebookLinkDuplicateReport {
     }
 
     $downloadedIds = New-Object 'System.Collections.Generic.List[string]'
-    if (-not [string]::IsNullOrWhiteSpace($OutDir)) {
+    $outDirs = @(@($OutDir) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($outDirs.Count) {
         foreach ($videoId in $allIds) {
-            # Dot 4 (F2): "da co trong kho" CHI khi co -3 o goc thu muc xuat. Chi con -1 (trong .cache hoac o goc) = cache-only, khong tinh.
-            $candidate = Join-Path $OutDir ($videoId + '-3-hoan-chinh.mp4')
-            if (Test-Path -LiteralPath $candidate -PathType Leaf -ErrorAction Stop) {
-                $file = Get-Item -LiteralPath $candidate -ErrorAction Stop
-                if ($file -and $file.Length -gt 0) { $downloadedIds.Add($videoId) }
+            # Dot 4 (F2): "da co trong kho" CHI khi co -3 o goc thu muc kho. Chi con -1 (trong .cache hoac o goc) = cache-only, khong tinh.
+            foreach ($dir in $outDirs) {
+                $candidate = Join-Path $dir ($videoId + '-3-hoan-chinh.mp4')
+                if (Test-Path -LiteralPath $candidate -PathType Leaf -ErrorAction Stop) {
+                    $file = Get-Item -LiteralPath $candidate -ErrorAction Stop
+                    if ($file -and $file.Length -gt 0) { $downloadedIds.Add($videoId); break }
+                }
             }
         }
     }

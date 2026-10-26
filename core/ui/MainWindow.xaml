@@ -225,31 +225,20 @@
                       <Border Style="{DynamicResource IconChip}" Background="{DynamicResource Peach}" Width="34" Height="34" CornerRadius="17" Margin="0,0,10,0">
                         <TextBlock Text="&#xE8B7;" Style="{DynamicResource Icon}" FontSize="14"/>
                       </Border>
-                      <TextBlock Text="Thư mục xuất" Style="{DynamicResource TextHeading}" VerticalAlignment="Center"/>
+                      <TextBlock Text="Kho tải về" Style="{DynamicResource TextHeading}" VerticalAlignment="Center"/>
                     </StackPanel>
                     <Grid Margin="0,10,0,0">
-                      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                      <Grid>
-                      <TextBox x:Name="TxtOut" Style="{DynamicResource TextBoxPath}" FontSize="14" AutomationProperties.Name="Thư mục xuất"
-                               ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}">
-
-                      </TextBox>
-                      <TextBlock x:Name="TxtOutShort" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" Margin="16,0,14,0" VerticalAlignment="Center" IsHitTestVisible="False" TextWrapping="NoWrap">
-                        <TextBlock.Style>
-                          <Style TargetType="TextBlock">
-                            <Style.Triggers>
-                              <DataTrigger Binding="{Binding IsKeyboardFocusWithin, ElementName=TxtOut}" Value="True"><Setter Property="Visibility" Value="Collapsed"/></DataTrigger>
-                            </Style.Triggers>
-                          </Style>
-                        </TextBlock.Style>
-                      </TextBlock>
+                      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                      <Border Background="{DynamicResource Surface0}" BorderBrush="{DynamicResource Ink}" BorderThickness="2" CornerRadius="14" Padding="14,8" MinHeight="44">
+                        <TextBlock x:Name="TxtOutShort" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center" TextWrapping="NoWrap"
+                                   ToolTip="{Binding Text, ElementName=TxtOut}"/>
+                      </Border>
+                      <!-- gia tri tuong thich (an): duong dan kho tai ve; luu trong settings.json cho ban cu -->
+                      <TextBox x:Name="TxtOut" Visibility="Collapsed" IsReadOnly="True" AutomationProperties.Name="Thư mục kho tải về"/>
+                      <Button Grid.Column="1" x:Name="BtnOpenOut" Style="{DynamicResource BtnIcon}" Background="{DynamicResource ButterSoft}" Content="&#xE838;" Margin="6,0,0,0"
+                              ToolTip="Mở thư mục kho tải về" AutomationProperties.Name="Mở thư mục kho tải về"/>
                     </Grid>
-                      <Button Grid.Column="1" x:Name="BtnPick" Style="{DynamicResource BtnIcon}" Background="{DynamicResource Peach}" Content="&#xE8DA;" Margin="6,0,0,0"
-                              ToolTip="Chọn thư mục xuất…" AutomationProperties.Name="Chọn thư mục xuất"/>
-                      <Button Grid.Column="2" x:Name="BtnOpenOut" Style="{DynamicResource BtnIcon}" Background="{DynamicResource ButterSoft}" Content="&#xE838;" Margin="6,0,0,0"
-                              ToolTip="Mở thư mục xuất" AutomationProperties.Name="Mở thư mục xuất"/>
-                    </Grid>
-                    <TextBlock Text="Chỉ file hoàn chỉnh (-3) hiện ở đây; file gốc để sửa lại logo nằm trong thư mục ẩn .cache." Style="{DynamicResource TextCaption}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                    <TextBlock Text="Video tải về lưu vào kho này (đổi ở ô Lưu vào kho). Chỉ file hoàn chỉnh (-3) hiện ở đây; file gốc để sửa lại logo nằm trong thư mục ẩn .cache." Style="{DynamicResource TextCaption}" TextWrapping="Wrap" Margin="0,8,0,0"/>
                   </StackPanel>
                 </ContentControl>
                 <ContentControl Style="{DynamicResource StickerCard}" Padding="16,12">
@@ -671,7 +660,7 @@
               <RadioButton x:Name="TabStPosted" Style="{DynamicResource SegButton}" GroupName="StatusTabs" Content="Đã đăng" Margin="0" AutomationProperties.Name="Đã đăng"/>
             </StackPanel>
             <Button x:Name="BtnRefreshGallery" Style="{DynamicResource BtnIcon}" Background="{DynamicResource SkySoft}" Content="&#xE72C;" Margin="0,0,0,8"
-                    ToolTip="Quét lại thư mục xuất" AutomationProperties.Name="Làm mới kho"/>
+                    ToolTip="Quét lại các thư mục kho" AutomationProperties.Name="Làm mới kho"/>
           </WrapPanel>
 
           <!-- luoi the Kho: 3-4 cot, ao hoa (KidWrapPanel dat tu code); the = polaroid, bam the = xem, hanh dong trong menu "..." -->
@@ -1029,7 +1018,7 @@
                       <TextBlock Text="Lưu trữ" Style="{DynamicResource TextHeading}" VerticalAlignment="Center"/>
                     </StackPanel>
                     <TextBlock Style="{DynamicResource TextMutedStyle}" FontSize="15"
-                               Text="Thư mục xuất chỉ hiện file hoàn chỉnh (-3). Video gốc (-1) và âm thanh (-2) được cất trong thư mục ẩn .cache để sửa lại logo/GIF không cần tải lại."/>
+                               Text="Mỗi thư mục kho chỉ hiện file hoàn chỉnh (-3). Video gốc (-1) và âm thanh (-2) được cất trong thư mục ẩn .cache của kho để sửa lại logo/GIF không cần tải lại."/>
                     <Border Style="{DynamicResource CardInset}" Background="{DynamicResource MintSoft}" Margin="0,12,0,12" Padding="14,10">
                       <TextBlock x:Name="TxtCacheInfo" Text="Đang đọc dung lượng…" FontWeight="Bold" FontSize="14" TextWrapping="Wrap"/>
                     </Border>
@@ -1271,7 +1260,7 @@
             <Button.ContextMenu>
               <ContextMenu x:Name="MenuMore" Placement="Top">
                 <MenuItem x:Name="BtnRedo" Header="Ghi âm lại" Tag="&#xE720;" InputGestureText="Ctrl+R" ToolTip="Ghi âm lại video này (Ctrl+R)" AutomationProperties.Name="Ghi âm lại"/>
-                <MenuItem x:Name="BtnFolder" Header="Mở thư mục" Tag="&#xE838;" ToolTip="Mở thư mục xuất" AutomationProperties.Name="Mở thư mục xuất"/>
+                <MenuItem x:Name="BtnFolder" Header="Mở thư mục" Tag="&#xE838;" ToolTip="Mở thư mục kho chứa video này" AutomationProperties.Name="Mở thư mục kho"/>
                 <MenuItem x:Name="BtnOpenExt" Header="Mở bằng trình phát ngoài" Tag="&#xE8A7;" ToolTip="Mở bằng trình phát mặc định của Windows" AutomationProperties.Name="Mở bằng trình phát ngoài"/>
                 <Separator/>
                 <MenuItem x:Name="BtnDeleteCurrent" Header="Xóa video" Tag="&#xE74D;" InputGestureText="Shift+Del" ToolTip="Xóa video đang xem (Shift+Delete)" AutomationProperties.Name="Xóa video đang xem"/>
