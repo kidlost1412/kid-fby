@@ -4844,6 +4844,7 @@ function Show-TikTokSpreadDialog {
     $items = @($Items | Where-Object { $_ -and $_.Path })
     if (-not (Test-TikTokEnabled)) { Show-Toast 'Chưa kết nối bộ đăng TikTok.' -Kind warning; return }
     if ($script:stopping) { Show-Toast 'Đợi tác vụ hiện tại dừng hẳn trước khi đăng video.' -Kind warning; return }
+    if (Test-SpreadRunActive) { Show-Toast 'Đang rải lịch — đợi xong hoặc bấm Dừng ở dải dưới cùng.' -Kind warning; return }
     if (-not $items.Count) { Show-Toast 'Chọn video trong Kho trước khi rải lịch.' -Kind warning; return }
     # Moi dong co thu muc kho rieng (lich su doc/ghi o do); gio ban, tran moi ngay va khoang cach tinh tren MOI kho cua tai khoan (S7).
     $roots = @($items | ForEach-Object { [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath([string]$_.Path)) } | Select-Object -Unique)
@@ -4929,15 +4930,12 @@ function Show-TikTokSpreadDialog {
                 [Windows.Controls.Grid]::SetColumn($t1, 1); [void]$g.Children.Add($t1)
                 $t2 = New-Object Windows.Controls.TextBlock; $t2.VerticalAlignment = 'Center'; $t2.FontWeight = 'ExtraBold'
                 $t2.Text = $(if ($r.When) { ([DateTime]$r.When).ToString('dd/MM HH:mm') } else { '—' })
-                if ($r.PSObject.Properties['State']) { $t2.Text = $t2.Text + $(switch ([string]$r.State) { 'sent' { '  ✓' } 'failed' { '  ✗' } 'skipped' { '  –' } default { '' } }) }
                 [Windows.Controls.Grid]::SetColumn($t2, 2); [void]$g.Children.Add($t2)
                 $t3 = New-Object Windows.Controls.TextBlock; $t3.VerticalAlignment = 'Center'; $t3.TextWrapping = 'Wrap'; $t3.FontSize = 13; $t3.Foreground = $dlg.FindResource('TextMuted')
                 $note = ''
                 if ($r.Warn -eq 'active') { $note = 'Đang có lệnh đăng chờ/chạy — bỏ qua.' }
                 elseif ($r.Warn -eq 'posted') { $note = 'Đã đăng' + $(if ($r.Other) { ' ở ' + $r.Other } else { '' }) + $(if ($r.Include) { ' — vẫn hẹn lại.' } else { ' — tick để vẫn hẹn.' }) }
                 elseif ($r.Include -and -not $r.When) { $note = 'Không đủ chỗ trống trong số ngày đã chọn.' }
-                if ($r.PSObject.Properties['Message'] -and $r.Message) { $note = $r.Message }
-                elseif ($r.PSObject.Properties['Shifted'] -and $r.Shifted) { $note = 'Giờ cũ đã quá gần, dời sang giờ trống kế tiếp.' }
                 $t3.Text = $note
                 [Windows.Controls.Grid]::SetColumn($t3, 3); [void]$g.Children.Add($t3)
                 [void]$c.Rows.Children.Add($g)
@@ -7082,6 +7080,7 @@ function Update-MoveSelectedButton {
     $ui.PanelSelBar.Visibility = $(if ($n -ge 2) { 'Visible' } else { 'Collapsed' })
     if ($n -ge 2) { $ui.TxtSelCount.Text = "Đã chọn $n video"; $ui.TxtMoveSelected.Text = "Chuyển $n video sang kho…" }
     if ($ui.BtnSpreadSelected) { $ui.BtnSpreadSelected.Visibility = $(if (Test-TikTokEnabled) { 'Visible' } else { 'Collapsed' }) }
+    Update-SpreadButtons
 }
 
 function Clear-GallerySelection {
@@ -9054,6 +9053,7 @@ $ui.BtnMoveSelected.Add_Click({
     $picked = @($ui.GalleryList.SelectedItems)
     if ($picked.Count) { Show-KhoMoveMenu -Target $ui.BtnMoveSelected -Items $picked -Placement ([Windows.Controls.Primitives.PlacementMode]::Top) }
 })
+$ui.BtnSpreadStop.Add_Click({ Stop-SpreadBackground })
 $ui.BtnSpreadSelected.Add_Click({
     $picked = @($ui.GalleryList.SelectedItems)
     if ($picked.Count) { Show-TikTokSpreadDialog -Items $picked }
