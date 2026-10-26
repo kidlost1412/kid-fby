@@ -929,7 +929,7 @@ function Request-SaveSettings {
 
 # ------------------------------------------------------------- ham luu trang thai TikTok ----
 function Get-ReupMetadata {
-    param([string]$OutDir = $ui.TxtOut.Text)
+    param([Parameter(Mandatory)][string]$OutDir)
     $p = Join-Path $OutDir 'reup-status.json'
     try {
         # FileShare ReadWrite|Delete: never block the writer's atomic File.Replace.
@@ -1078,7 +1078,7 @@ function Update-ReupAggregate {
 
 function Set-ReupMetadata {
     # Manual posted mark (D3). Only the manual flag flips; synced TikTok history is kept as-is.
-    param([string]$VideoId, [bool]$Posted, [string]$OutDir = $ui.TxtOut.Text)
+    param([string]$VideoId, [bool]$Posted, [Parameter(Mandatory)][string]$OutDir)
     if ([string]::IsNullOrWhiteSpace($VideoId)) { throw 'Thiếu ID video để lưu lịch sử TikTok.' }
     $markDate = (Get-Date).ToString('dd/MM HH:mm')
     [void](Update-ReupMetadata -OutDir $OutDir -Change {
@@ -1086,6 +1086,8 @@ function Set-ReupMetadata {
         $property = $meta.PSObject.Properties[$VideoId]
         $item = if ($property) { $property.Value } else { $null }
         if (-not $item) {
+            # S6: never create an entry for a video whose -3 is no longer in this folder (moved or deleted).
+            if (-not [System.IO.File]::Exists((Join-Path $OutDir ($VideoId + '-3-hoan-chinh.mp4')))) { throw "Reel #$VideoId không còn trong thư mục kho này (đã chuyển hoặc xóa)." }
             $meta | Add-Member -MemberType NoteProperty -Name $VideoId -Force -Value ([pscustomobject]@{ Posted = $Posted; Date = $markDate })
         } elseif ($item.Source -ne 'autotok-history') {
             # Pre-integration shape: Posted/Date are the manual mark.
@@ -1100,99 +1102,128 @@ function Set-ReupMetadata {
     })
 }
 
-# ------------------------------------------------------------- kho (thu vien logic: nhan theo tung video) ----
-# A kho is a label stored per video in reup-status.json (Kho / KhoManual); files never move. data\kho.json (the
-# registry) is read and written on the UI thread only; background code works with ids and never touches it.
+# ------------------------------------------------------------- kho = thu muc that (moi kho la mot thu muc xuat day du) ----
+# A kho is a REAL folder and a complete output folder like the old single one: <id>-3-hoan-chinh.mp4 at its root, .cache\ (-1/-2,
+# thumbs, tiktok-posts receipts, tiktok-identities.json) and its own reup-status.json. data\kho.json (registry v2) is read and written
+# on the UI thread only; background code works with plain folder paths and never touches the registry.
 $script:khoRegistry = $null
 $script:khoRegistryReady = $true     # $false: kho.json was unreadable this session -> it is never overwritten
-$script:khoDownloadTarget = 'default'
-$script:queueKhoId = $null           # kho for videos the running queue saves ($null: redo / record again, no assignment)
+$script:khoLegacyOutDir = ''         # outDir saved in settings.json = the folder that becomes "Output cũ" on first start ('' -> <root>\output)
+$script:queueOutDir = ''             # folder the running download queue saves into (captured at queue start; record again = that video's folder)
 $script:importBusy = $false          # a background folder import is running
+$script:khoExclusive = 0             # > 0 while a dialog / cleanup holds the kho folders (no move or delete may run)
+$script:khoMoveRunning = $false      # a move batch is running (every other actor refuses)
+$script:khoAutoMoveWanted = $false   # a sync pass changed history: look for videos to move into their account kho
+$script:khoAutoMoveFailed = @{}      # account -> time of the last failed attempt to create its kho (not retried for 10 minutes)
 
 function Get-KhoPath { return (Join-Path $root 'data\kho.json') }
 
 function Test-KhoId {
     param([string]$Id)
-    return [bool]($Id -cmatch '^(default|c-[0-9a-f]{32}|acct:\S+)$')
+    return [bool]($Id -cmatch '^k-[0-9a-f]{32}$')
 }
 
-function Get-KhoAccountId {
-    # Deterministic id of an account kho; '' when there is no usable username.
+function ConvertTo-KhoUsername {
+    # '@Anna ' -> 'Anna'; '' when there is no usable TikTok username.
     param([string]$Username)
-    $u = ([string]$Username).Trim().TrimStart('@').ToLowerInvariant()
+    $u = ([string]$Username).Trim().TrimStart('@')
     if (-not $u -or $u -match '\s') { return '' }
-    return ('acct:' + $u)
+    return $u
 }
 
-function Get-KhoEffectiveId {
-    # Kho of a stored video entry; a missing field means the default kho.
-    # -Known: hashtable of registry ids; an id that is neither acct:* nor in it (kho deleted elsewhere) counts as default.
-    param($Entry, $Known = $null)
-    $kho = if ($Entry) { [string]$Entry.Kho } else { '' }
-    if (-not $kho) { return 'default' }
-    if ($null -ne $Known -and -not $kho.StartsWith('acct:') -and -not $Known.ContainsKey($kho)) { return 'default' }
-    return $kho
+function ConvertTo-KhoSlots {
+    # Valid 'HH:mm' times, sorted, no duplicates.
+    param($Raw)
+    return @(@($Raw) | Where-Object { $null -ne $_ -and ([string]$_) -match '^([01]\d|2[0-3]):[0-5]\d$' } | ForEach-Object { [string]$_ } | Sort-Object -Unique)
 }
+
+function New-KhoId { return ('k-' + [Guid]::NewGuid().ToString('N')) }
 
 function New-KhoLibrary {
-    param([string]$Id, [string]$Name, [string]$Account = '')
-    return [pscustomobject]@{ id = $Id; name = $Name; account = $Account; caption = ''; hashtags = @(); lowStock = 3 }
-}
-
-function New-KhoAccountLibrary {
-    param([string]$Id)
-    $user = $Id.Substring(5)
-    return (New-KhoLibrary -Id $Id -Name ('@' + $user) -Account $user)
-}
-
-function New-KhoRegistryObject {
-    return [pscustomobject]@{ version = 1; libraries = @(New-KhoLibrary -Id 'default' -Name 'Kho chung'); downloadTarget = 'default' }
+    param([string]$Id, [string]$Name, [string]$Path, [string]$Account = '', [bool]$CreatedByApp = $false)
+    return [pscustomobject]@{ id = $Id; name = $Name; path = $Path; account = $Account; caption = ''; hashtags = @(); lowStock = 3; slots = @(); createdByApp = $CreatedByApp }
 }
 
 function ConvertTo-KhoLibrary {
-    # Validated copy of one stored library; $null when the id is not valid.
+    # Validated copy of one stored library; $null when the id or the path is not valid.
     param($Raw)
     if ($null -eq $Raw) { return $null }
     $id = [string]$Raw.id
     if (-not (Test-KhoId $id)) { return $null }
-    $account = if ($id.StartsWith('acct:')) { $id.Substring(5) } else { '' }
+    $text = ([string]$Raw.path).Trim()
+    if (-not ($text -match '^[A-Za-z]:[\\/]' -or $text.StartsWith('\\'))) { return $null }
+    try { $path = Get-CanonicalPath $text } catch { return $null }
+    $account = ConvertTo-KhoUsername ([string]$Raw.account)
     $name = ([string]$Raw.name).Trim()
-    if ($id -eq 'default') { $name = 'Kho chung' } elseif (-not $name) { $name = $(if ($account) { '@' + $account } else { $id }) }
-    $lib = New-KhoLibrary -Id $id -Name $name -Account $account
+    if (-not $name) { $name = $(if ($account) { '@' + $account } else { [IO.Path]::GetFileName($path) }) }
+    $lib = New-KhoLibrary -Id $id -Name $name -Path $path -Account $account -CreatedByApp ($Raw.createdByApp -eq $true)
     $lib.caption = [string]$Raw.caption
     $lib.hashtags = @(@($Raw.hashtags) | Where-Object { $null -ne $_ -and ([string]$_).Trim() } | ForEach-Object { ([string]$_).Trim() })
     $low = 0
     if ([int]::TryParse([string]$Raw.lowStock, [ref]$low) -and $low -ge 0 -and $low -le 999) { $lib.lowStock = $low }
+    $lib.slots = @(ConvertTo-KhoSlots $Raw.slots)
     return $lib
 }
 
 function ConvertTo-KhoRegistry {
-    # Validated copy of a parsed registry: bad or duplicate libraries dropped, 'default' always first.
+    # Validated copy of a parsed registry: bad libraries dropped; duplicate ids / folders dropped (first wins); a second kho
+    # claiming an account loses the account. downloadTarget falls back to the first kho. The list may be empty (caller decides).
     param($Raw)
     $list = New-Object System.Collections.Generic.List[object]
-    $list.Add((New-KhoLibrary -Id 'default' -Name 'Kho chung'))
-    $seen = @{ default = 0 }
+    $ids = @{}; $paths = @{}; $accounts = @{}
     foreach ($item in @($Raw.libraries)) {
         $lib = ConvertTo-KhoLibrary $item
-        if ($null -eq $lib) { continue }
-        if ($lib.id -eq 'default') { $list[0] = $lib; continue }
-        if ($seen.ContainsKey($lib.id)) { continue }
-        $seen[$lib.id] = $list.Count
+        if ($null -eq $lib -or $ids.ContainsKey($lib.id) -or $paths.ContainsKey($lib.path.ToUpperInvariant())) { continue }
+        $ids[$lib.id] = $true; $paths[$lib.path.ToUpperInvariant()] = $true
+        if ($lib.account) {
+            if ($accounts.ContainsKey($lib.account.ToLowerInvariant())) { $lib.account = '' } else { $accounts[$lib.account.ToLowerInvariant()] = $true }
+        }
         $list.Add($lib)
     }
     $target = [string]$Raw.downloadTarget
-    if (-not $seen.ContainsKey($target)) { $target = 'default' }
-    return [pscustomobject]@{ version = 1; libraries = $list.ToArray(); downloadTarget = $target }
+    if (-not $ids.ContainsKey($target)) { $target = $(if ($list.Count) { [string]$list[0].id } else { '' }) }
+    $since = [string]$Raw.autoMoveSince
+    $parsed = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse($since, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$parsed)) { $since = '' }
+    return [pscustomobject]@{ version = 2; libraries = $list.ToArray(); downloadTarget = $target; autoMoveSince = $since }
+}
+
+function Get-KhoLegacyOutDir {
+    if (-not [string]::IsNullOrWhiteSpace($script:khoLegacyOutDir)) { return [string]$script:khoLegacyOutDir }
+    return (Join-Path $root 'output')
+}
+
+function New-KhoDefaultRegistry {
+    # First start (or nothing usable on disk): one kho "Output cũ" = the folder the app used so far. Nothing is moved.
+    # autoMoveSince = now: only posts confirmed from now on may move a video into an account kho.
+    $lib = New-KhoLibrary -Id (New-KhoId) -Name 'Output cũ' -Path (Get-CanonicalPath (Get-KhoLegacyOutDir))
+    return [pscustomobject]@{ version = 2; libraries = @($lib); downloadTarget = $lib.id; autoMoveSince = [DateTime]::UtcNow.ToString('o') }
+}
+
+function Move-KhoFileAside {
+    # Renames a bad / old registry file so it is never lost; $false when it could not be renamed.
+    param([string]$Path, [string]$Kind)
+    $bad = $Path + '.' + $Kind + '-' + (Get-Date).ToString('yyyyMMdd-HHmmss')
+    if ([System.IO.File]::Exists($bad)) { $bad += '-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) }
+    try { [System.IO.File]::Move($Path, $bad); Write-FileLog "INFO kho.json: file cũ đã được đổi tên thành '$bad'."; return $true }
+    catch { Write-FileLog "WARN kho.json: không đổi tên được '$Path' ($Kind): $($_.Exception.Message)"; return $false }
 }
 
 function Read-KhoRegistry {
-    # Missing -> default only. Corrupt -> renamed to .corrupt-<ts>, default only. Locked/unreadable -> default only and
-    # $script:khoRegistryReady = $false so this session never overwrites the file. Never throws.
+    # Missing / v1 (logical kho) / corrupt -> a fresh registry with "Output cũ" (saved at once; the old file is renamed aside, never
+    # deleted). Unreadable (locked) -> in-memory default and $script:khoRegistryReady = $false: this session never overwrites the file.
+    # Never throws.
     param([string]$Path = (Get-KhoPath))
     $script:khoRegistryReady = $true
-    $fallback = New-KhoRegistryObject
+    $fresh = {
+        param([string]$Why)
+        $reg = New-KhoDefaultRegistry
+        try { [void](Save-KhoRegistry -Registry $reg -Path $Path) } catch { Write-FileLog "WARN Không ghi được kho.json mới ($Why): $($_.Exception.Message)" }
+        Write-FileLog "INFO kho.json: tạo mới với kho 'Output cũ' = '$($reg.libraries[0].path)' ($Why)."
+        return $reg
+    }
     try {
-        if (-not [System.IO.File]::Exists($Path)) { return $fallback }
+        if (-not [System.IO.File]::Exists($Path)) { return (& $fresh 'chưa có file') }
         $json = $null; $readErr = $null
         for ($try = 1; $try -le 3; $try++) {
             try { $json = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8); $readErr = $null; break }
@@ -1201,37 +1232,35 @@ function Read-KhoRegistry {
         if ($null -ne $readErr) {
             Write-FileLog "WARN Không đọc được kho.json (đang bị khóa?), giữ nguyên file và không ghi đè trong phiên này: $readErr"
             $script:khoRegistryReady = $false
-            return $fallback
+            return (New-KhoDefaultRegistry)
         }
+        $obj = $null; $parseError = ''
         try {
             if ([string]::IsNullOrWhiteSpace($json) -or -not $json.TrimStart().StartsWith('{')) { throw 'Không phải đối tượng JSON.' }
             $obj = ConvertFrom-Json -InputObject $json -ErrorAction Stop
             if ($null -eq $obj -or $obj -isnot [pscustomobject] -or $null -eq $obj.PSObject.Properties['libraries']) { throw 'Thiếu danh sách kho.' }
-            return (ConvertTo-KhoRegistry $obj)
-        } catch {
-            $err = $_.Exception.Message
-            $bad = $Path + '.corrupt-' + (Get-Date).ToString('yyyyMMdd-HHmmss')
-            if ([System.IO.File]::Exists($bad)) { $bad += '-' + [Guid]::NewGuid().ToString('N').Substring(0, 6) }
-            try { [System.IO.File]::Move($Path, $bad); Write-FileLog "WARN kho.json bị hỏng ($err); đã đổi tên thành '$bad'." }
-            catch {
-                # Could not move the bad file away: saving would overwrite it, so this session does not save.
-                $script:khoRegistryReady = $false
-                Write-FileLog "WARN kho.json bị hỏng ($err) và không đổi tên được: $($_.Exception.Message)"
-            }
-            return $fallback
+        } catch { $parseError = $_.Exception.Message }
+        if ($parseError) {
+            Write-FileLog "WARN kho.json bị hỏng ($parseError)."
+            if (-not (Move-KhoFileAside $Path 'corrupt')) { $script:khoRegistryReady = $false; return (New-KhoDefaultRegistry) }
+            return (& $fresh 'file hỏng')
         }
+        $version = 0; [void][int]::TryParse([string]$obj.version, [ref]$version)
+        $reg = ConvertTo-KhoRegistry $obj
+        if ($version -lt 2 -or -not @($reg.libraries).Count) {
+            if (-not (Move-KhoFileAside $Path $(if ($version -lt 2) { 'v1' } else { 'invalid' }))) { $script:khoRegistryReady = $false; return (New-KhoDefaultRegistry) }
+            return (& $fresh $(if ($version -lt 2) { 'chuyển từ kho nhãn (v1)' } else { 'không có kho hợp lệ' }))
+        }
+        return $reg
     } catch {
         $script:khoRegistryReady = $false
         Write-FileLog "WARN Đọc kho.json lỗi: $($_.Exception.Message)"
-        return $fallback
+        return (New-KhoDefaultRegistry)
     }
 }
 
 function Get-KhoRegistry {
-    if ($null -eq $script:khoRegistry) {
-        $script:khoRegistry = Read-KhoRegistry
-        $script:khoDownloadTarget = [string]$script:khoRegistry.downloadTarget
-    }
+    if ($null -eq $script:khoRegistry) { $script:khoRegistry = Read-KhoRegistry }
     return $script:khoRegistry
 }
 
@@ -1240,12 +1269,14 @@ function Save-KhoRegistry {
     param($Registry = (Get-KhoRegistry), [string]$Path = (Get-KhoPath))
     if (-not $script:khoRegistryReady) { Write-FileLog 'WARN kho.json không đọc được trong phiên này; không ghi đè.'; return $false }
     $data = [ordered]@{
-        version = 1
+        version = 2
         libraries = @($Registry.libraries | ForEach-Object {
-            [ordered]@{ id = [string]$_.id; name = [string]$_.name; account = [string]$_.account; caption = [string]$_.caption
-                        hashtags = @($_.hashtags | ForEach-Object { [string]$_ }); lowStock = [int]$_.lowStock }
+            [ordered]@{ id = [string]$_.id; name = [string]$_.name; path = [string]$_.path; account = [string]$_.account; caption = [string]$_.caption
+                        hashtags = @($_.hashtags | ForEach-Object { [string]$_ }); lowStock = [int]$_.lowStock
+                        slots = @($_.slots | ForEach-Object { [string]$_ }); createdByApp = [bool]$_.createdByApp }
         })
         downloadTarget = [string]$Registry.downloadTarget
+        autoMoveSince = [string]$Registry.autoMoveSince
     }
     Write-KidSettings -Path $Path -Data $data
     return $true
@@ -1260,7 +1291,6 @@ function Invoke-KhoRegistryChange {
     $output = @(& $Change $copy) | Select-Object -Last 1
     [void](Save-KhoRegistry -Registry $copy)
     $script:khoRegistry = $copy
-    $script:khoDownloadTarget = [string]$copy.downloadTarget
     return $output
 }
 
@@ -1276,240 +1306,192 @@ function Assert-KhoName {
     return $n
 }
 
-function New-Kho {
-    param([string]$Name)
-    return (Invoke-KhoRegistryChange {
-        param($reg)
-        $lib = New-KhoLibrary -Id ('c-' + [Guid]::NewGuid().ToString('N')) -Name (Assert-KhoName $reg $Name)
-        $reg.libraries = @($reg.libraries) + $lib
-        return $lib
-    })
+function Get-KhoList { return @((Get-KhoRegistry).libraries) }
+
+function Get-KhoById {
+    param([string]$Id, $Registry = (Get-KhoRegistry))
+    foreach ($lib in @($Registry.libraries)) { if ([string]$lib.id -ceq $Id) { return $lib } }
+    return $null
 }
 
-function New-KhoForAccount {
-    # Returns the account's kho, creating it when missing.
-    param([string]$Username)
-    $id = Get-KhoAccountId $Username
-    if (-not $id) { throw 'Tên tài khoản TikTok không hợp lệ.' }
-    $existing = @((Get-KhoRegistry).libraries | Where-Object { $_.id -ceq $id })
-    if ($existing.Count) { return $existing[0] }
-    Invoke-KhoRegistryChange {
-        param($reg)
-        $lib = New-KhoAccountLibrary $id
-        if (@($reg.libraries | Where-Object { [string]::Equals([string]$_.name, $lib.name, [StringComparison]::OrdinalIgnoreCase) }).Count) { $lib.name += ' (TikTok)' }
-        $reg.libraries = @($reg.libraries) + $lib
-    }
-    return @($script:khoRegistry.libraries | Where-Object { $_.id -ceq $id })[0]
+function Get-KhoByPath {
+    param([string]$Path, $Registry = (Get-KhoRegistry))
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    try { $full = Get-CanonicalPath $Path } catch { return $null }
+    foreach ($lib in @($Registry.libraries)) { if ([string]::Equals([string]$lib.path, $full, [StringComparison]::OrdinalIgnoreCase)) { return $lib } }
+    return $null
 }
 
-function Rename-Kho {
-    param([string]$Id, [string]$Name)
-    if ($Id -eq 'default') { throw 'Kho chung giữ nguyên tên.' }
-    Invoke-KhoRegistryChange {
-        param($reg)
-        $lib = @($reg.libraries | Where-Object { $_.id -ceq $Id })
-        if (-not $lib.Count) { throw 'Không tìm thấy kho.' }
-        $lib[0].name = Assert-KhoName $reg $Name $Id
-    }
+function Get-KhoForAccount {
+    # The kho assigned to a TikTok username (case-insensitive), or $null.
+    param([string]$Username, $Registry = (Get-KhoRegistry))
+    $u = ConvertTo-KhoUsername $Username
+    if (-not $u) { return $null }
+    foreach ($lib in @($Registry.libraries)) { if ([string]$lib.account -and [string]::Equals([string]$lib.account, $u, [StringComparison]::OrdinalIgnoreCase)) { return $lib } }
+    return $null
 }
 
-function Set-KhoOptions {
-    # Caption template, default hashtags and low-stock threshold of one kho; only the parameters given are changed.
-    param([string]$Id, [string]$Caption, [string[]]$Hashtags, [int]$LowStock)
-    $bound = $PSBoundParameters
-    Invoke-KhoRegistryChange {
-        param($reg)
-        $lib = @($reg.libraries | Where-Object { $_.id -ceq $Id })
-        if (-not $lib.Count) { throw 'Không tìm thấy kho.' }
-        if ($bound.ContainsKey('Caption')) { $lib[0].caption = [string]$Caption }
-        if ($bound.ContainsKey('Hashtags')) { $lib[0].hashtags = @(@($Hashtags) | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() }) }
-        if ($bound.ContainsKey('LowStock')) {
-            if ($LowStock -lt 0 -or $LowStock -gt 999) { throw 'Ngưỡng sắp hết phải từ 0 đến 999.' }
-            $lib[0].lowStock = $LowStock
+function Get-KhoRoots {
+    # Canonical folder of every registered kho, registry order.
+    param($Registry = (Get-KhoRegistry))
+    return @($Registry.libraries | ForEach-Object { [string]$_.path })
+}
+
+function Test-KhoPathAllowed {
+    # '' when $Path may become (or stay) the folder of a kho; otherwise the Vietnamese reason: full path, not a drive root, same
+    # volume as the first kho (so every move is one instant rename), not equal to / inside / containing another kho folder.
+    param($Registry, [string]$Path, [string]$ExceptId = '')
+    $text = ([string]$Path).Trim()
+    if (-not ($text -match '^[A-Za-z]:[\\/]' -or $text.StartsWith('\\'))) { return 'Chọn thư mục đầy đủ, ví dụ D:\Kho video.' }
+    try { $full = Get-CanonicalPath $text } catch { return 'Đường dẫn thư mục không hợp lệ.' }
+    $pathRoot = [IO.Path]::GetPathRoot($full)
+    if ($full.Length -le $pathRoot.Length) { return 'Không dùng gốc ổ đĩa làm kho; hãy chọn một thư mục con.' }
+    $libs = @($Registry.libraries)
+    if ($libs.Count) {
+        $firstRoot = [IO.Path]::GetPathRoot([string]$libs[0].path)
+        if (-not [string]::Equals($firstRoot, $pathRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            return "Mọi kho phải nằm trên cùng một ổ đĩa ($firstRoot) để chuyển video tức thì và không mất file."
         }
     }
+    foreach ($o in $libs) {
+        if ([string]$o.id -ceq $ExceptId) { continue }
+        $p = [string]$o.path
+        if ([string]::Equals($p, $full, [StringComparison]::OrdinalIgnoreCase)) { return "Thư mục này đã là kho '$($o.name)'." }
+        if ($full.StartsWith($p.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { return "Thư mục này nằm trong kho '$($o.name)'. Chọn thư mục khác." }
+        if ($p.StartsWith($full.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { return "Thư mục này chứa kho '$($o.name)'. Chọn thư mục khác." }
+    }
+    return ''
 }
 
 function Get-KhoDownloadTarget {
-    # Kho the next queue saves into; falls back to 'default' when that kho no longer exists.
+    # Id of the kho the next download queue saves into (the first kho when the stored one is gone).
     $reg = Get-KhoRegistry
-    if (@($reg.libraries | Where-Object { $_.id -ceq $script:khoDownloadTarget }).Count) { return [string]$script:khoDownloadTarget }
-    return 'default'
+    $lib = Get-KhoById ([string]$reg.downloadTarget) $reg
+    if ($lib) { return [string]$lib.id }
+    $first = @($reg.libraries)[0]
+    return $(if ($first) { [string]$first.id } else { '' })
+}
+
+function Get-KhoDownloadPath {
+    $lib = Get-KhoById (Get-KhoDownloadTarget)
+    return $(if ($lib) { [string]$lib.path } else { (Get-CanonicalPath (Get-KhoLegacyOutDir)) })
 }
 
 function Set-KhoDownloadTarget {
     param([string]$Id)
     $reg = Get-KhoRegistry
-    if (-not @($reg.libraries | Where-Object { $_.id -ceq $Id }).Count) { throw 'Không tìm thấy kho.' }
-    $script:khoDownloadTarget = $Id
+    if (-not (Get-KhoById $Id $reg)) { throw 'Không tìm thấy kho.' }
     # Locked kho.json: the choice only lasts for this session.
-    if (-not $script:khoRegistryReady) { return }
+    if (-not $script:khoRegistryReady) { $reg.downloadTarget = $Id; return }
     Invoke-KhoRegistryChange { param($r) $r.downloadTarget = $Id }
 }
 
-function Get-KhoList {
-    # Registry libraries plus account khos that videos reference but the registry lacks (added and saved once).
-    param($Metadata = $null)
-    $reg = Get-KhoRegistry
-    if ($null -eq $Metadata) { return @($reg.libraries) }
-    $known = @{}
-    foreach ($lib in $reg.libraries) { $known[[string]$lib.id] = $true }
-    $missing = @{}
-    foreach ($p in $Metadata.PSObject.Properties) {
-        if ($null -eq $p.Value) { continue }
-        $k = [string]$p.Value.Kho
-        if ($k.StartsWith('acct:') -and -not $known.ContainsKey($k) -and (Test-KhoId $k)) { $missing[$k] = $true }
-    }
-    if (-not $missing.Count) { return @($reg.libraries) }
-    $ids = @($missing.Keys | Sort-Object)
-    if ($script:khoRegistryReady) {
-        try {
-            Invoke-KhoRegistryChange { param($r) $r.libraries = @($r.libraries) + @($ids | ForEach-Object { New-KhoAccountLibrary $_ }) }
-            return @($script:khoRegistry.libraries)
-        } catch { Write-FileLog "WARN Không lưu được kho tài khoản mới vào kho.json: $($_.Exception.Message)" }
-    }
-    return @($reg.libraries) + @($ids | ForEach-Object { New-KhoAccountLibrary $_ })
+function Get-KhoDefaultFolder {
+    # <parent of the download-target kho>\Kho <name>: always on the same volume as the other khos.
+    param([string]$Name)
+    $parent = [IO.Path]::GetDirectoryName((Get-KhoDownloadPath))
+    if (-not $parent) { throw 'Không xác định được thư mục cha của kho tải về.' }
+    $safe = (([string]$Name) -replace '[\\/:*?"<>|\x00-\x1f]', '_').Trim().TrimEnd('.')
+    if (-not $safe) { $safe = 'moi' }
+    return (Join-Path $parent ('Kho ' + $safe))
 }
 
-function Set-MetaKho {
-    # Sets the kho of one entry of an open metadata object; a missing entry is created in the minimal shape older versions accept.
-    # Not $Manual (download target, import): sets Kho only. $Manual (owner moved it): default kho = no Kho field; account kho
-    # = Kho only; default/custom kho = KhoManual only when the video already has a confirmed post (the owner pulled a posted
-    # video out of its account kho), otherwise future confirmations still auto-assign. Returns $true when something changed.
-    param($Metadata, [string]$VideoId, [string]$KhoId, [bool]$Manual)
-    $prop = $Metadata.PSObject.Properties[$VideoId]
-    $item = if ($prop) { $prop.Value } else { $null }
-    $wantKho = $KhoId
-    if ($Manual -and $KhoId -eq 'default') { $wantKho = '' }
-    if ($null -eq $item) {
-        if (-not $wantKho) { return $false }
-        $item = [pscustomobject]@{ Posted = $false; Date = '' }
-        $Metadata | Add-Member -MemberType NoteProperty -Name $VideoId -Force -Value $item
-    }
-    $changed = $false
-    if ($wantKho) {
-        if ([string]$item.Kho -cne $wantKho) { Set-ReupField $item 'Kho' $wantKho; $changed = $true }
-    } elseif ($item.PSObject.Properties['Kho']) { [void]$item.PSObject.Properties.Remove('Kho'); $changed = $true }
-    if (-not $Manual) { return $changed }
-    $posted = @(@($item.History) | Where-Object { $_ -and [string]$_.status -eq 'succeeded' -and $_.publish_uncertain -ne $true }).Count -gt 0
-    $wantManual = $posted -and -not $KhoId.StartsWith('acct:')
-    if ($wantManual) {
-        if ($item.KhoManual -ne $true) { Set-ReupField $item 'KhoManual' $true; $changed = $true }
-    } elseif ($item.PSObject.Properties['KhoManual']) { [void]$item.PSObject.Properties.Remove('KhoManual'); $changed = $true }
-    return $changed
-}
-function Set-VideoKho {
-    # One Update-ReupMetadata call for the whole batch. -Manual: the owner chose it (KhoManual = true, auto-assign leaves it).
-    # -OnlyIfUnassigned: skip entries that already have a Kho or a manual choice (download target never overrides).
-    # Returns $true when the file changed.
-    param([string[]]$VideoIds, [string]$KhoId, [switch]$Manual, [switch]$OnlyIfUnassigned, [string]$OutDir = $ui.TxtOut.Text, [int]$TimeoutMs = 10000)
-    if (-not (Test-KhoId $KhoId)) { throw "Mã kho không hợp lệ: '$KhoId'." }
-    $ids = @($VideoIds | Where-Object { $_ } | Select-Object -Unique)
-    foreach ($id in $ids) { if ($id -notmatch '^\d+$') { throw "ID video không hợp lệ: '$id'." } }
-    if (-not $ids.Count) { return $false }
-    $isManual = [bool]$Manual
-    $update = Update-ReupMetadata -OutDir $OutDir -TimeoutMs $TimeoutMs -Change {
-        param($meta)
-        $any = $false
-        foreach ($id in $ids) {
-            if ($OnlyIfUnassigned) {
-                $p = $meta.PSObject.Properties[$id]
-                if ($p -and $p.Value -and ([string]$p.Value.Kho -or $p.Value.KhoManual -eq $true)) { continue }
-            }
-            if (Set-MetaKho $meta $id $KhoId $isManual) { $any = $true }
-        }
-        return $any
-    }
-    return [bool]$update.Changed
-}
-
-function Remove-Kho {
-    # Videos of the kho go back to the default kho (no file is touched); videos of an account kho also get KhoManual so
-    # auto-assign does not pull them back. Then the kho leaves the registry. Returns the number of videos moved.
-    param([string]$Id, [string]$OutDir = $ui.TxtOut.Text)
-    if ($Id -eq 'default') { throw 'Không xóa được Kho chung.' }
-    if ($script:importBusy) { throw 'Đang thêm video từ thư mục; đợi xong rồi hãy xóa kho.' }
-    if ($script:queueKhoId -ceq $Id -and ($script:ps -or $script:stopping -or ($script:queue -and @($script:queue).Count -gt 0))) { throw 'Hàng đợi đang tải video vào kho này. Đợi xong hoặc bấm Dừng rồi hãy xóa kho.' }
-    $reg = Get-KhoRegistry
-    if (-not $script:khoRegistryReady) { throw 'Không đọc được data\kho.json nên phiên này không lưu thay đổi kho. Đóng ứng dụng, kiểm tra file rồi mở lại.' }
-    if (-not @($reg.libraries | Where-Object { $_.id -ceq $Id }).Count) { throw 'Không tìm thấy kho.' }
-    $isAccount = $Id.StartsWith('acct:')
-    $state = @{ Moved = 0 }
-    [void](Update-ReupMetadata -OutDir $OutDir -Change {
-        param($meta)
-        foreach ($p in $meta.PSObject.Properties) {
-            $item = $p.Value
-            if ($null -eq $item -or [string]$item.Kho -cne $Id) { continue }
-            [void]$item.PSObject.Properties.Remove('Kho')
-            if ($isAccount) { Set-ReupField $item 'KhoManual' $true }
-            else {
-                # Same rule as a manual move to the default kho: pin only a video that already has a confirmed post.
-                $posted = @(@($item.History) | Where-Object { $_ -and [string]$_.status -eq 'succeeded' -and $_.publish_uncertain -ne $true }).Count -gt 0
-                if ($posted) { if ($item.KhoManual -ne $true) { Set-ReupField $item 'KhoManual' $true } }
-                elseif ($item.PSObject.Properties['KhoManual']) { [void]$item.PSObject.Properties.Remove('KhoManual') }
-            }
-            $state.Moved++
-        }
-        return [bool]$state.Moved
-    })
-    Invoke-KhoRegistryChange {
-        param($r)
-        $r.libraries = @($r.libraries | Where-Object { $_.id -cne $Id })
-        if ($r.downloadTarget -ceq $Id) { $r.downloadTarget = 'default' }
-    }
-    return [int]$state.Moved
-}
-
-function Invoke-KhoAutoAssign {
-    # Pure: runs inside the Change block that writes history. A video whose Kho is missing / default / custom and that is
-    # not KhoManual moves to the account kho of its earliest confirmed (succeeded, not uncertain) post. Once it is an
-    # account kho it never changes by itself. Returns $true when something changed.
-    param($Metadata)
-    $changed = $false
-    foreach ($p in $Metadata.PSObject.Properties) {
-        $item = $p.Value
-        if ($null -eq $item -or $item.Source -ne 'autotok-history' -or $item.KhoManual -eq $true) { continue }
-        $current = [string]$item.Kho
-        if ($current.StartsWith('acct:')) { continue }
-        $target = ''; $earliest = [long]::MaxValue
-        foreach ($h in @($item.History)) {
-            if ($null -eq $h -or [string]$h.status -ne 'succeeded' -or $h.publish_uncertain -eq $true) { continue }
-            $account = Get-KhoAccountId ([string]$h.username)
-            if (-not $account) { continue }
-            $when = Get-TikTokSortKey ([string]$h.accepted_at)
-            if ($when -le 0) { $when = [long]::MaxValue - 1 }
-            if ($when -lt $earliest) { $earliest = $when; $target = $account }
-        }
-        if ($target -and $current -cne $target) { Set-ReupField $item 'Kho' $target; $changed = $true }
-    }
-    return $changed
-}
-
-function Add-QueueVideoToKho {
-    # After a successful save: the video joins the kho chosen at queue start, unless it already has a kho or a manual
-    # choice. A failure is logged and never reaches the queue.
-    param([string]$VideoPath)
-    $khoId = [string]$script:queueKhoId
-    if (-not $khoId -or $khoId -eq 'default') { return }
-    if (-not $khoId.StartsWith('acct:') -and -not @((Get-KhoRegistry).libraries | Where-Object { $_.id -ceq $khoId }).Count) {
-        Write-FileLog "WARN Kho '$khoId' không còn trong danh sách; video ở lại Kho chung."
-        return
-    }
+function New-Kho {
+    # Creates the folder (default <parent of the download kho>\Kho <name>) and registers it. Nothing is registered when the
+    # folder cannot be created or the registry cannot be saved (a folder this call made is removed again).
+    param([string]$Name, [string]$Path = '', [string]$Account = '')
+    $made = @{ Dir = ''; Existed = $true }
     try {
-        $name = [IO.Path]::GetFileName($VideoPath)
-        $match = [regex]::Match($name, '^(\d+)-3-hoan-chinh\.mp4$')
-        if (-not $match.Success) { throw "Tên file không đúng dạng <ID>-3-hoan-chinh.mp4: $name" }
-        $dir = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($VideoPath))
-        [void](Set-VideoKho -VideoIds @($match.Groups[1].Value) -KhoId $khoId -OnlyIfUnassigned -OutDir $dir -TimeoutMs 3000)
+        return (Invoke-KhoRegistryChange {
+            param($reg)
+            $n = Assert-KhoName $reg $Name
+            $user = ConvertTo-KhoUsername $Account
+            if ($Account -and -not $user) { throw 'Tên tài khoản TikTok không hợp lệ.' }
+            if ($user) { $dupe = Get-KhoForAccount $user $reg; if ($dupe) { throw "Tài khoản @$user đã có kho '$($dupe.name)'." } }
+            $target = $(if ($Path) { $Path } else { Get-KhoDefaultFolder $n })
+            $why = Test-KhoPathAllowed $reg $target
+            if ($why) { throw $why }
+            $full = Get-CanonicalPath $target
+            $made.Existed = [IO.Directory]::Exists($full)
+            [void][IO.Directory]::CreateDirectory($full)
+            $made.Dir = $full
+            $lib = New-KhoLibrary -Id (New-KhoId) -Name $n -Path $full -Account $user -CreatedByApp (-not $made.Existed)
+            $reg.libraries = @($reg.libraries) + $lib
+            return $lib
+        })
     } catch {
-        Write-FileLog "WARN Không gán kho '$khoId' cho '$VideoPath': $($_.Exception.Message)"
-        Add-Log "Đã lưu video nhưng chưa gán được vào kho đã chọn ($($_.Exception.Message)). Chuyển kho thủ công trong Kho video." 'Warning'
+        if ($made.Dir -and -not $made.Existed) {
+            try { [IO.Directory]::Delete($made.Dir) } catch { Write-FileLog "WARN Không xóa lại được thư mục kho vừa tạo '$($made.Dir)': $($_.Exception.Message)" }
+        }
+        throw
+    }
+}
+
+function New-KhoForAccount {
+    # Returns the account's kho, creating "Kho @user" (named @user) when missing.
+    param([string]$Username)
+    $u = ConvertTo-KhoUsername $Username
+    if (-not $u) { throw 'Tên tài khoản TikTok không hợp lệ.' }
+    $existing = Get-KhoForAccount $u
+    if ($existing) { return $existing }
+    $name = '@' + $u
+    if (@((Get-KhoRegistry).libraries | Where-Object { [string]::Equals([string]$_.name, $name, [StringComparison]::OrdinalIgnoreCase) }).Count) { $name += ' (TikTok)' }
+    return (New-Kho -Name $name -Account $u)
+}
+
+function Rename-Kho {
+    param([string]$Id, [string]$Name)
+    Invoke-KhoRegistryChange {
+        param($reg)
+        $lib = Get-KhoById $Id $reg
+        if (-not $lib) { throw 'Không tìm thấy kho.' }
+        $lib.name = Assert-KhoName $reg $Name $Id
+    }
+}
+
+function Set-KhoAccount {
+    # Assigns a TikTok account to a kho ('' removes it). One kho per account.
+    param([string]$Id, [string]$Account)
+    Invoke-KhoRegistryChange {
+        param($reg)
+        $lib = Get-KhoById $Id $reg
+        if (-not $lib) { throw 'Không tìm thấy kho.' }
+        $user = ConvertTo-KhoUsername $Account
+        if ($Account.Trim() -and -not $user) { throw 'Tên tài khoản TikTok không hợp lệ.' }
+        if ($user) {
+            $dupe = Get-KhoForAccount $user $reg
+            if ($dupe -and [string]$dupe.id -cne $Id) { throw "Tài khoản @$user đã có kho '$($dupe.name)'." }
+        }
+        $lib.account = $user
+    }
+}
+
+function Set-KhoOptions {
+    # Caption template, default hashtags, low-stock threshold and posting slots of one kho; only the parameters given are changed.
+    param([string]$Id, [string]$Caption, [string[]]$Hashtags, [int]$LowStock, [string[]]$Slots)
+    $bound = $PSBoundParameters
+    Invoke-KhoRegistryChange {
+        param($reg)
+        $lib = Get-KhoById $Id $reg
+        if (-not $lib) { throw 'Không tìm thấy kho.' }
+        if ($bound.ContainsKey('Caption')) { $lib.caption = [string]$Caption }
+        if ($bound.ContainsKey('Hashtags')) { $lib.hashtags = @(@($Hashtags) | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() }) }
+        if ($bound.ContainsKey('LowStock')) {
+            if ($LowStock -lt 0 -or $LowStock -gt 999) { throw 'Ngưỡng sắp hết phải từ 0 đến 999.' }
+            $lib.lowStock = $LowStock
+        }
+        if ($bound.ContainsKey('Slots')) {
+            $bad = @(@($Slots) | Where-Object { $_ -and ([string]$_) -notmatch '^([01]\d|2[0-3]):[0-5]\d$' })
+            if ($bad.Count) { throw "Giờ đăng không hợp lệ: $($bad[0]). Dùng dạng HH:mm, ví dụ 19:00." }
+            $lib.slots = @(ConvertTo-KhoSlots $Slots)
+        }
     }
 }
 
 function Test-KhoImportBlocked {
     # '' when a folder import may start now; otherwise the message for the owner.
     if ($script:importBusy) { return 'Đang thêm video từ một thư mục khác.' }
+    if ($script:khoMoveRunning -or $script:khoExclusive -gt 0) { return 'Đang chuyển kho hoặc mở hộp thoại đăng/dọn dẹp. Thử lại sau.' }
     if ($script:ps -or $script:stopping -or ($script:queue -and @($script:queue).Count -gt 0)) { return 'Hãy dừng hoặc đợi hàng đợi / sửa video hoàn tất trước khi thêm video từ thư mục.' }
     return ''
 }
@@ -1550,15 +1532,14 @@ function Copy-KhoFileNoOverwrite {
 }
 
 function Import-KhoFolder {
-    # Copies <id>-3-hoan-chinh.mp4 (+ -1/-2 companions) of a folder into $OutDir without overwriting anything, then records
-    # Kho (and the source's history) in one Update-ReupMetadata call. Safe to run in a background runspace: no UI access;
-    # progress goes to the optional $Progress callback ({Done; Total; Id}). The source folder is only read.
+    # Copies <id>-3-hoan-chinh.mp4 (+ -1/-2 companions) of a folder into the kho folder $OutDir without overwriting anything, then
+    # records the source's history in one Update-ReupMetadata call. Safe to run in a background runspace: no UI access; progress
+    # goes to the optional $Progress callback ({Done; Total; Id}). The source folder is only read.
     # An id already present with identical content (retry after a failed metadata step) only gets the metadata step.
-    param([string]$SourceDir, [string]$KhoId, [string]$OutDir, [scriptblock]$Progress = $null, [Threading.CancellationToken]$CancelToken = [Threading.CancellationToken]::None)
-    if (-not (Test-KhoId $KhoId)) { throw "Mã kho không hợp lệ: '$KhoId'." }
+    param([string]$SourceDir, [string]$OutDir, [scriptblock]$Progress = $null, [Threading.CancellationToken]$CancelToken = [Threading.CancellationToken]::None)
     if (-not [System.IO.Directory]::Exists($SourceDir)) { throw "Không thấy thư mục nguồn: $SourceDir" }
     $srcFull = Get-CanonicalPath $SourceDir; $outFull = Get-CanonicalPath $OutDir
-    if ([string]::Equals($srcFull, $outFull, [StringComparison]::OrdinalIgnoreCase)) { throw 'Thư mục nguồn trùng thư mục xuất.' }
+    if ([string]::Equals($srcFull, $outFull, [StringComparison]::OrdinalIgnoreCase)) { throw 'Thư mục nguồn trùng thư mục kho.' }
     [void][System.IO.Directory]::CreateDirectory($outFull)
     $result = [pscustomobject]@{ Added = 0; Skipped = 0; Failed = 0; Cancelled = $false; AddedIds = @(); SkippedIds = @(); Errors = @(); Warnings = @() }
     $errors = New-Object System.Collections.Generic.List[string]; $warnings = New-Object System.Collections.Generic.List[string]
@@ -1609,7 +1590,7 @@ function Import-KhoFolder {
     if ($pending.Count) {
         $source = $null
         try { $source = Get-ReupMetadata -OutDir $srcFull }
-        catch { $warnings.Add("Không đọc được reup-status.json của thư mục nguồn; chỉ gán kho, không chép lịch sử đăng. $($_.Exception.Message)") }
+        catch { $warnings.Add("Không đọc được reup-status.json của thư mục nguồn; không chép lịch sử đăng. $($_.Exception.Message)") }
         $ids = $pending.ToArray()
         try {
             [void](Update-ReupMetadata -OutDir $outFull -Change {
@@ -1622,7 +1603,7 @@ function Import-KhoFolder {
                     $mine = if ($mine) { $mine.Value } else { $null }
                     if ($null -eq $mine -and $theirs) {
                         $clone = ConvertFrom-Json -InputObject (ConvertTo-Json -InputObject $theirs -Depth 12 -Compress)
-                        foreach ($name in @('Kho', 'KhoManual')) { if ($clone.PSObject.Properties[$name]) { [void]$clone.PSObject.Properties.Remove($name) } }
+                        foreach ($name in @('Kho', 'KhoManual', 'KhoPinned')) { if ($clone.PSObject.Properties[$name]) { [void]$clone.PSObject.Properties.Remove($name) } }
                         $meta | Add-Member -MemberType NoteProperty -Name $id -Force -Value $clone
                         $any = $true
                     } elseif ($mine -and $theirs -and $theirs.Source -eq 'autotok-history') {
@@ -1635,11 +1616,6 @@ function Import-KhoFolder {
                             if (Set-TikTokItemHistory $meta $id $union '') { $any = $true }
                         }
                     }
-                    $cur = $meta.PSObject.Properties[$id]
-                    $cur = if ($cur) { $cur.Value } else { $null }
-                    if ($cur -and (([string]$cur.Kho).StartsWith('acct:') -or $cur.KhoManual -eq $true)) { continue }
-                    if ($KhoId -ne 'default') { if (Set-MetaKho $meta $id $KhoId $false) { $any = $true } }
-                    elseif ($cur -and $cur.PSObject.Properties['Kho']) { [void]$cur.PSObject.Properties.Remove('Kho'); $any = $true }   # Kho chung: bo Kho tuy chinh (acct:/KhoManual da bi bo qua o tren)
                 }
                 return $any
             })
@@ -1650,7 +1626,7 @@ function Import-KhoFolder {
         } catch {
             # Files stay; running the import again finishes the metadata step (identical files are recognised).
             $result.Failed += $ids.Count
-            $errors.Add("Đã chép $($ids.Count) video nhưng chưa ghi được thông tin kho: $($_.Exception.Message) Chạy lại để hoàn tất.")
+            $errors.Add("Đã chép $($ids.Count) video nhưng chưa ghi được lịch sử: $($_.Exception.Message) Chạy lại để hoàn tất.")
         }
     }
     $result.Skipped = $skippedIds.Count; $result.SkippedIds = $skippedIds.ToArray()
@@ -1661,7 +1637,628 @@ function Import-KhoFolder {
 # Functions a background runspace needs to run Import-KhoFolder (build an InitialSessionState from these, like the TikTok worker).
 $script:khoImportFunctions = @('Get-CanonicalPath', 'Get-FileStamp', 'Get-ReupMutexName', 'Get-ReupMetadata', 'Update-ReupMetadata', 'Set-ReupField',
     'Get-ReupManualState', 'Update-ReupAggregate', 'Format-TikTokTime', 'Get-TikTokSortKey', 'ConvertTo-TikTokHistoryEntry', 'Get-TikTokHistorySignature',
-    'Set-TikTokItemHistory', 'Test-KhoId', 'Set-MetaKho', 'Get-KhoFileSha256', 'Copy-KhoFileNoOverwrite', 'Import-KhoFolder')
+    'Set-TikTokItemHistory', 'Get-KhoFileSha256', 'Copy-KhoFileNoOverwrite', 'Import-KhoFolder')
+
+# ------------------------------------------------------------- chuyen kho that: nhat ky giao dich (data\kho-moves) ----
+# A move is a batch of same-volume renames driven by a journal written BEFORE the first rename (temp file + Flush(true) + rename).
+# The journal lives outside every kho folder, so no cache cleanup can ever delete it. Recovery (startup, before each batch) rolls
+# forward from the recorded phase: renaming -> meta-target-done -> meta-source-done. Every step is idempotent.
+function Get-KhoMovesDir { return (Join-Path $root 'data\kho-moves') }
+
+function Add-KhoMoveLog {
+    param([string]$Text)
+    try {
+        $dir = Join-Path $root 'logs'
+        [void][System.IO.Directory]::CreateDirectory($dir)
+        [System.IO.File]::AppendAllText((Join-Path $dir 'kho-moves.log'), ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + '  ' + $Text + "`r`n"), [System.Text.UTF8Encoding]::new($false))
+    } catch { Write-FileLog "WARN kho-moves.log: $($_.Exception.Message)" }
+}
+
+function Write-KhoJournal {
+    # Atomic: temp file in the same folder, Flush(true), then rename / replace.
+    param($Journal)
+    $dir = Get-KhoMovesDir
+    [void][System.IO.Directory]::CreateDirectory($dir)
+    $path = Join-Path $dir ([string]$Journal.txid + '.json')
+    $temp = $path + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+        $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json -InputObject $Journal -Depth 14 -ErrorAction Stop))
+        $stream = [System.IO.File]::Open($temp, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+        if ([System.IO.File]::Exists($path)) { [System.IO.File]::Replace($temp, $path, [System.Management.Automation.Language.NullString]::Value) }
+        else { [System.IO.File]::Move($temp, $path) }
+        $temp = $null
+    } finally { if ($temp -and [System.IO.File]::Exists($temp)) { try { [System.IO.File]::Delete($temp) } catch { Write-FileLog "WARN journal temp: $($_.Exception.Message)" } } }
+    return $path
+}
+
+function Read-KhoJournals {
+    # Every journal file as @{ Path; Journal; Error }. An unreadable file is reported (it keeps blocking), never deleted.
+    $dir = Get-KhoMovesDir
+    $list = New-Object System.Collections.Generic.List[object]
+    if (-not [System.IO.Directory]::Exists($dir)) { return @() }
+    foreach ($f in [System.IO.DirectoryInfo]::new($dir).GetFiles('*.json')) {
+        if (-not $f.Name.EndsWith('.json', [StringComparison]::OrdinalIgnoreCase)) { continue }
+        try {
+            $j = [System.IO.File]::ReadAllText($f.FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop
+            if ($null -eq $j -or -not [string]$j.txid -or -not [string]$j.from -or -not [string]$j.to) { throw 'Thiếu trường bắt buộc.' }
+            $list.Add(@{ Path = $f.FullName; Journal = $j; Error = '' })
+        } catch { $list.Add(@{ Path = $f.FullName; Journal = $null; Error = $_.Exception.Message }) }
+    }
+    return $list.ToArray()
+}
+
+function Get-KhoJournalBlock {
+    # Message when an unresolved journal reserves one of the folders (or any, when unreadable), otherwise ''.
+    param([string[]]$Roots)
+    $set = @{}
+    foreach ($r in @($Roots)) { if ($r) { $set[(Get-CanonicalPath $r).ToUpperInvariant()] = $true } }
+    foreach ($e in @(Read-KhoJournals)) {
+        if (-not $e.Journal) { return "Có file nhật ký chuyển kho không đọc được ($([IO.Path]::GetFileName($e.Path))). Kiểm tra thư mục data\kho-moves rồi mở lại ứng dụng." }
+        foreach ($p in @($e.Journal.from, $e.Journal.to)) {
+            if ($p -and $set.ContainsKey((Get-CanonicalPath ([string]$p)).ToUpperInvariant())) {
+                return "Có lần chuyển video #$($e.Journal.id) chưa hoàn tất giữa '$($e.Journal.from)' và '$($e.Journal.to)'. Kho này bị khóa chuyển/xóa cho tới khi xử lý (mở lại ứng dụng để thử hoàn tất, hoặc kiểm tra hai thư mục)."
+            }
+        }
+    }
+    return ''
+}
+
+function Initialize-KhoCacheDir {
+    param([string]$Dir)
+    if ([System.IO.Directory]::Exists($Dir)) { return }
+    [void][System.IO.Directory]::CreateDirectory($Dir)
+    try { [System.IO.File]::SetAttributes($Dir, [System.IO.FileAttributes]::Directory -bor [System.IO.FileAttributes]::Hidden) }
+    catch { Write-FileLog "WARN Không đặt được thuộc tính ẩn cho '$Dir': $($_.Exception.Message)" }
+}
+
+function Get-KhoReceiptGroups {
+    # Files of <root>\.cache\tiktok-posts grouped by request id: @{ VideoId; Files; Live } (VideoId read from the receipt, else the
+    # .job; '' when unknown). Live = a .job or .lock (running OR kept for retry) exists.
+    param([string]$Root)
+    $dir = Join-Path (Join-Path $Root '.cache') 'tiktok-posts'
+    $groups = @{}
+    if (-not [System.IO.Directory]::Exists($dir)) { return $groups }
+    foreach ($f in [System.IO.DirectoryInfo]::new($dir).GetFiles()) {
+        $m = [regex]::Match($f.Name, '^([a-f0-9]{32})\.(.+)$')
+        if (-not $m.Success) { continue }
+        $req = $m.Groups[1].Value; $rest = $m.Groups[2].Value
+        if (-not $groups.ContainsKey($req)) { $groups[$req] = @{ VideoId = ''; Files = (New-Object System.Collections.Generic.List[object]); Live = $false } }
+        $g = $groups[$req]
+        $g.Files.Add(@{ Path = $f.FullName; Name = $f.Name; Rest = $rest })
+        if ($rest -ceq 'job' -or $rest -ceq 'lock') { $g.Live = $true }
+    }
+    foreach ($req in @($groups.Keys)) {
+        $g = $groups[$req]
+        $source = @($g.Files | Where-Object { $_.Rest -cmatch '^json(\.archived-.+)?$' } | Sort-Object { $_.Rest.Length }) + @($g.Files | Where-Object { $_.Rest -cmatch '^job(\.archived-.+)?$' })
+        foreach ($f in $source) {
+            try {
+                $doc = [System.IO.File]::ReadAllText($f.Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop
+                $vid = $(if ($f.Rest -cmatch '^json') { [string]$doc.VideoId } else { [string]$doc.Record.VideoId })
+                if ($vid -match '^\d+$') { $g.VideoId = $vid; break }
+            } catch { Write-FileLog "WARN Không đọc được biên nhận '$($f.Name)': $($_.Exception.Message)" }
+        }
+    }
+    return $groups
+}
+
+function Get-KhoVideoBlock {
+    # S2: '' when nothing about this video's TikTok jobs blocks a move / delete; otherwise the Vietnamese reason. Any .job / .lock of
+    # the video in its folder blocks it (running or kept for retry). A job whose video cannot be read blocks the whole folder.
+    param([string]$Root, [string]$Id, $Groups = $null)
+    if ($null -eq $Groups) { $Groups = Get-KhoReceiptGroups $Root }
+    foreach ($req in $Groups.Keys) {
+        $g = $Groups[$req]
+        if (-not $g.Live) { continue }
+        if ($g.VideoId -ceq $Id) { return 'Video có lệnh đăng chưa xong hoặc lỗi chưa xử lý — Thử lại hoặc Lưu trữ trước.' }
+        if (-not $g.VideoId) { return 'Thư mục có lệnh đăng không rõ thuộc video nào (xem Lịch sử đăng) — xử lý trước.' }
+    }
+    if (Test-TikTokTransferActive (Join-Path $Root "$Id-3-hoan-chinh.mp4")) { return 'Video đang được chuyển sang bộ đăng nền.' }
+    return ''
+}
+
+function New-KhoMovePlan {
+    # Ordered renames of one video: -1/-2 (.cache and legacy root), thumbnail + probe cache (optional), TikTok receipts (finished /
+    # archived, by VideoId), and LAST the -3. Only files that exist are listed.
+    param([string]$Id, [string]$FromRoot, [string]$ToRoot, $Groups = $null)
+    $items = New-Object System.Collections.Generic.List[object]
+    $add = { param($src, $dst, $optional, $kind) if ([System.IO.File]::Exists($src)) { $items.Add([ordered]@{ src = $src; dst = $dst; optional = [bool]$optional; kind = $kind; status = 'pending' }) } }
+    $fc = Join-Path $FromRoot '.cache'; $tc = Join-Path $ToRoot '.cache'
+    foreach ($leaf in @("$Id-1-video-goc.mp4", "$Id-2-am-thanh-tho.m4a")) {
+        & $add (Join-Path $fc $leaf) (Join-Path $tc $leaf) $false 'companion'
+        & $add (Join-Path $FromRoot $leaf) (Join-Path $ToRoot $leaf) $false 'legacy-companion'
+    }
+    foreach ($ext in @('jpg', 'json')) { & $add (Join-Path (Join-Path $fc 'thumbs') "$Id.$ext") (Join-Path (Join-Path $tc 'thumbs') "$Id.$ext") $true 'thumb' }
+    if ($null -eq $Groups) { $Groups = Get-KhoReceiptGroups $FromRoot }
+    foreach ($req in @($Groups.Keys | Sort-Object)) {
+        $g = $Groups[$req]
+        if ($g.VideoId -cne $Id) { continue }
+        foreach ($f in @($g.Files | Sort-Object { $_.Name })) {
+            & $add $f.Path (Join-Path (Join-Path $tc 'tiktok-posts') $f.Name) $false $(if ($f.Rest -ceq 'json') { 'receipt' } else { 'receipt-archive' })
+        }
+    }
+    & $add (Join-Path $FromRoot "$Id-3-hoan-chinh.mp4") (Join-Path $ToRoot "$Id-3-hoan-chinh.mp4") $false 'final'
+    return $items.ToArray()
+}
+
+function Invoke-KhoMoveRename {
+    # One rename of a journal; idempotent: src only -> move; dst only -> already done; both -> conflict (mandatory) / skipped (optional).
+    # Returns 'moved' | 'done' | 'skipped' | 'conflict' | 'failed'.
+    param($Rename)
+    $src = [string]$Rename.src; $dst = [string]$Rename.dst; $optional = [bool]$Rename.optional
+    $se = [System.IO.File]::Exists($src); $de = [System.IO.File]::Exists($dst)
+    if (-not $se -and $de) { return 'done' }
+    if ($se -and $de) { return $(if ($optional) { 'skipped' } else { 'conflict' }) }
+    if (-not $se) { return $(if ($optional) { 'skipped' } else { 'failed' }) }
+    $lastError = ''
+    for ($try = 1; $try -le 4; $try++) {
+        try {
+            $parent = [IO.Path]::GetDirectoryName($dst)
+            if ([IO.Path]::GetFileName($parent) -ceq 'thumbs' -or [IO.Path]::GetFileName($parent) -ceq 'tiktok-posts') { Initialize-KhoCacheDir ([IO.Path]::GetDirectoryName($parent)) }
+            elseif ([IO.Path]::GetFileName($parent) -ceq '.cache') { Initialize-KhoCacheDir $parent }
+            [void][System.IO.Directory]::CreateDirectory($parent)
+            [System.IO.File]::Move($src, $dst)
+            return 'moved'
+        } catch {
+            $lastError = $_.Exception.Message
+            if ([System.IO.File]::Exists($dst) -and -not [System.IO.File]::Exists($src)) { return 'moved' }
+            if ($try -lt 4) { Start-Sleep -Milliseconds 150 }
+        }
+    }
+    Write-FileLog "WARN Chuyển kho: không đổi tên được '$src' -> '$dst': $lastError"
+    $Rename.error = $lastError
+    return $(if ($optional) { 'skipped' } else { 'failed' })
+}
+
+function Update-KhoReceiptPaths {
+    # A moved finished receipt must name its new folder, or the receipt reader rejects it. Idempotent.
+    param([string]$ReceiptPath, [string]$NewRoot, [string]$Id)
+    if (-not [System.IO.File]::Exists($ReceiptPath)) { return }
+    try { $rec = [System.IO.File]::ReadAllText($ReceiptPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop }
+    catch { Write-FileLog "WARN Chuyển kho: không đọc được biên nhận '$ReceiptPath': $($_.Exception.Message)"; return }
+    $newSource = Join-Path $NewRoot "$Id-3-hoan-chinh.mp4"
+    if ((Test-SamePath ([string]$rec.OutDir) $NewRoot) -and (Test-SamePath ([string]$rec.SourcePath) $newSource)) { return }
+    Set-ReupField $rec 'OutDir' $NewRoot
+    Set-ReupField $rec 'SourcePath' $newSource
+    Save-TikTokReceipt $rec
+}
+
+function Copy-ReupEntry {
+    # Deep copy of one metadata entry without the labels of the old logical kho.
+    param($Entry)
+    $clone = ConvertFrom-Json -InputObject (ConvertTo-Json -InputObject $Entry -Depth 12 -Compress)
+    foreach ($n in @('Kho', 'KhoManual')) { if ($clone.PSObject.Properties[$n]) { [void]$clone.PSObject.Properties.Remove($n) } }
+    return $clone
+}
+
+function Test-ReupConfirmed {
+    # The entry has a confirmed post (succeeded, not publish_uncertain).
+    param($Entry)
+    if ($null -eq $Entry) { return $false }
+    return (@(@($Entry.History) | Where-Object { $_ -and [string]$_.status -eq 'succeeded' -and $_.publish_uncertain -ne $true }).Count -gt 0)
+}
+
+function Merge-KhoMoveEntry {
+    # S4: puts the source entry (snapshot) into the target metadata. No target entry -> a copy. Otherwise history is united by key
+    # (target wins), the manual state is normalised through Get-ReupManualState (kept when either side marked it), fields only the
+    # source has are kept, KhoPinned is kept when either side has it. Idempotent. Returns $true when the target changed.
+    param($Meta, [string]$Id, $Snapshot)
+    if ($null -eq $Snapshot) { return $false }
+    $prop = $Meta.PSObject.Properties[$Id]
+    if (-not $prop -or $null -eq $prop.Value) {
+        $Meta | Add-Member -MemberType NoteProperty -Name $Id -Force -Value (Copy-ReupEntry $Snapshot)
+        return $true
+    }
+    $mine = $prop.Value
+    $before = ConvertTo-Json -InputObject $mine -Depth 12 -Compress
+    $ms = Get-ReupManualState $Snapshot; $mm = Get-ReupManualState $mine
+    $posted = [bool]($ms.Posted -or $mm.Posted)
+    $date = $(if ($mm.Posted) { [string]$mm.Date } elseif ($ms.Posted) { [string]$ms.Date } else { '' })
+    if ($mine.Source -eq 'autotok-history' -or $Snapshot.Source -eq 'autotok-history') {
+        $have = @{}
+        foreach ($h in @($mine.History)) { if ($h -and [string]$h.key) { $have[[string]$h.key] = $true } }
+        $extra = @(@($Snapshot.History) | Where-Object { $_ -and [string]$_.key -and -not $have.ContainsKey([string]$_.key) } | ForEach-Object { ConvertTo-TikTokHistoryEntry $_ })
+        $union = @(@($mine.History | Where-Object { $_ }) + $extra | Sort-Object { Get-TikTokSortKey ([string]$_.created_at) } -Descending)
+        Set-ReupField $mine 'Source' 'autotok-history'
+        Set-ReupField $mine 'History' $union
+        Set-ReupField $mine 'ManualPosted' $posted
+        Set-ReupField $mine 'ManualDate' $date
+        if (-not [string]$mine.FileSha256 -and [string]$Snapshot.FileSha256) { Set-ReupField $mine 'FileSha256' ([string]$Snapshot.FileSha256) }
+        Update-ReupAggregate $mine
+    } else {
+        Set-ReupField $mine 'Posted' $posted
+        Set-ReupField $mine 'Date' $date
+    }
+    foreach ($p in $Snapshot.PSObject.Properties) {
+        if ($p.Name -in @('Kho', 'KhoManual', 'KhoPinned')) { continue }
+        if (-not $mine.PSObject.Properties[$p.Name]) { $mine | Add-Member -MemberType NoteProperty -Name $p.Name -Value $p.Value -Force }
+    }
+    if ($Snapshot.KhoPinned -eq $true -and $mine.KhoPinned -ne $true) { Set-ReupField $mine 'KhoPinned' $true }
+    return ($before -cne (ConvertTo-Json -InputObject $mine -Depth 12 -Compress))
+}
+
+function Resume-KhoMove {
+    # Finishes one journalled move from its recorded phase; every step is idempotent, so it also repairs a crash at any point.
+    # Returns @{ Done; Conflict; Error }. Not done = the journal stays and blocks both folders.
+    param($Journal, [string]$JournalPath)
+    $id = [string]$Journal.id; $to = [string]$Journal.to; $from = [string]$Journal.from
+    $phase = [string]$Journal.phase
+    if ($phase -eq 'renaming') {
+        foreach ($r in @($Journal.renames)) {
+            if ($r.PSObject.Properties['error'] -eq $null) { $r | Add-Member -NotePropertyName error -NotePropertyValue '' -Force }
+            $state = Invoke-KhoMoveRename $r
+            $r.status = $state
+            if ($state -eq 'conflict' -or $state -eq 'failed') {
+                $why = $(if ($state -eq 'conflict') { "đã có file cùng tên ở đích: $([IO.Path]::GetFileName([string]$r.dst))" } else { "không đổi tên được $([IO.Path]::GetFileName([string]$r.src))$(if ($r.error) { ' (' + $r.error + ')' })" })
+                try { [void](Write-KhoJournal $Journal) } catch { Write-FileLog "WARN Không ghi được nhật ký chuyển kho: $($_.Exception.Message)" }
+                Add-KhoMoveLog "STOP #$id $from -> $to : $why"
+                return @{ Done = $false; Conflict = ($state -eq 'conflict'); Error = $why }
+            }
+        }
+        foreach ($r in @($Journal.renames)) { if ([string]$r.kind -eq 'receipt' -and [string]$r.status -in @('moved', 'done')) { Update-KhoReceiptPaths ([string]$r.dst) $to $id } }
+        $snapshot = $Journal.sourceEntrySnapshot
+        if ($null -ne $snapshot) {
+            [void](Update-ReupMetadata -OutDir $to -Change { param($meta) return (Merge-KhoMoveEntry $meta $id $snapshot) })
+        }
+        $Journal.phase = 'meta-target-done'
+        [void](Write-KhoJournal $Journal)
+        $phase = 'meta-target-done'
+    }
+    if ($phase -eq 'meta-target-done') {
+        [void](Update-ReupMetadata -OutDir $from -Change {
+            param($meta)
+            if (-not $meta.PSObject.Properties[$id]) { return $false }
+            [void]$meta.PSObject.Properties.Remove($id)
+            return $true
+        })
+        $Journal.phase = 'meta-source-done'
+        [void](Write-KhoJournal $Journal)
+    }
+    try { [System.IO.File]::Delete($JournalPath) } catch { Write-FileLog "WARN Không xóa được nhật ký chuyển kho '$JournalPath': $($_.Exception.Message)"; return @{ Done = $false; Conflict = $false; Error = 'Không xóa được nhật ký.' } }
+    Add-KhoMoveLog "OK   #$id $from -> $to ($([string]$Journal.reason))"
+    return @{ Done = $true; Conflict = $false; Error = '' }
+}
+
+function Resume-KhoMoves {
+    # Recovery: roll every pending journal forward. Returns @{ Done; Pending (messages) }. Runs at startup before the gallery / sync
+    # start and before each move batch.
+    $done = 0; $pending = New-Object System.Collections.Generic.List[string]
+    foreach ($e in @(Read-KhoJournals)) {
+        if (-not $e.Journal) { $pending.Add("Nhật ký chuyển kho hỏng: $([IO.Path]::GetFileName($e.Path)) ($($e.Error))"); continue }
+        try {
+            $r = Resume-KhoMove $e.Journal $e.Path
+            if ($r.Done) { $done++ } else { $pending.Add("Video #$($e.Journal.id): $($r.Error)") }
+        } catch {
+            Write-FileLog "ERR  Hoàn tất chuyển kho #$($e.Journal.id): $($_.Exception.Message)`r`n$($_.ScriptStackTrace)"
+            $pending.Add("Video #$($e.Journal.id): $($_.Exception.Message)")
+        }
+    }
+    return @{ Done = $done; Pending = $pending.ToArray() }
+}
+
+function Move-KhoVideos {
+    # PRE: the caller checked Test-KhoQuiet and paused the sync. Moves each video (serially, one journal each) into $ToRoot.
+    # $Videos: @{ Id; From }. -Manual: a video that already has a confirmed post gets KhoPinned (auto-move leaves it).
+    # Returns @{ Moved = @(ids); Failed = @(@{ Id; Why }) }.
+    param([object[]]$Videos, [string]$ToRoot, [switch]$Manual)
+    $moved = New-Object System.Collections.Generic.List[string]
+    $failed = New-Object System.Collections.Generic.List[object]
+    $to = Get-CanonicalPath $ToRoot
+    $groupCache = @{}
+    foreach ($v in @($Videos)) {
+        $id = [string]$v.Id; $from = Get-CanonicalPath ([string]$v.From)
+        $why = ''
+        try {
+            if ($id -notmatch '^\d+$') { throw 'ID video không hợp lệ.' }
+            if (Test-SamePath $from $to) { throw 'Video đã ở kho này.' }
+            $block = Get-KhoJournalBlock @($from, $to)
+            if ($block) { throw $block }
+            if (-not $groupCache.ContainsKey($from.ToUpperInvariant())) { $groupCache[$from.ToUpperInvariant()] = Get-KhoReceiptGroups $from }
+            $groups = $groupCache[$from.ToUpperInvariant()]
+            $block = Get-KhoVideoBlock $from $id $groups
+            if ($block) { throw $block }
+            $plan = @(New-KhoMovePlan $id $from $to $groups)
+            if (-not @($plan | Where-Object { $_.kind -eq 'final' }).Count) { throw 'Không thấy file video hoàn chỉnh (-3) ở kho nguồn.' }
+            foreach ($r in $plan) {
+                if (-not [System.IO.File]::Exists([string]$r.src)) { throw "Thiếu file nguồn $([IO.Path]::GetFileName([string]$r.src))." }
+                if (-not $r.optional -and [System.IO.File]::Exists([string]$r.dst)) { throw "Kho đích đã có $([IO.Path]::GetFileName([string]$r.dst)); không ghi đè." }
+            }
+            $finalSrc = [string]@($plan | Where-Object { $_.kind -eq 'final' })[0].src
+            try { [System.IO.File]::Open($finalSrc, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None).Dispose() }
+            catch { throw 'Video đang được mở ở ứng dụng khác (xem trước hoặc trình phát). Đóng rồi thử lại.' }
+            $snapshot = $null
+            $meta = Get-ReupMetadata -OutDir $from
+            $prop = $meta.PSObject.Properties[$id]
+            if ($prop -and $null -ne $prop.Value) {
+                $snapshot = Copy-ReupEntry $prop.Value
+                if ($Manual -and (Test-ReupConfirmed $snapshot)) { Set-ReupField $snapshot 'KhoPinned' $true }
+            }
+            $journal = [ordered]@{
+                version = 1; txid = [Guid]::NewGuid().ToString('N'); id = $id; from = $from; to = $to; phase = 'renaming'
+                reason = $(if ($Manual) { 'manual' } else { 'auto' }); createdAt = [DateTime]::UtcNow.ToString('o')
+                renames = @($plan); sourceEntrySnapshot = $snapshot
+            }
+            $path = Write-KhoJournal $journal
+            $saved = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+            $r = Resume-KhoMove $saved $path
+            if (-not $r.Done) { throw $r.Error }
+            $moved.Add($id)
+        } catch {
+            $why = $_.Exception.Message
+            Write-FileLog "WARN Chuyển kho #$id : $why"
+            $failed.Add(@{ Id = $id; Why = $why })
+        }
+    }
+    return @{ Moved = $moved.ToArray(); Failed = $failed.ToArray() }
+}
+
+function Release-KhoPlayer {
+    # The preview player must not hold a -3 that is about to move or go to the Recycle Bin.
+    param([string[]]$Paths)
+    if (-not $ui -or -not $ui.Player) { return }
+    try {
+        $open = @()
+        if ($script:lastOut) { $open += [IO.Path]::GetFullPath([string]$script:lastOut) }
+        if ($ui.Player.Source -and $ui.Player.Source.IsFile) { $open += [IO.Path]::GetFullPath($ui.Player.Source.LocalPath) }
+        foreach ($p in @($Paths)) {
+            foreach ($o in $open) { if ([string]::Equals([IO.Path]::GetFullPath($p), $o, [StringComparison]::OrdinalIgnoreCase)) { Clear-Player; return } }
+        }
+    } catch { Write-FileLog "WARN Release-KhoPlayer: $($_.Exception.Message)" }
+}
+
+function Test-KhoQuiet {
+    # '' when nothing else can touch the kho folders (S1): no download / record-again / re-edit / import / move / dialog / cleanup /
+    # backend install. Otherwise the reason (Vietnamese, lower case). The TikTok sync is handled by Suspend-TikTokSync.
+    if ($script:khoMoveRunning) { return 'đang chuyển kho' }
+    if ($script:ps -or $script:stopping -or ($script:queue -and @($script:queue).Count -gt 0)) { return 'đang tải, ghi âm hoặc sửa video' }
+    if ($script:importBusy) { return 'đang thêm video từ thư mục' }
+    if ($script:khoExclusive -gt 0) { return 'đang mở hộp thoại đăng, rải lịch hoặc dọn dẹp' }
+    if (Test-AutotokUpgradeActive) { return 'đang cài hoặc cập nhật bộ đăng' }
+    return ''
+}
+
+function Suspend-TikTokSync {
+    # Pauses new sync passes and lets a running one finish (never cancelled mid-write). Returns $true when no pass is running.
+    param([int]$TimeoutMs = 8000)
+    $sync = $script:tikTokSync
+    if (-not $sync) { return $true }
+    $sync.Paused = $true
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while (($sync.Task -or $sync.Fast) -and $sw.ElapsedMilliseconds -lt $TimeoutMs) {
+        try { Invoke-TikTokSyncTick } catch { Write-FileLog "WARN Chờ đồng bộ xong: $($_.Exception.Message)" }
+        if ($sync.Task -or $sync.Fast) { Start-Sleep -Milliseconds 50 }
+    }
+    return -not ($sync.Task -or $sync.Fast)
+}
+
+function Resume-TikTokSync {
+    if ($script:tikTokSync) { $script:tikTokSync.Paused = $false }
+}
+
+function Invoke-KhoMove {
+    # The one entry for moving videos between khos (manual menu and auto-move). Items need Id and Path (the -3 file). Runs only when the
+    # app is quiet. Returns @{ Moved; Failed; Busy; Target }; Busy is the reason when nothing was attempted.
+    param([object[]]$Items, [string]$TargetId, [ValidateSet('manual', 'auto')][string]$Reason = 'manual')
+    $result = @{ Moved = @(); Failed = @(); Busy = ''; Target = $null }
+    $target = Get-KhoById $TargetId
+    if (-not $target) { throw 'Không tìm thấy kho đích.' }
+    $result.Target = $target
+    $busy = Test-KhoQuiet
+    if ($busy) { $result.Busy = $busy; return $result }
+    $script:khoMoveRunning = $true
+    try {
+        if (-not (Suspend-TikTokSync)) { $result.Busy = 'đang đồng bộ TikTok'; return $result }
+        $recovered = Resume-KhoMoves
+        if ($recovered.Pending.Count) { $result.Busy = 'còn lần chuyển kho dở dang: ' + ($recovered.Pending -join '; '); return $result }
+        $videos = @(@($Items) | Where-Object { $_ -and [string]$_.Id -and [string]$_.Path } | ForEach-Object { @{ Id = [string]$_.Id; From = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath([string]$_.Path)) } } | Where-Object { -not (Test-SamePath $_.From ([string]$target.path)) })
+        Release-KhoPlayer @($videos | ForEach-Object { Join-Path $_.From ($_.Id + '-3-hoan-chinh.mp4') })
+        $batch = Move-KhoVideos -Videos $videos -ToRoot ([string]$target.path) -Manual:($Reason -eq 'manual')
+        $result.Moved = @($batch.Moved); $result.Failed = @($batch.Failed)
+        return $result
+    } finally {
+        $script:khoMoveRunning = $false
+        Resume-TikTokSync
+    }
+}
+
+function Get-KhoAutoMoveCandidates {
+    # Pure. Videos in a kho WITHOUT an account whose earliest confirmed post (succeeded, not uncertain, accepted_at >= autoMoveSince,
+    # a username) is on an account; not pinned (S5); the -3 file exists. Videos already in an account kho never move by themselves.
+    # $MetaByRoot: canonical kho folder -> metadata object. Returns @{ Id; From; Username; When }.
+    param($Registry, $MetaByRoot)
+    $since = [long]0
+    if ([string]$Registry.autoMoveSince) { $since = Get-TikTokSortKey ([string]$Registry.autoMoveSince) }
+    $out = New-Object System.Collections.Generic.List[object]
+    foreach ($lib in @($Registry.libraries)) {
+        if ([string]$lib.account) { continue }
+        $meta = $MetaByRoot[[string]$lib.path]
+        if ($null -eq $meta) { continue }
+        foreach ($p in $meta.PSObject.Properties) {
+            $entry = $p.Value
+            if ($null -eq $entry -or $entry.Source -ne 'autotok-history' -or $entry.KhoPinned -eq $true) { continue }
+            $best = $null; $bestKey = [long]::MaxValue
+            foreach ($h in @($entry.History)) {
+                if ($null -eq $h -or [string]$h.status -ne 'succeeded' -or $h.publish_uncertain -eq $true -or -not (ConvertTo-KhoUsername ([string]$h.username))) { continue }
+                $key = Get-TikTokSortKey ([string]$h.accepted_at)
+                if ($key -le 0 -or $key -lt $since) { continue }
+                if ($key -lt $bestKey) { $bestKey = $key; $best = $h }
+            }
+            if ($null -eq $best) { continue }
+            if (-not [System.IO.File]::Exists((Join-Path ([string]$lib.path) ($p.Name + '-3-hoan-chinh.mp4')))) { continue }
+            $out.Add(@{ Id = [string]$p.Name; From = [string]$lib.path; Username = (ConvertTo-KhoUsername ([string]$best.username)); When = $bestKey })
+        }
+    }
+    return $out.ToArray()
+}
+
+function Invoke-KhoAutoMove {
+    # After a sync pass: moves newly confirmed videos into their account kho (created when missing, next to the download kho).
+    # Not quiet -> stays wanted and is retried by the next sync tick. Returns the number of videos moved.
+    param($MetaByRoot)
+    if (-not $script:khoRegistryReady) { return 0 }
+    if (Test-KhoQuiet) { $script:khoAutoMoveWanted = $true; return 0 }
+    $reg = Get-KhoRegistry
+    $cands = @(Get-KhoAutoMoveCandidates $reg $MetaByRoot)
+    $script:khoAutoMoveWanted = $false
+    if (-not $cands.Count) { return 0 }
+    $movedTotal = 0
+    foreach ($group in @($cands | Group-Object { $_.Username.ToLowerInvariant() })) {
+        $user = $group.Group[0].Username
+        $lib = Get-KhoForAccount $user
+        if (-not $lib) {
+            $last = $script:khoAutoMoveFailed[$user.ToLowerInvariant()]
+            if ($last -and ([DateTime]::UtcNow - $last).TotalMinutes -lt 10) { continue }
+            try { $lib = New-KhoForAccount $user; Write-FileLog "INFO Tự tạo kho '$($lib.name)' tại '$($lib.path)' cho @$user." }
+            catch { $script:khoAutoMoveFailed[$user.ToLowerInvariant()] = [DateTime]::UtcNow; Write-FileLog "WARN Không tự tạo được kho cho @${user}: $($_.Exception.Message)"; continue }
+        }
+        $items = @($group.Group | ForEach-Object { [pscustomobject]@{ Id = $_.Id; Path = (Join-Path $_.From ($_.Id + '-3-hoan-chinh.mp4')) } })
+        $r = Invoke-KhoMove -Items $items -TargetId ([string]$lib.id) -Reason auto
+        if ($r.Busy) { $script:khoAutoMoveWanted = $true; return $movedTotal }
+        $movedTotal += @($r.Moved).Count
+        foreach ($f in @($r.Failed)) { Write-FileLog "WARN Tự chuyển #$($f.Id) sang '$($lib.name)': $($f.Why)" }
+    }
+    return $movedTotal
+}
+
+# ------------------------------------------------------------- xoa video / xoa kho: Thung rac ----
+$script:khoRecycleOverride = $null   # test seam: scriptblock { param($Path, $IsFolder) } replacing the shell call
+
+function Invoke-KhoRecycle {
+    # Sends one file (or a whole folder) to the Windows Recycle Bin; throws when it cannot.
+    param([string]$Path, [switch]$Folder)
+    if ($script:khoRecycleOverride) { & $script:khoRecycleOverride $Path ([bool]$Folder); return }
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    $dialogs = [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs
+    $bin = [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin
+    if ($Folder) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($Path, $dialogs, $bin) }
+    else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($Path, $dialogs, $bin) }
+}
+
+function Remove-ReelToRecycleBin {
+    # S8: one video of a kho folder -> Recycle Bin: the -3 first, then -1/-2, then its finished / archived receipts (thumbnails are
+    # regenerable and are deleted outright). When any recycle fails the metadata entry is KEPT and the rest is reported, so a retry
+    # deletes what is left (a missing -3 with leftovers is still deletable). Returns @{ Success; Recycled; Remaining; Errors; MetaError }.
+    param([string]$Root, [string]$Id, $Groups = $null)
+    $result = @{ Success = $false; Recycled = @(); Remaining = @(); Errors = @(); MetaError = '' }
+    $recycled = New-Object System.Collections.Generic.List[string]; $errors = New-Object System.Collections.Generic.List[string]
+    $remaining = New-Object System.Collections.Generic.List[string]
+    $r = Get-CanonicalPath $Root
+    if ($Id -notmatch '^\d+$') { $result.Errors = @('ID video không hợp lệ.'); return $result }
+    $files = New-Object System.Collections.Generic.List[string]
+    $files.Add((Join-Path $r "$Id-3-hoan-chinh.mp4"))
+    foreach ($leaf in @("$Id-1-video-goc.mp4", "$Id-2-am-thanh-tho.m4a")) { $files.Add((Join-Path (Join-Path $r '.cache') $leaf)); $files.Add((Join-Path $r $leaf)) }
+    if ($null -eq $Groups) { $Groups = Get-KhoReceiptGroups $r }
+    $block = Get-KhoVideoBlock $r $Id $Groups
+    if ($block) { $result.Errors = @($block); return $result }
+    foreach ($req in @($Groups.Keys | Sort-Object)) {
+        $g = $Groups[$req]
+        if ($g.VideoId -cne $Id) { continue }
+        foreach ($f in @($g.Files | Sort-Object { $_.Name })) { $files.Add([string]$f.Path) }
+    }
+    foreach ($path in $files) {
+        if (-not [System.IO.File]::Exists($path)) { continue }
+        try { Invoke-KhoRecycle $path; $recycled.Add($path) }
+        catch { $errors.Add("$([IO.Path]::GetFileName($path)): $($_.Exception.Message)"); $remaining.Add($path); Write-FileLog "WARN Thùng rác: không chuyển được '$path': $($_.Exception.Message)" }
+    }
+    $result.Recycled = $recycled.ToArray(); $result.Errors = $errors.ToArray(); $result.Remaining = $remaining.ToArray()
+    if ($errors.Count) { return $result }
+    foreach ($ext in @('jpg', 'json')) {
+        $t = Join-Path (Join-Path (Join-Path $r '.cache') 'thumbs') "$Id.$ext"
+        try { if ([System.IO.File]::Exists($t)) { [System.IO.File]::Delete($t) } } catch { Write-FileLog "WARN Không xóa được ảnh thu nhỏ '$t': $($_.Exception.Message)" }
+    }
+    try {
+        [void](Update-ReupMetadata -OutDir $r -Change {
+            param($meta)
+            if (-not $meta.PSObject.Properties[$Id]) { return $false }
+            [void]$meta.PSObject.Properties.Remove($Id)
+            return $true
+        })
+    } catch { $result.MetaError = $_.Exception.Message; Write-FileLog "WARN Đã xóa file Reel #$Id nhưng chưa xóa được lịch sử: $($_.Exception.Message)" }
+    $result.Success = $true
+    return $result
+}
+
+function Test-KhoFolderOnlyAppFiles {
+    # True when the folder holds nothing but files the app made itself (status file, thumbnails, identity cache, empty receipt folder).
+    param([string]$Root)
+    foreach ($e in [System.IO.DirectoryInfo]::new($Root).GetFileSystemInfos()) {
+        if ($e -is [System.IO.DirectoryInfo]) {
+            if ($e.Name -cne '.cache') { return $false }
+            foreach ($c in $e.GetFileSystemInfos()) {
+                if ($c -is [System.IO.DirectoryInfo]) {
+                    if ($c.Name -ceq 'thumbs') { continue }
+                    if ($c.Name -ceq 'tiktok-posts' -and -not $c.GetFileSystemInfos().Count) { continue }
+                    return $false
+                }
+                if ($c.Name -notmatch '^tiktok-identities\.json') { return $false }
+            }
+        } elseif ($e.Name -cne 'reup-status.json' -and $e.Name -notmatch '^\.reup-status-.*\.tmp$') { return $false }
+    }
+    return $true
+}
+
+function Get-KhoVideoFiles {
+    param([string]$Root)
+    if (-not [System.IO.Directory]::Exists($Root)) { return @() }
+    return @([System.IO.DirectoryInfo]::new($Root).GetFiles('*-3-hoan-chinh.mp4') | Where-Object { $_.Name -match '^\d+-3-hoan-chinh\.mp4$' })
+}
+
+function Remove-KhoWithVideos {
+    # S8: all videos of the kho -> Recycle Bin, then the kho leaves the registry (and the folder goes to the bin when this app made it
+    # and only app files remain). Refused when the app is not quiet, a journal references the folder, any video has a TikTok job
+    # (running or kept for retry), or it is the last kho. Nothing is unregistered unless every video was recycled.
+    # Returns @{ Success; Deleted; Failed = @(@{Id; Errors}); FolderRecycled; Why }.
+    param([string]$Id)
+    $result = @{ Success = $false; Deleted = 0; Failed = @(); FolderRecycled = $false; Why = '' }
+    $reg = Get-KhoRegistry
+    $lib = Get-KhoById $Id $reg
+    if (-not $lib) { throw 'Không tìm thấy kho.' }
+    if (@($reg.libraries).Count -le 1) { throw 'Không xóa được kho cuối cùng. Luôn phải có ít nhất một kho.' }
+    if (-not $script:khoRegistryReady) { throw 'Không đọc được data\kho.json nên phiên này không lưu thay đổi kho. Đóng ứng dụng, kiểm tra file rồi mở lại.' }
+    $busy = Test-KhoQuiet
+    if ($busy) { $result.Why = "Đang bận ($busy). Thử lại sau."; return $result }
+    $script:khoMoveRunning = $true
+    try {
+        if (-not (Suspend-TikTokSync)) { $result.Why = 'Đang đồng bộ TikTok. Thử lại sau.'; return $result }
+        $recovered = Resume-KhoMoves
+        $block = Get-KhoJournalBlock @([string]$lib.path)
+        if ($block) { $result.Why = $block; return $result }
+        $khoRoot = [string]$lib.path
+        $videos = @(Get-KhoVideoFiles $khoRoot)
+        $groups = Get-KhoReceiptGroups $khoRoot
+        foreach ($v in $videos) {
+            $vid = $v.Name -replace '-3-hoan-chinh\.mp4$', ''
+            $why = Get-KhoVideoBlock $khoRoot $vid $groups
+            if ($why) { $result.Why = "Video #${vid}: $why"; return $result }
+        }
+        # A job without a readable video blocks the folder even when it has no video of its own.
+        foreach ($req in $groups.Keys) { if ($groups[$req].Live -and -not $groups[$req].VideoId) { $result.Why = 'Thư mục có lệnh đăng không rõ thuộc video nào — xử lý trước.'; return $result } }
+        Release-KhoPlayer @($videos | ForEach-Object { $_.FullName })
+        $failed = New-Object System.Collections.Generic.List[object]; $deleted = 0
+        foreach ($v in $videos) {
+            $vid = $v.Name -replace '-3-hoan-chinh\.mp4$', ''
+            $r = Remove-ReelToRecycleBin -Root $khoRoot -Id $vid -Groups $groups
+            if ($r.Success) { $deleted++ } else { $failed.Add(@{ Id = $vid; Errors = @($r.Errors) }) }
+        }
+        $result.Deleted = $deleted; $result.Failed = $failed.ToArray()
+        if ($failed.Count) { $result.Why = "Chưa xóa hết: $($failed.Count) video còn lỗi. Kho được giữ lại; thử lại sau."; return $result }
+        Invoke-KhoRegistryChange {
+            param($r)
+            $r.libraries = @($r.libraries | Where-Object { [string]$_.id -cne $Id })
+            if ([string]$r.downloadTarget -ceq $Id) { $r.downloadTarget = [string]@($r.libraries)[0].id }
+        }
+        if ($lib.createdByApp -and [System.IO.Directory]::Exists($khoRoot)) {
+            try {
+                if (Test-KhoFolderOnlyAppFiles $khoRoot) { Invoke-KhoRecycle $khoRoot -Folder; $result.FolderRecycled = $true }
+            } catch { Write-FileLog "WARN Không chuyển được thư mục kho '$khoRoot' vào Thùng rác: $($_.Exception.Message)" }
+        }
+        $result.Success = $true
+        return $result
+    } finally {
+        $script:khoMoveRunning = $false
+        Resume-TikTokSync
+    }
+}
 
 # ------------------------------------------------------------- hang doi: dong bang + 7 buoc ----
 $script:stepNames = @('Kiểm tra công cụ', 'Kiểm tra thiết bị', 'Đọc ID và thời lượng', 'Chọn lồng tiếng Việt', 'Thu âm từ Android', 'Cắt và chuẩn hóa âm', 'Ghép và xuất MP4')
@@ -1816,13 +2413,12 @@ function Update-AutotokSection {
 function Test-AutotokTransfersActive {
     # A background TikTok transfer still running would lose its backend mid-upload.
     try {
-        $text = [string]$ui.TxtOut.Text
-        if ([string]::IsNullOrWhiteSpace($text)) { return $false }
-        $out = Get-CanonicalPath $text
-        $dir = Join-Path $out '.cache\tiktok-posts'
-        if (-not [IO.Directory]::Exists($dir)) { return $false }
-        foreach ($lock in [IO.DirectoryInfo]::new($dir).GetFiles('*.lock')) {
-            if ($lock.Name -match '^([a-f0-9]{32})\.lock$' -and (Test-TikTokWorkerAlive $out $Matches[1])) { return $true }
+        foreach ($out in @(Get-KhoRoots)) {
+            $dir = Join-Path $out '.cache\tiktok-posts'
+            if (-not [IO.Directory]::Exists($dir)) { continue }
+            foreach ($lock in [IO.DirectoryInfo]::new($dir).GetFiles('*.lock')) {
+                if ($lock.Name -match '^([a-f0-9]{32})\.lock$' -and (Test-TikTokWorkerAlive $out $Matches[1])) { return $true }
+            }
         }
     } catch { Write-FileLog "WARN autotok transfer check: $($_.Exception.Message)" }
     return $false
@@ -2131,13 +2727,14 @@ $script:tikTokWorker = {
             foreach($p in $meta.PSObject.Properties){if($perVideo.ContainsKey($p.Name) -and $p.Value.Source -eq 'autotok-history' -and @($p.Value.History | Where-Object {$_ -and [string]$_.status -eq 'succeeded'}).Count){$todo[$p.Name]=$true}}
             foreach($vid in @($todo.Keys)){
                 $old=$meta.PSObject.Properties[$vid]
+                # D6/S6: a video whose -3 left this folder (moved or deleted) never gets a NEW entry from a pass that captured it earlier.
+                if(-not $old -and -not [IO.File]::Exists((Join-Path $outDir ($vid+'-3-hoan-chinh.mp4')))){continue}
                 $history=@(Merge-TikTokVideoHistory $vid $perVideo[$vid] $receipts $(if($old){$old.Value}else{$null}) $probe.Missing $now $receiptIndex)
                 $merged[$vid]=$history
                 if(Set-TikTokItemHistory $meta $vid $history ([string]$result.Hashes[$vid])){$any=$true}
             }
             foreach($vid in $perVideo.Keys){if(-not $merged.ContainsKey($vid)){$merged[$vid]=@()}}
-            $assigned=Invoke-KhoAutoAssign $meta
-            return ($any -or $assigned)
+            return $any
         }
         $result.Changed=[bool]$update.Changed;$result.FileStamp=[string]$update.Stamp;$result.InputSig=$inputSig;$result.Videos=$merged
         $failures=New-Object Collections.Generic.List[object]
@@ -2199,8 +2796,7 @@ $script:tikTokWorker = {
                 })
                 if(Set-TikTokItemHistory $meta $vid $history ''){$any=$true}
             }
-            $assigned=Invoke-KhoAutoAssign $meta
-            return ($any -or $assigned)
+            return $any
         }
         $result.Changed=[bool]$update.Changed;$result.Stamp=[string]$update.Stamp;$result.Active=@(Get-ActiveRequests $update.Metadata)
         return $result
@@ -2272,7 +2868,7 @@ $script:tikTokWorker = {
 $script:tikTokWorkerFunctions = @('Get-CanonicalPath', 'Get-FileStamp', 'Get-ReupMutexName', 'Get-ReupMetadata', 'Update-ReupMetadata',
     'Set-ReupField', 'Get-ReupManualState', 'Update-ReupAggregate', 'Format-TikTokTime', 'Get-TikTokSortKey', 'ConvertTo-TikTokHistoryEntry',
     'Get-TikTokHistorySignature', 'Get-TikTokReceiptAge', 'Get-TikTokReceiptState', 'Merge-TikTokVideoHistory', 'Set-TikTokItemHistory',
-    'Test-TikTokStaleDowngrade', 'Update-TikTokEntryFromJob', 'New-TikTokReceiptIndex', 'Get-KhoAccountId', 'Invoke-KhoAutoAssign')
+    'Test-TikTokStaleDowngrade', 'Update-TikTokEntryFromJob', 'New-TikTokReceiptIndex')
 
 function Get-TikTokWorkerSessionState {
     # Functions are defined through the session state (not a prepended statement): a multi-statement batch runs on a
@@ -2446,7 +3042,7 @@ function Apply-TikTokResult {
         Set-ReupMetadata -VideoId $Record.VideoId -Posted $true -OutDir $Record.OutDir
         $Record.Status = 'posted'
         Save-TikTokReceipt $Record
-        if ([IO.Path]::GetFullPath($ui.TxtOut.Text) -eq $Record.OutDir) { Update-Gallery }
+        if (Get-KhoByPath ([string]$Record.OutDir)) { Update-Gallery }
     }
 }
 
@@ -2774,21 +3370,25 @@ function Add-TikTokLocalReceiptHistory {
     $localUpdate = Update-ReupMetadata -OutDir $OutDir -TimeoutMs 1500 -Change {
         param($meta)
         $old = $meta.PSObject.Properties[$VideoId]
+        # S6: no NEW entry for a video whose -3 left this folder.
+        if (-not $old -and -not [IO.File]::Exists((Join-Path $OutDir ($VideoId + '-3-hoan-chinh.mp4')))) { return $false }
         $history = @(Merge-TikTokVideoHistory $VideoId $Entries @($view) $(if ($old) { $old.Value } else { $null }))
-        $historyChanged = [bool](Set-TikTokItemHistory $meta $VideoId $history '')
-        $assigned = Invoke-KhoAutoAssign $meta
-        return ($historyChanged -or $assigned)
+        return [bool](Set-TikTokItemHistory $meta $VideoId $history '')
     }
     return [bool]$localUpdate.Changed
 }
 
 function Set-TikTokSyncStale {
     # R8: a failed sync keeps the stored state, shows a visible note in Kho and logs at most every 5 minutes.
-    param([string]$Message)
+    # -Root: the kho folder the message is about (one note per folder; the first non-empty one is shown).
+    param([string]$Message, [string]$Root = '')
     if ($Message) { Write-FileLogLimited -Key 'tiktok-sync' -Text ('WARN TikTok sync: ' + $Message) -MinSeconds 300 }
-    if ([string]$script:tikTokSync.Stale -eq [string]$Message) { return }
-    if ($script:tikTokSync.Stale -and -not $Message) { Write-FileLog 'TikTok sync: kết nối lại bình thường.' }
-    $script:tikTokSync.Stale = [string]$Message
+    $sync = $script:tikTokSync
+    if ($Message) { $sync.StaleRoots[$Root] = [string]$Message } else { $sync.StaleRoots.Remove($Root) }
+    $combined = [string](@($sync.StaleRoots.Values | Where-Object { $_ }) | Select-Object -First 1)
+    if ([string]$sync.Stale -eq $combined) { return }
+    if ($sync.Stale -and -not $combined) { Write-FileLog 'TikTok sync: kết nối lại bình thường.' }
+    $sync.Stale = $combined
     Update-GalleryCountText
 }
 
@@ -2820,78 +3420,131 @@ function Get-TikTokSyncDelay {
     return [Math]::Min(30.0, [Math]::Max(4.0, 3.0 * $ElapsedSeconds))
 }
 
+function Get-TikTokRootState {
+    # Per kho folder: identity cache, input signature, file stamp, probe cursor and the fast pass bookkeeping (every folder has its own).
+    param([string]$Root)
+    $sync = $script:tikTokSync
+    $state = $sync.Roots[$Root]
+    if (-not $state) {
+        $state = @{ IdentityCache = $null; InputSig = ''; FileStamp = ''; ProbeCursor = ''; NextAt = [DateTime]::MinValue
+                    FastStamp = ''; FastActive = @(); FastCursor = ''; FastNextAt = [DateTime]::MinValue; FastWroteAt = [DateTime]::MinValue }
+        $sync.Roots[$Root] = $state
+    }
+    return $state
+}
+
 function Invoke-TikTokFastTick {
-    # Fast path (a pass starts every ~5 s): status of entries that are waiting/posting, independent of the full pass.
-    # Returns $true when it started a pass in this tick.
-    param([string]$OutDir)
+    # Fast path (a pass starts every ~5 s): status of entries that are waiting/posting, independent of the full pass. One kho folder per
+    # pass, round-robin. Returns $true when it started a pass in this tick.
+    param([string[]]$Roots)
     $sync = $script:tikTokSync
     if ($sync.Fast) {
         if (-not $sync.Fast.Async.IsCompleted) { return $false }
         $task = $sync.Fast; $sync.Fast = $null
+        $state = $sync.Roots[[string]$task.OutDir]
         # Start to start: a slow pass (large Kho) does not add a full 5 s wait on top of its own duration.
-        $now = [DateTime]::UtcNow
-        $sync.FastNextAt = $now.AddSeconds([Math]::Max(1.0, 5.0 - $task.Clock.Elapsed.TotalSeconds))
+        if ($state) { $state.FastNextAt = [DateTime]::UtcNow.AddSeconds([Math]::Max(1.0, 5.0 - $task.Clock.Elapsed.TotalSeconds)) }
         try { $result = Complete-TikTokTask $task }
         catch { Write-FileLogLimited -Key 'tiktok-fast' -Text ('WARN TikTok fast status: ' + $_.Exception.Message) -MinSeconds 300; return $false }
-        if ($task.OutDir -ne $sync.OutDir) { return $false }
-        $sync.FastStamp = [string]$result.Stamp; $sync.FastActive = @($result.Active); $sync.FastCursor = [string]$result.Cursor
-        if ($result.Changed) { $sync.FastWroteAt = [DateTime]::UtcNow; Update-Gallery }
+        if (-not $state) { return $false }   # the folder is no longer a kho
+        $state.FastStamp = [string]$result.Stamp; $state.FastActive = @($result.Active); $state.FastCursor = [string]$result.Cursor
+        if ($result.Changed) { $state.FastWroteAt = [DateTime]::UtcNow; $script:khoAutoMoveWanted = $true; Update-Gallery }
         return $false
     }
-    if (-not $OutDir -or [DateTime]::UtcNow -lt $sync.FastNextAt) { return $false }
-    # Idle (nothing active, file unchanged): no task at all.
-    $stamp = Get-FileStamp (Join-Path $OutDir 'reup-status.json')
-    if ($stamp -eq $sync.FastStamp -and -not @($sync.FastActive).Count) { $sync.FastNextAt = [DateTime]::UtcNow.AddSeconds(5); return $false }
-    $sync.Fast = Start-TikTokTask 'fast' @{ out_dir = $OutDir; last_stamp = $sync.FastStamp; active = @($sync.FastActive); cursor = $sync.FastCursor }
-    $sync.Fast.OutDir = $OutDir
-    return $true
+    if ($sync.Paused -or -not @($Roots).Count) { return $false }
+    $n = @($Roots).Count
+    for ($k = 0; $k -lt $n; $k++) {
+        $root = [string]@($Roots)[([int]$sync.FastRoot + $k) % $n]
+        $state = Get-TikTokRootState $root
+        if ([DateTime]::UtcNow -lt $state.FastNextAt) { continue }
+        # Idle (nothing active, file unchanged): no task at all.
+        $stamp = Get-FileStamp (Join-Path $root 'reup-status.json')
+        if ($stamp -eq $state.FastStamp -and -not @($state.FastActive).Count) { $state.FastNextAt = [DateTime]::UtcNow.AddSeconds(5); continue }
+        $sync.FastRoot = ([int]$sync.FastRoot + $k + 1) % $n
+        $sync.Fast = Start-TikTokTask 'fast' @{ out_dir = $root; last_stamp = $state.FastStamp; active = @($state.FastActive); cursor = $state.FastCursor }
+        $sync.Fast.OutDir = $root
+        return $true
+    }
+    return $false
 }
 
-function Invoke-TikTokSyncTick {
+function Invoke-TikTokSyncStep {
     $sync = $script:tikTokSync
-    $text = [string]$ui.TxtOut.Text
-    $outDir = ''
-    if (-not [string]::IsNullOrWhiteSpace($text)) { $outDir = Get-CanonicalPath $text; if (-not [IO.Directory]::Exists($outDir)) { $outDir = '' } }
-    if ($outDir -and -not [string]::Equals($outDir, $sync.OutDir, [StringComparison]::OrdinalIgnoreCase)) {
-        # Another Kho folder: both passes follow it now (a running pass for the old folder is discarded when it ends).
-        $sync.OutDir = $outDir; $sync.IdentityCache = $null; $sync.InputSig = ''; $sync.FileStamp = ''; $sync.ProbeCursor = ''; $sync.NextAt = [DateTime]::MinValue
-        $sync.FastStamp = ''; $sync.FastActive = @(); $sync.FastCursor = ''; $sync.FastNextAt = [DateTime]::MinValue
-    }
+    $roots = @(Get-KhoRoots | Where-Object { [IO.Directory]::Exists($_) })
+    $known = @{}; foreach ($r in @(Get-KhoRoots)) { $known[$r] = $true }
+    foreach ($k in @($sync.Roots.Keys)) { if (-not $known.ContainsKey($k)) { $sync.Roots.Remove($k); $sync.StaleRoots.Remove($k) } }
     # At most one pass starts per tick: opening a runspace costs the UI thread, so two in one tick add up.
-    $startedFast = $(if ($outDir) { Invoke-TikTokFastTick $outDir } else { $false })
+    $startedFast = Invoke-TikTokFastTick $roots
     if ($sync.Task) {
         if (-not $sync.Task.Async.IsCompleted) { return }
         $task = $sync.Task; $sync.Task = $null
         $elapsed = $task.Clock.Elapsed.TotalSeconds
-        $sync.NextAt = [DateTime]::UtcNow.AddSeconds((Get-TikTokSyncDelay $elapsed))
+        $state = $sync.Roots[[string]$task.OutDir]
+        if ($state) { $state.NextAt = [DateTime]::UtcNow.AddSeconds((Get-TikTokSyncDelay $elapsed)) }
         try { $result = Complete-TikTokTask $task }
-        catch { Set-TikTokSyncStale ('Lỗi đồng bộ: ' + $_.Exception.Message); return }
-        if ($task.OutDir -ne $sync.OutDir) { return }
-        if ($result.IdentityCache -is [hashtable]) { $sync.IdentityCache = $result.IdentityCache }
-        $sync.InputSig = [string]$result.InputSig; $sync.FileStamp = [string]$result.FileStamp; $sync.ProbeCursor = [string]$result.ProbeCursor
-        Set-TikTokSyncStale ([string]$result.Stale)
+        catch { Set-TikTokSyncStale ('Lỗi đồng bộ: ' + $_.Exception.Message) ([string]$task.OutDir); return }
+        if (-not $state) { return }
+        if ($result.IdentityCache -is [hashtable]) { $state.IdentityCache = $result.IdentityCache }
+        $state.InputSig = [string]$result.InputSig; $state.FileStamp = [string]$result.FileStamp; $state.ProbeCursor = [string]$result.ProbeCursor
+        Set-TikTokSyncStale ([string]$result.Stale) ([string]$task.OutDir)
         Show-TikTokFailureToasts @($result.Failures)
         if ($result.Changed) {
             # The full pass read the backend before a fast write landed: it may have written an older status.
             # Ask the fast path again right away instead of showing it until the next full pass.
-            if ($sync.FastWroteAt -gt $task.StartedAt) { $sync.FastStamp = ''; $sync.FastNextAt = [DateTime]::MinValue }
+            if ($state.FastWroteAt -gt $task.StartedAt) { $state.FastStamp = ''; $state.FastNextAt = [DateTime]::MinValue }
+            $script:khoAutoMoveWanted = $true
             Update-Gallery
         }
         return
     }
-    if (-not $outDir -or $startedFast -or [DateTime]::UtcNow -lt $sync.NextAt) { return }
-    Remove-TikTokStaleCleanFiles $outDir
-    $payload = Get-TikTokHistoryPayload $outDir
-    $payload.identity_cache = $sync.IdentityCache; $payload.last_input_sig = $sync.InputSig; $payload.last_file_stamp = $sync.FileStamp; $payload.probe_cursor = [string]$sync.ProbeCursor
+    if ($sync.Paused -or $startedFast -or -not $roots.Count) { return }
+    $due = @($roots | ForEach-Object { @{ Root = $_; At = (Get-TikTokRootState $_).NextAt } } | Where-Object { [DateTime]::UtcNow -ge $_.At } | Sort-Object { $_.At })
+    if (-not $due.Count) { return }
+    $root = [string]$due[0].Root
+    $state = Get-TikTokRootState $root
+    Remove-TikTokStaleCleanFiles $root
+    $payload = Get-TikTokHistoryPayload $root
+    $payload.identity_cache = $state.IdentityCache; $payload.last_input_sig = $state.InputSig; $payload.last_file_stamp = $state.FileStamp; $payload.probe_cursor = [string]$state.ProbeCursor
     $sync.Task = Start-TikTokTask 'sync' $payload
-    $sync.Task.OutDir = $outDir; $sync.Task.StartedAt = [DateTime]::UtcNow
+    $sync.Task.OutDir = $root; $sync.Task.StartedAt = [DateTime]::UtcNow
+}
+
+function Invoke-TikTokSyncTick {
+    # One 1 s tick: the sync step, then (when no pass is running or paused) the auto-move of newly confirmed videos.
+    $sync = $script:tikTokSync
+    Invoke-TikTokSyncStep
+    if ($script:khoAutoMoveWanted -and -not $sync.Paused -and -not $sync.Task -and -not $sync.Fast -and -not $script:khoMoveRunning) {
+        try { [void](Invoke-KhoAutoMoveNow) } catch { Write-FileLogLimited -Key 'kho-automove' -Text ('WARN Tự chuyển kho: ' + $_.Exception.Message) -MinSeconds 300 }
+    }
+}
+
+function Get-GalleryMetaByRoot {
+    # Fresh read of reup-status.json of every kho folder (canonical folder -> metadata). A folder that cannot be read is left out
+    # and logged: callers treat it as "nothing known", never as empty history.
+    $map = @{}
+    foreach ($r in @(Get-KhoRoots)) {
+        if (-not [IO.Directory]::Exists($r)) { continue }
+        try { $map[$r] = Get-ReupMetadata -OutDir $r }
+        catch { Write-FileLog "WARN Không đọc được lịch sử của kho '$r': $($_.Exception.Message)" }
+    }
+    return $map
+}
+
+function Invoke-KhoAutoMoveNow {
+    # Reads every kho's history and moves newly confirmed videos into their account kho; refreshes the gallery and tells the owner.
+    $moved = Invoke-KhoAutoMove (Get-GalleryMetaByRoot)
+    if ($moved -gt 0) {
+        Show-Toast ("Đã chuyển $moved video vào kho theo tài khoản đã đăng.") -Kind success
+        Update-Gallery
+    }
+    return $moved
 }
 
 function Start-TikTokStatusSync {
     if (-not (Test-TikTokEnabled)) { return }
-    $script:tikTokSync = @{ Task = $null; OutDir = ''; IdentityCache = $null; InputSig = ''; FileStamp = ''; ProbeCursor = ''; NextAt = [DateTime]::MinValue; Notified = @{}; Stale = ''
-        Fast = $null; FastStamp = ''; FastActive = @(); FastCursor = ''; FastNextAt = [DateTime]::MinValue; FastWroteAt = [DateTime]::MinValue }
-    # 1 s ticks: an idle tick only compares times and one file stamp; the passes themselves run off the UI thread.
+    $script:tikTokSync = @{ Task = $null; Fast = $null; Roots = @{}; Notified = @{}; Stale = ''; StaleRoots = @{}; FastRoot = 0; Paused = $false }
+    $script:khoAutoMoveWanted = $true
+    # 1 s ticks: an idle tick only compares times and one file stamp per kho; the passes themselves run off the UI thread.
     $script:tikTokSyncTimer = New-Object Windows.Threading.DispatcherTimer
     $script:tikTokSyncTimer.Interval = [TimeSpan]::FromSeconds(1)
     $script:tikTokSyncTimer.Add_Tick({
@@ -5332,12 +5985,10 @@ function Get-ReelThumbFiles {
 }
 
 function Remove-ReelFiles {
-    param(
-        [string]$FilePath,
-        # Deterministic fault-injection seam for the focused deletion transaction test.
-        [scriptblock]$OnStaged = $null,
-        [scriptblock]$OnBackupReady = $null
-    )
+    # S8: the video's files go to the Windows Recycle Bin (-3 first, then -1/-2 and its finished receipts; thumbnails are deleted).
+    # A failure keeps the metadata entry and reports what is left in RecoveryPaths; a retry deletes the rest.
+    # Returns Success, Errors, CleanupStatus ('Complete'), RecoveryPaths (files still there), DeletedFiles.
+    param([string]$FilePath)
     if (-not $FilePath) { return @{ Success = $false; Errors = @('Thieu duong dan file can xoa.'); CleanupStatus = 'NotStarted'; RecoveryPaths = @() } }
     $dir = Split-Path $FilePath -Parent
     $mediaFiles = @(Get-ReelMediaFiles -VideoPath $FilePath)
@@ -5365,148 +6016,21 @@ function Remove-ReelFiles {
     }
     Start-Sleep -Milliseconds 100
 
-    # -3 truoc, roi -1/-2 trong .cache, roi file cu o goc. Moi file doi ten tam ngay trong thu muc cua no.
-    $existingPaths = [System.Collections.Generic.List[string]]::new()
-    foreach ($m in $mediaFiles) { if (Test-Path -LiteralPath $m.Path) { $existingPaths.Add($m.Path) } }
-
-    # Stage by rename, then retain a transaction-local copy of every staged file
-    # until the entire destructive phase succeeds. The copies are removed on all
-    # normal exits; if a commit delete fails they are used to restore originals.
-    $stagedMoves = [System.Collections.Generic.List[psobject]]::new()
-    $transactionFailed = $false
-    $deleteErrors = [System.Collections.Generic.List[string]]::new()
-    $recoveryPaths = [System.Collections.Generic.List[string]]::new()
-    $backupDir = Join-Path $dir ('.kidfby-delete-transaction-' + [Guid]::NewGuid().ToString('N'))
-
-    $seq = 0
-    foreach ($origPath in $existingPaths) {
-        $seq++
-        $leaf = Split-Path $origPath -Leaf
-        $stagedPath = Join-Path (Split-Path $origPath -Parent) ("$leaf.deleting." + [Guid]::NewGuid().ToString('N'))
-        try {
-            [System.IO.File]::Move($origPath, $stagedPath)
-            # Ten ban sao co so thu tu: -1 o .cache va -1 cu o goc trung ten file.
-            $stagedMoves.Add([pscustomobject]@{ Original = $origPath; Staged = $stagedPath; Backup = (Join-Path $backupDir ('{0:00}-{1}' -f $seq, $leaf)) })
-            if ($OnStaged) { & $OnStaged $origPath $stagedPath $stagedMoves.Count }
-        } catch {
-            $transactionFailed = $true
-            $deleteErrors.Add("$($leaf): $($_.Exception.Message)")
-            break
-        }
-    }
-
-    if ($transactionFailed) {
-        # Roll back all moves. Keep any file that cannot be restored at its
-        # reported staged path so the user can recover it manually.
-        foreach ($staged in $stagedMoves) {
-            try {
-                if ((Test-Path -LiteralPath $staged.Staged) -and -not (Test-Path -LiteralPath $staged.Original)) {
-                    [System.IO.File]::Move($staged.Staged, $staged.Original)
-                }
-            } catch {
-                $deleteErrors.Add("Rollback $([IO.Path]::GetFileName($staged.Original)): $($_.Exception.Message)")
-                if (Test-Path -LiteralPath $staged.Staged) { $recoveryPaths.Add($staged.Staged) }
-            }
-        }
-        return @{
-            Success = $false
-            Errors  = @($deleteErrors)
-            CleanupStatus = if ($recoveryPaths.Count) { 'RecoveryRequired' } else { 'Complete' }
-            RecoveryPaths = @($recoveryPaths)
-        }
-    }
-
-    # Snapshot staged files before commit. These short-lived copies are kept
-    # only for this transaction and are always cleaned up or reported.
-    try {
-        [void][System.IO.Directory]::CreateDirectory($backupDir)
-        foreach ($staged in $stagedMoves) {
-            [System.IO.File]::Copy($staged.Staged, $staged.Backup, $false)
-        }
-        if ($OnBackupReady) { & $OnBackupReady $backupDir }
-    } catch {
-        $deleteErrors.Add("Backup transaction: $($_.Exception.Message)")
-        foreach ($staged in $stagedMoves) {
-            try { if ((Test-Path -LiteralPath $staged.Staged) -and -not (Test-Path -LiteralPath $staged.Original)) { [System.IO.File]::Move($staged.Staged, $staged.Original) } }
-            catch { $deleteErrors.Add("Rollback $([IO.Path]::GetFileName($staged.Original)): $($_.Exception.Message)"); if (Test-Path -LiteralPath $staged.Staged) { $recoveryPaths.Add($staged.Staged) } }
-        }
-        try { if (Test-Path -LiteralPath $backupDir) { [IO.Directory]::Delete($backupDir, $true) } } catch { $deleteErrors.Add("Cleanup $backupDir`: $($_.Exception.Message)"); $recoveryPaths.Add($backupDir) }
-        return @{ Success = $false; Errors = @($deleteErrors); CleanupStatus = if ($recoveryPaths.Count) { 'RecoveryRequired' } else { 'Complete' }; RecoveryPaths = @($recoveryPaths) }
-    }
-
-    # Commit in order. On the first failure stop deleting; restore missing
-    # originals from staged files or the transaction copies before cleanup.
-    foreach ($staged in $stagedMoves) {
-        try {
-            if (Test-Path -LiteralPath $staged.Staged) {
-                Remove-Item -LiteralPath $staged.Staged -Force -ErrorAction Stop
-            }
-        } catch {
-            $deleteErrors.Add("$(Split-Path $staged.Original -Leaf): $($_.Exception.Message)")
-            break
-        }
-    }
-    $commitSucceeded = ($deleteErrors.Count -eq 0)
-
-    if ($deleteErrors.Count) {
-        foreach ($staged in $stagedMoves) {
-            try {
-                if (-not (Test-Path -LiteralPath $staged.Original)) {
-                    if (Test-Path -LiteralPath $staged.Staged) { [System.IO.File]::Move($staged.Staged, $staged.Original) }
-                    elseif (Test-Path -LiteralPath $staged.Backup) { [System.IO.File]::Copy($staged.Backup, $staged.Original, $false) }
-                    else { throw 'No staged file or backup copy remains.' }
-                }
-            } catch {
-                $deleteErrors.Add("Restore $([IO.Path]::GetFileName($staged.Original)): $($_.Exception.Message)")
-                foreach ($path in @($staged.Staged, $staged.Backup)) { if (Test-Path -LiteralPath $path) { $recoveryPaths.Add($path) } }
-            }
-        }
-    }
-
-    # Remove transaction leftovers after all originals have been restored or
-    # commit succeeded. Report any residue instead of hiding recovery material.
-    if ($deleteErrors.Count) {
-        foreach ($staged in $stagedMoves) {
-            try {
-                if ((Test-Path -LiteralPath $staged.Original) -and (Test-Path -LiteralPath $staged.Staged)) { [IO.File]::Delete($staged.Staged) }
-                elseif (Test-Path -LiteralPath $staged.Staged) { $recoveryPaths.Add($staged.Staged) }
-            } catch { $deleteErrors.Add("Cleanup $($staged.Staged): $($_.Exception.Message)"); $recoveryPaths.Add($staged.Staged) }
-        }
-    }
-    $unrestoredOriginal = $false
-    foreach ($staged in $stagedMoves) { if (-not (Test-Path -LiteralPath $staged.Original)) { $unrestoredOriginal = $true } }
-    if ($commitSucceeded -or -not $unrestoredOriginal) {
-        try { if (Test-Path -LiteralPath $backupDir) { [IO.Directory]::Delete($backupDir, $true) } }
-        catch { $deleteErrors.Add("Cleanup $backupDir`: $($_.Exception.Message)"); $recoveryPaths.Add($backupDir) }
-    } elseif (Test-Path -LiteralPath $backupDir) {
-        $recoveryPaths.Add($backupDir)
-    }
-
-    # Anh thu nho chi la cache tu tao lai: xoa sau khi media da xoa xong; loi chi ghi log, khong lam hong giao dich.
-    $thumbWarnings = @()
-    if ($commitSucceeded) {
-        foreach ($t in @(Get-ReelThumbFiles -VideoPath $FilePath)) {
-            try { [System.IO.File]::Delete($t) }
-            catch { $thumbWarnings += "$t`: $($_.Exception.Message)"; Write-FileLog "WARN Không xóa được ảnh thu nhỏ '$t': $($_.Exception.Message)" }
-        }
-        foreach ($k in @($script:probeCache.Keys)) { if ([string]::Equals($k, $FilePath, [StringComparison]::OrdinalIgnoreCase)) { $script:probeCache.Remove($k) } }
-    }
-
+    $removal = Remove-ReelToRecycleBin -Root $dir -Id (Get-ReelId $FilePath)
+    foreach ($k in @($script:probeCache.Keys)) { if ([string]::Equals($k, $FilePath, [StringComparison]::OrdinalIgnoreCase)) { $script:probeCache.Remove($k) } }
     return @{
-        # Deletion and temporary-backup cleanup are separate outcomes. A
-        # cleanup-only failure must never tell the caller to reload deleted media.
-        Success = $commitSucceeded
-        Errors  = @($deleteErrors)
-        CleanupStatus = if ($recoveryPaths.Count) { 'RecoveryRequired' } else { 'Complete' }
-        RecoveryPaths = @($recoveryPaths | Select-Object -Unique)
-        DeletedFiles = @($stagedMoves | ForEach-Object { $_.Original })
-        ThumbWarnings = @($thumbWarnings)
+        Success = [bool]$removal.Success
+        Errors  = @($removal.Errors)
+        CleanupStatus = 'Complete'
+        RecoveryPaths = @($removal.Remaining)
+        DeletedFiles = @($removal.Recycled)
+        ThumbWarnings = @()
     }
 }
 
 # ------------------------------------------------------------- cap nhat kho video & loc ----
 function Test-GalleryActionsBusy {
-    return [bool]($script:ps -or $script:importBusy -or ($script:queue -and $script:queue.Count -gt 0))
+    return [bool]($script:ps -or $script:importBusy -or $script:khoMoveRunning -or ($script:queue -and $script:queue.Count -gt 0))
 }
 
 function Get-DeleteConfirmText {
@@ -5516,20 +6040,20 @@ function Get-DeleteConfirmText {
     $dir = Split-Path $FilePath -Parent
     $files = @(Get-ReelMediaFiles -VideoPath $FilePath -Existing)
     $desc = @{ final = 'video hoàn chỉnh'; source = 'video gốc sạch (để sửa lại logo/GIF)'; audio = 'âm thanh đã thu (để sửa lại)' }
-    $where = @{ root = 'thư mục xuất'; cache = '.cache (ẩn)'; legacy = 'thư mục xuất, file cũ' }
+    $where = @{ root = 'thư mục kho'; cache = '.cache (ẩn)'; legacy = 'thư mục kho, file cũ' }
     $lines = @($files | ForEach-Object { "• $($_.Leaf) — $($desc[$_.Kind]) · $($where[$_.Location])" })
     if (-not $lines.Count) { $lines = @("• $id-3-hoan-chinh.mp4 — video hoàn chỉnh") }
     $thumbs = @(Get-ReelThumbFiles -VideoPath $FilePath)
-    return ("Xóa vĩnh viễn Reel #$id trong:`r`n$dir`r`n`r`n" + ($lines -join "`r`n") +
-        $(if ($thumbs.Count) { "`r`n• ảnh thu nhỏ trong .cache\thumbs (tự tạo lại được)" } else { '' }) +
-        "`r`n`r`nSau khi xóa sẽ không sửa lại hoặc khôi phục được video này; muốn có lại phải tải và ghi âm lại.")
+    return ("Chuyển Reel #$id trong kho vào Thùng rác:`r`n$dir`r`n`r`n" + ($lines -join "`r`n") +
+        $(if ($thumbs.Count) { "`r`n• ảnh thu nhỏ trong .cache\thumbs (tự tạo lại được, xóa luôn)" } else { '' }) +
+        "`r`n`r`nCác file nằm trong Thùng rác của Windows nên khôi phục được từ đó; lịch sử đăng của video này sẽ được xóa khỏi kho.")
 }
 
 function Confirm-GalleryDelete {
     param([string]$FilePath)
     # Hop thoai theo theme; nut mac dinh la Huy: Enter/Esc khong xoa nham.
     $n = [Math]::Max(1, @(Get-ReelMediaFiles -VideoPath $FilePath -Existing).Count)
-    return (Show-ConfirmDialog -Title 'Xóa video này?' -Message (Get-DeleteConfirmText -FilePath $FilePath) -ConfirmText "Xóa $n file" -Danger)
+    return (Show-ConfirmDialog -Title 'Xóa video này?' -Message (Get-DeleteConfirmText -FilePath $FilePath) -ConfirmText "Chuyển $n file vào Thùng rác" -Danger)
 }
 
 function Open-GalleryFile {
@@ -5777,10 +6301,21 @@ while (-not $Jobs.IsCompleted) {
     if ($null -eq $job) { continue }
     try {
         if ($job.Kind -eq 'scan') {
-            $files = @(Get-ChildItem -LiteralPath $job.Dir -Filter '*-3-hoan-chinh.mp4' -File -ErrorAction Stop |
-                Sort-Object LastWriteTime -Descending |
-                ForEach-Object { [pscustomobject]@{ FullName = $_.FullName; Name = $_.Name; Length = $_.Length; LastWriteTime = $_.LastWriteTime; Stamp = "$($_.Length)-$($_.LastWriteTimeUtc.Ticks)" } })
-            $Results.Enqueue([pscustomobject]@{ Kind = 'scan'; Gen = $job.Gen; Dir = $job.Dir; Files = $files; Error = '' })
+            # One job over every kho folder (each non-recursive); a folder that cannot be read reports its own error.
+            $scanned = New-Object System.Collections.Generic.List[object]
+            foreach ($dir in @($job.Dirs)) {
+                $entry = [pscustomobject]@{ Dir = [string]$dir; Files = @(); Error = ''; Missing = $false }
+                try {
+                    if (-not [System.IO.Directory]::Exists([string]$dir)) { $entry.Missing = $true }
+                    else {
+                        $entry.Files = @(Get-ChildItem -LiteralPath $dir -Filter '*-3-hoan-chinh.mp4' -File -ErrorAction Stop |
+                            Sort-Object LastWriteTime -Descending |
+                            ForEach-Object { [pscustomobject]@{ FullName = $_.FullName; Name = $_.Name; Length = $_.Length; LastWriteTime = $_.LastWriteTime; Stamp = "$($_.Length)-$($_.LastWriteTimeUtc.Ticks)"; Root = [string]$dir } })
+                    }
+                } catch { $entry.Error = $_.Exception.Message }
+                $scanned.Add($entry)
+            }
+            $Results.Enqueue([pscustomobject]@{ Kind = 'scan'; Gen = $job.Gen; Roots = $scanned.ToArray(); Error = '' })
             continue
         }
         if ($job.Kind -ne 'probe') { continue }
@@ -5845,7 +6380,7 @@ while (-not $Jobs.IsCompleted) {
             Width = $(if ($info) { [int]$info.width } else { 0 }); Height = $(if ($info) { [int]$info.height } else { 0 })
             Thumb = $(if ($thumbOk) { $thumbPath } else { '' }); Error = $err })
     } catch {
-        $Results.Enqueue([pscustomobject]@{ Kind = [string]$job.Kind; Gen = $job.Gen; Path = [string]$job.Path; Dir = [string]$job.Dir; Stamp = ''
+        $Results.Enqueue([pscustomobject]@{ Kind = [string]$job.Kind; Gen = $job.Gen; Path = [string]$job.Path; Roots = @(); Stamp = ''
                                             Files = @(); Duration = 0.0; Width = 0; Height = 0; Thumb = ''; Error = $_.Exception.Message })
     }
 }
@@ -6052,8 +6587,9 @@ function New-GalleryItem {
     $entry = if ($Metadata -and $Metadata.PSObject.Properties[$id]) { $Metadata.$id } else { $null }
     $postUrl = ''; $postId = ''; $linkKey = ''; $linkState = ''; $heldUntil = $null
     $manual = Get-ReupManualState $entry
-    $khoId = Get-KhoEffectiveId $entry $script:khoKnown
-    $khoManual = [bool]($entry -and $entry.KhoManual -eq $true)
+    # The kho is the folder the file is in (a kho IS a folder); a folder nobody registered gives ''.
+    $khoLib = $script:khoByPath[[string]$File.Root]
+    $khoId = $(if ($khoLib) { [string]$khoLib.id } else { '' })
     if ($entry -and $entry.Source -eq 'autotok-history') {
         # Synced TikTok history (D3/D5): the badge is posted when marked manually OR a post succeeded.
         $history = @($entry.History | Where-Object { $null -ne $_ })
@@ -6078,7 +6614,7 @@ function New-GalleryItem {
         $postedShort = 'Đã đăng' + $(if ($postedDate) { "`n$postedDate" } else { '' })
         $postedText += ' (đánh dấu thủ công)'
     }
-    $khoName = $(if ($script:khoNames -and $script:khoNames.ContainsKey($khoId)) { [string]$script:khoNames[$khoId] } else { 'Kho chung' })
+    $khoName = $(if ($khoLib) { [string]$khoLib.name } else { '' })
     $statusName = $(if ($heldUntil -and $heldUntil -gt [DateTime]::UtcNow) { 'Đã hẹn' } elseif ($isPosted) { 'Đã đăng' } else { 'Chờ đăng' })
     return [pscustomobject]@{
         Path = [string]$File.FullName; Id = $id; Title = "Reel #$id"; Date = $date; Stamp = [string]$File.Stamp
@@ -6086,9 +6622,9 @@ function New-GalleryItem {
         PostedMultiline = $postedShort.Contains("`n")
         Thumb = $thumb; ThumbPath = $thumbPath; File = $File
         PostUrl = $postUrl; PostId = $postId; LinkKey = $linkKey; LinkState = $linkState
-        Kho = $khoId; KhoManual = $khoManual; HeldUntil = $heldUntil; KhoName = $khoName; AutomationText = "Reel #$id · $statusName · $khoName"
+        Kho = $khoId; Root = [string]$File.Root; HeldUntil = $heldUntil; KhoName = $khoName; AutomationText = "Reel #$id · $statusName · $khoName"
         # Chu ky hien thi: giong nhau -> giu nguyen doi tuong cu (khong tao lai the, giu cuon/chon).
-        Signature = ([string]$File.Stamp + '|' + $metaText + '|' + $detail + '|' + $postedText + '|' + $postedShort + '|' + [bool]$manual.Posted + '|' + $thumbPath + '|' + $postUrl + '|' + $postId + '|' + $linkState + '|' + $khoId + '|' + $khoManual)
+        Signature = ([string]$File.Stamp + '|' + $metaText + '|' + $detail + '|' + $postedText + '|' + $postedShort + '|' + [bool]$manual.Posted + '|' + $thumbPath + '|' + $postUrl + '|' + $postId + '|' + $linkState + '|' + $khoId + '|' + $khoName)
     }
 }
 
@@ -6106,11 +6642,11 @@ function Set-GalleryState {
     if (-not $ui.GalleryState) { return }
     if ($State -eq 'hidden') { $ui.GalleryState.Visibility = 'Collapsed'; return }
     $spec = switch ($State) {
-        'loading' { @(0xE895, 'Đang quét kho…', 'Đang đọc thư mục xuất ở nền; cứ dùng giao diện bình thường nhé.') }
+        'loading' { @(0xE895, 'Đang quét kho…', 'Đang đọc các thư mục kho ở nền; cứ dùng giao diện bình thường nhé.') }
         'empty'   { @(0xE8F1, 'Kho trống', 'Chưa có video nào — dán link ở trang Nguồn nhé!') }
-        'khoempty' { @(0xE8F1, 'Kho này chưa có video.', 'Thêm video từ một thư mục, hoặc chọn kho này ở trang Nguồn rồi tải video về.') }
+        'khoempty' { @(0xE8F1, 'Kho này chưa có video.', 'Thêm video từ một thư mục, chuyển video từ kho khác sang, hoặc chọn kho này ở trang Nguồn rồi tải video về.') }
         'nomatch' { @(0xE71C, 'Không có video phù hợp', 'Thử đổi bộ lọc ngày, kho, trạng thái hoặc từ khóa tìm kiếm.') }
-        'missing' { @(0xE8B7, 'Chưa có thư mục xuất', 'Chọn thư mục xuất ở trang Nguồn nhé.') }
+        'missing' { @(0xE8B7, 'Chưa thấy thư mục kho', 'Kiểm tra ổ đĩa, hoặc đổi thư mục kho trong Quản lý kho nhé.') }
         default   { @(0xEA39, 'Không đọc được kho', 'Dữ liệu được giữ nguyên; kiểm tra quyền truy cập rồi bấm Thử lại.') }
     }
     $isError = ($State -eq 'error')
@@ -6135,47 +6671,55 @@ function Update-Gallery {
     if (Get-Command Update-LinkDuplicateWarning -ErrorAction SilentlyContinue) { Update-LinkDuplicateWarning }
     if (-not $script:galleryScanReady) { return }
     $script:galleryGen++
-    $outDir = [string]$ui.TxtOut.Text
-    if ([string]::IsNullOrWhiteSpace($outDir) -or -not [System.IO.Directory]::Exists($outDir)) {
+    Update-KhoKnown
+    $roots = @(Get-KhoRoots | Where-Object { [System.IO.Directory]::Exists($_) })
+    if (-not $roots.Count) {
         Set-GalleryAll @(); $script:galleryState = 'ready'
         Apply-GalleryFilter
         Set-GalleryState missing
         return
     }
-    try { $script:galleryMeta = Get-ReupMetadata }
+    try {
+        $metas = @{}
+        foreach ($r in $roots) { $metas[$r] = Get-ReupMetadata -OutDir $r }
+        $script:galleryMetaByRoot = $metas
+    }
     catch {
         $script:galleryState = 'error'
         $script:galleryCountBase = 'Không đọc được lịch sử đã đăng'
         $ui.TxtGalleryCount.Text = $script:galleryCountBase
-        Set-GalleryState error 'Không đọc được lịch sử đã đăng. Dữ liệu được giữ nguyên; kiểm tra file reup-status.json rồi bấm Thử lại.'
+        Set-GalleryState error 'Không đọc được lịch sử đã đăng. Dữ liệu được giữ nguyên; kiểm tra file reup-status.json của các kho rồi bấm Thử lại.'
         Add-Log $_.Exception.Message 'Danger'
         # A transient sharing collision (IO read error, kept after retries) is only logged; corrupt data still toasts.
         if ($_.Exception.Message -like 'Không đọc được lịch sử TikTok*') { Write-FileLog "WARN Get-ReupMetadata (va cham doc/ghi): $($_.Exception.Message)" }
         else { Show-Toast 'Không đọc được lịch sử đã đăng. Xem Cài đặt › Nhật ký.' -Kind error }
         return
     }
-    try { [void](Get-KhoList -Metadata $script:galleryMeta) }
-    catch { Write-FileLog "WARN Get-KhoList: $($_.Exception.Message)" }
     $script:galleryState = 'loading'
     if (-not @($script:galleryAll).Count) { Set-GalleryState loading }
     if ($SelfTest) { return }
-    Request-MediaJob @{ Kind = 'scan'; Gen = $script:galleryGen; Dir = $outDir }
+    Request-MediaJob @{ Kind = 'scan'; Gen = $script:galleryGen; Dirs = $roots }
 }
 
 function Complete-GalleryScan {
     param($Result)
     if ($Result.Gen -ne $script:galleryGen) { return }
-    if ($Result.Error) {
+    $bad = @($Result.Roots | Where-Object { $_.Error })
+    if ($Result.Error -or $bad.Count) {
         $script:galleryState = 'error'
-        Set-GalleryState error ("Không đọc được thư mục xuất: " + $Result.Error)
-        Add-Log "Không quét được kho '$($Result.Dir)': $($Result.Error)" 'Danger'
+        $why = $(if ($bad.Count) { ($bad | ForEach-Object { "$($_.Dir): $($_.Error)" }) -join '; ' } else { [string]$Result.Error })
+        Set-GalleryState error ("Không đọc được thư mục kho: " + $why)
+        Add-Log "Không quét được kho: $why" 'Danger'
         return
     }
     $sw = [Diagnostics.Stopwatch]::StartNew()
     Update-KhoKnown
     $items = New-Object System.Collections.ArrayList
-    foreach ($f in @($Result.Files)) {
-        $new = New-GalleryItem -File $f -Metadata $script:galleryMeta -Probe $script:probeCache[[string]$f.FullName]
+    $files = New-Object System.Collections.Generic.List[object]
+    foreach ($r in @($Result.Roots)) { foreach ($f in @($r.Files)) { $files.Add($f) } }
+    $ordered = $(if (@($Result.Roots).Count -gt 1) { @($files | Sort-Object -Property @{ Expression = { $_.LastWriteTime }; Descending = $true }) } else { $files.ToArray() })
+    foreach ($f in $ordered) {
+        $new = New-GalleryItem -File $f -Metadata (Get-GalleryMetaFor ([string]$f.Root)) -Probe $script:probeCache[[string]$f.FullName]
         # G-R6: giu doi tuong cu neu noi dung hien thi khong doi -> ListView khong tao lai the, giu cuon/chon.
         $oldIdx = $script:galleryIndexByPath[[string]$f.FullName]
         if ($null -ne $oldIdx -and $oldIdx -lt @($script:galleryAll).Count) {
@@ -6210,7 +6754,7 @@ function Apply-GalleryProbe {
     if ($null -eq $i -or $i -ge @($script:galleryAll).Count) { return }
     $old = $script:galleryAll[$i]
     if (-not $old -or $old.Path -ne $path) { return }
-    $new = New-GalleryItem -File $old.File -Metadata $script:galleryMeta -Probe $Result
+    $new = New-GalleryItem -File $old.File -Metadata (Get-GalleryMetaFor ([string]$old.Root)) -Probe $Result
     if ($new.Signature -eq $old.Signature) { return }
     $script:galleryAll[$i] = $new
     $pos = $script:galleryRowIndexByPath[$path]
@@ -6243,8 +6787,10 @@ function Update-GalleryDateChoices {
 }
 
 # ------------------------------------------------------------- kho: dem, bo loc, chuyen kho (UI) ----
-$script:khoKnown = @{ default = $true }   # ma kho dang co trong registry (ma la -> tinh vao Kho chung)
-$script:khoNames = @{ default = 'Kho chung' }   # ma kho -> ten hien tren the (chip kho)
+$script:khoKnown = @{}                    # ma kho dang co trong registry
+$script:khoNames = @{}                    # ma kho -> ten hien tren the (chip kho)
+$script:khoByPath = @{}                   # thu muc kho (chuan hoa) -> kho
+$script:galleryMetaByRoot = @{}           # thu muc kho -> reup-status.json da doc (cho khung Kho va lich)
 $script:khoCounts = @{}                   # ma kho -> [int[]] chờ đăng / đã hẹn / đã đăng
 $script:khoComboSig = ''
 $script:galleryTabCounts = [int[]]@(0, 0, 0)   # chờ đăng / đã hẹn / đã đăng theo bộ lọc ngày + kho + tìm kiếm hiện tại
@@ -6263,10 +6809,17 @@ function Get-GalleryBucket {
 }
 
 function Update-KhoKnown {
-    # Registry ids as a set; computed once per gallery build, not per item.
-    $known = @{}; $names = @{}
-    foreach ($lib in @((Get-KhoRegistry).libraries)) { $known[[string]$lib.id] = $true; $names[[string]$lib.id] = [string]$lib.name }
-    $script:khoKnown = $known; $script:khoNames = $names
+    # Registry ids / folders as sets; computed once per gallery build, not per item.
+    $known = @{}; $names = @{}; $byPath = @{}
+    foreach ($lib in @((Get-KhoRegistry).libraries)) { $known[[string]$lib.id] = $true; $names[[string]$lib.id] = [string]$lib.name; $byPath[[string]$lib.path] = $lib }
+    $script:khoKnown = $known; $script:khoNames = $names; $script:khoByPath = $byPath
+}
+
+function Get-GalleryMetaFor {
+    # reup-status.json (already read) of one kho folder; $null when unknown.
+    param([string]$Root)
+    if (-not $Root -or -not $script:galleryMetaByRoot) { return $null }
+    return $script:galleryMetaByRoot[$Root]
 }
 
 function Select-GalleryItems {
@@ -6289,9 +6842,8 @@ function Select-GalleryItems {
     $tab = [int[]]@(0, 0, 0)   # status tab counts: current date + kho + search filters, any status
     foreach ($it in $script:galleryAll) {
         $k = [string]$it.Kho
-        if (-not $known.ContainsKey($k)) { $k = 'default' }
         $b = if ($it.HeldUntil -and $it.HeldUntil -gt $now) { 1 } elseif ($it.Posted) { 2 } else { 0 }
-        if ($UpdateCounts) { $counts[$k][$b]++ }
+        if ($UpdateCounts -and $counts.ContainsKey($k)) { $counts[$k][$b]++ }
         if ($dateMode) {
             $d = $it.Date.Date
             if ($dateMode -eq 1) { if ($d -ne $d1) { continue } }
@@ -6369,7 +6921,7 @@ function Test-KhoLowStock {
     $low = New-Object System.Collections.Generic.List[string]
     foreach ($lib in @((Get-KhoRegistry).libraries)) {
         $id = [string]$lib.id
-        if (-not $id.StartsWith('acct:') -or [int]$lib.lowStock -le 0 -or $script:khoLowWarned.ContainsKey($id)) { continue }
+        if (-not [string]$lib.account -or [int]$lib.lowStock -le 0 -or $script:khoLowWarned.ContainsKey($id)) { continue }
         $c = $script:khoCounts[$id]; if (-not $c) { continue }
         if ($c[0] -lt [int]$lib.lowStock) { $script:khoLowWarned[$id] = $true; $low.Add(('{0} (còn {1})' -f $lib.name, $c[0])) }
     }
@@ -6403,7 +6955,11 @@ function Reset-GalleryScroll {
 function Update-GalleryItemsFromMeta {
     # Re-reads reup-status.json only (no media scan) and rebuilds the cards of the given video ids (or every card when no id).
     param([string[]]$Ids = @(), [switch]$Force)   # -Force: thay luôn thẻ dù chữ ký không đổi (đổi tên kho -> chip kho)
-    try { $script:galleryMeta = Get-ReupMetadata }
+    try {
+        $metas = @{}
+        foreach ($r in @(Get-KhoRoots | Where-Object { [System.IO.Directory]::Exists($_) })) { $metas[$r] = Get-ReupMetadata -OutDir $r }
+        $script:galleryMetaByRoot = $metas
+    }
     catch {
         Add-Log $_.Exception.Message 'Danger'
         Show-Toast 'Không đọc được lịch sử đã đăng để cập nhật kho. Bấm Làm mới để thử lại.' -Kind error
@@ -6414,7 +6970,7 @@ function Update-GalleryItemsFromMeta {
     for ($i = 0; $i -lt @($script:galleryAll).Count; $i++) {
         $old = $script:galleryAll[$i]
         if ($idSet.Count -and -not $idSet.ContainsKey([string]$old.Id)) { continue }
-        $new = New-GalleryItem -File $old.File -Metadata $script:galleryMeta -Probe $script:probeCache[[string]$old.Path]
+        $new = New-GalleryItem -File $old.File -Metadata (Get-GalleryMetaFor ([string]$old.Root)) -Probe $script:probeCache[[string]$old.Path]
         if ($Force -or $new.Signature -ne $old.Signature) { $script:galleryAll[$i] = $new }
     }
     Apply-GalleryFilter
@@ -6429,7 +6985,7 @@ function Update-GalleryHeldExpired {
     for ($i = 0; $i -lt @($script:galleryAll).Count; $i++) {
         $old = $script:galleryAll[$i]
         if (-not $old.HeldUntil -or $old.HeldUntil -gt $now) { continue }
-        $new = New-GalleryItem -File $old.File -Metadata $script:galleryMeta -Probe $script:probeCache[[string]$old.Path]
+        $new = New-GalleryItem -File $old.File -Metadata (Get-GalleryMetaFor ([string]$old.Root)) -Probe $script:probeCache[[string]$old.Path]
         $script:galleryAll[$i] = $new; $changed = $true
     }
     if ($changed) { Apply-GalleryFilter }
@@ -6444,18 +7000,27 @@ function Get-GalleryMoveTargets {
 }
 
 function Move-GalleryItemsToKho {
+    # S1: the physical move runs only when the app is quiet; otherwise the owner is told to retry.
     param([object[]]$Items, [string]$KhoId)
-    $ids = @($Items | ForEach-Object { [string]$_.Id } | Where-Object { $_ })
-    if (-not $ids.Count) { return }
-    try { [void](Set-VideoKho -VideoIds $ids -KhoId $KhoId -Manual) }
+    $picked = @($Items | Where-Object { $_ -and [string]$_.Id -and [string]$_.Path })
+    if (-not $picked.Count) { return }
+    $result = $null
+    try { $result = Invoke-KhoMove -Items $picked -TargetId $KhoId -Reason manual }
     catch {
         Add-Log "Không chuyển kho được: $($_.Exception.Message)" 'Danger'
         Show-Toast ('Không chuyển kho được: ' + (Get-FriendlyError $_.Exception.Message)) -Kind error
         return
     }
-    Update-GalleryItemsFromMeta -Ids $ids
-    $name = @((Get-KhoRegistry).libraries | Where-Object { $_.id -ceq $KhoId } | ForEach-Object { [string]$_.name })
-    Show-Toast ("Đã chuyển $($ids.Count) video sang " + $(if ($name.Count) { $name[0] } else { $KhoId }) + '.') -Kind success
+    if ($result.Busy) { Show-Toast ("Đang bận ($($result.Busy))… thử lại sau.") -Kind warning; return }
+    $name = [string]$result.Target.name
+    $movedCount = @($result.Moved).Count; $failedCount = @($result.Failed).Count
+    if ($movedCount) { Update-Gallery }
+    if ($movedCount) { Show-Toast ("Đã chuyển $movedCount video sang $name.") -Kind success }
+    if ($failedCount) {
+        foreach ($x in @($result.Failed)) { Add-Log "Không chuyển được Reel #$($x.Id): $($x.Why)" 'Warning' }
+        $first = @($result.Failed)[0]
+        Show-Toast ("Không chuyển được $failedCount video. Reel #$($first.Id): $($first.Why)") -Kind warning
+    }
     Test-KhoLowStock
 }
 
@@ -6472,7 +7037,7 @@ function Add-KhoMoveEntries {
     foreach ($lib in @((Get-KhoRegistry).libraries)) {
         $id = [string]$lib.id
         $here = 0
-        foreach ($it in @($Items)) { $k = [string]$it.Kho; if (-not $script:khoKnown.ContainsKey($k)) { $k = 'default' }; if ($k -ceq $id) { $here++ } }
+        foreach ($it in @($Items)) { if ([string]$it.Kho -ceq $id) { $here++ } }
         $all = ($here -ge $count)
         $sub = New-Object Windows.Controls.MenuItem
         $sub.Header = ([string]$lib.name).Replace('_', '__') + $(if ($all) { ' (đang ở đây)' } else { '' })
@@ -6606,17 +7171,18 @@ function Set-GalleryPosted {
     param($Item)
     $manualNow = if ($Item.PSObject.Properties['ManualPosted']) { [bool]$Item.ManualPosted } else { [bool]$Item.Posted }
     $newState = -not $manualNow
-    try { Set-ReupMetadata -VideoId $Item.Id -Posted $newState }
+    if ($script:khoMoveRunning) { Show-Toast 'Đang chuyển kho. Thử lại sau.' -Kind warning; return }
+    try { Set-ReupMetadata -VideoId $Item.Id -Posted $newState -OutDir ([string]$Item.Root) }
     catch {
         Add-Log $_.Exception.Message 'Danger'
         Show-Toast 'Không lưu được trạng thái đã đăng; dữ liệu cũ được giữ nguyên. Chi tiết trong Nhật ký.' -Kind error
         return
     }
-    try { $script:galleryMeta = Get-ReupMetadata } catch { Write-FileLog "WARN Get-ReupMetadata sau khi đánh dấu: $($_.Exception.Message)" }
+    try { $script:galleryMetaByRoot[[string]$Item.Root] = Get-ReupMetadata -OutDir ([string]$Item.Root) } catch { Write-FileLog "WARN Get-ReupMetadata sau khi đánh dấu: $($_.Exception.Message)" }
     $i = $script:galleryIndexByPath[[string]$Item.Path]
     $updated = $null
     if ($null -ne $i -and $i -lt @($script:galleryAll).Count -and $script:galleryAll[$i].Path -eq $Item.Path) {
-        $updated = New-GalleryItem -File $Item.File -Metadata $script:galleryMeta -Probe $script:probeCache[$Item.Path]
+        $updated = New-GalleryItem -File $Item.File -Metadata (Get-GalleryMetaFor ([string]$Item.Root)) -Probe $script:probeCache[$Item.Path]
         $script:galleryAll[$i] = $updated
     }
     Apply-GalleryFilter
@@ -6770,11 +7336,12 @@ function Get-KhoTotalCount {
 function Test-KhoRegistryWritable { return [bool]$script:khoRegistryReady }
 
 function Confirm-KhoDelete {
-    param($Owner, [string]$Name)
+    # "Xóa kho '<tên>' và N video vào Thùng rác?" - the default button is Cancel.
+    param($Owner, [string]$Name, [int]$Count = 0)
     if ($null -ne $script:confirmDialogAutoAnswer) { return [bool]$script:confirmDialogAutoAnswer }
-    Write-FileLog "DIALOG Xóa kho '$Name'"
+    Write-FileLog "DIALOG Xóa kho '$Name' ($Count video)"
     try {
-        $dlg = New-ConfirmDialog -Title "Xóa kho '$Name'?" -Message 'Video trong kho này sẽ về Kho chung. Không xóa file video nào.' -ConfirmText 'Xóa kho' -Danger
+        $dlg = New-ConfirmDialog -Title "Xóa kho '$Name' và $Count video vào Thùng rác?" -Message "Xóa kho '$Name' và $Count video vào Thùng rác?`r`nCác file nằm trong Thùng rác của Windows nên khôi phục được từ đó. Thư mục kho do ứng dụng tạo cũng vào Thùng rác khi không còn gì khác trong đó." -ConfirmText 'Xóa kho' -Danger
         if ($Owner) { $dlg.Owner = $Owner } elseif ($win -and $win.IsVisible) { $dlg.Owner = $win }
         return ($dlg.ShowDialog() -eq $true)
     } catch {
@@ -6787,30 +7354,26 @@ function Update-KhoCardsAfterRename {
     # Chip kho trên thẻ đổi theo tên mới: chỉ dựng lại thẻ của kho này (Ids rỗng nghĩa là TẤT CẢ nên phải chặn).
     param([string]$KhoId)
     $ids = New-Object System.Collections.Generic.List[string]
-    foreach ($it in @($script:galleryAll)) {
-        $k = [string]$it.Kho
-        if (-not $script:khoKnown.ContainsKey($k)) { $k = 'default' }
-        if ($k -ceq $KhoId) { $ids.Add([string]$it.Id) }
-    }
+    foreach ($it in @($script:galleryAll)) { if ([string]$it.Kho -ceq $KhoId) { $ids.Add([string]$it.Id) } }
     if ($ids.Count) { Update-GalleryItemsFromMeta -Ids $ids.ToArray() -Force } else { Apply-GalleryFilter }
 }
 
 function Remove-KhoAndRefresh {
-    # Remove-Kho (videos go back to Kho chung, no file touched) then refresh the affected cards from metadata.
+    # Remove-KhoWithVideos (videos -> Recycle Bin, kho unregistered) then a gallery rebuild. Returns the result of Remove-KhoWithVideos.
     param([string]$Id)
-    $ids = @($script:galleryAll | Where-Object { [string]$_.Kho -ceq $Id } | ForEach-Object { [string]$_.Id })
-    $moved = Remove-Kho -Id $Id
-    if ($script:filterKho -ceq $Id) { $script:filterKho = 'all' }
-    if ($ids.Count) { Update-GalleryItemsFromMeta -Ids $ids } else { Apply-GalleryFilter }
-    return $moved
+    $result = Remove-KhoWithVideos -Id $Id
+    if ($result.Success -and $script:filterKho -ceq $Id) { $script:filterKho = 'all' }
+    Sync-OutDirFromKho
+    Update-Gallery
+    return $result
 }
 
 function Start-KhoImportJob {
     # Runs Import-KhoFolder in a background runspace. The caller polls $job.Sync (Done/Total/Id/Finished/Result/Error).
-    param([string]$SourceDir, [string]$KhoId, [string]$OutDir)
+    param([string]$SourceDir, [string]$OutDir)
     $blocked = Test-KhoImportBlocked
     if ($blocked) { throw $blocked }
-    if (-not @((Get-KhoRegistry).libraries | Where-Object { $_.id -ceq $KhoId }).Count) { throw 'Kho này không còn trong danh sách. Chọn lại kho.' }
+    if (-not (Get-KhoByPath $OutDir)) { throw 'Kho này không còn trong danh sách. Chọn lại kho.' }
     $iss = [Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
     foreach ($name in $script:khoImportFunctions) {
         $iss.Commands.Add([Management.Automation.Runspaces.SessionStateFunctionEntry]::new($name, (Get-Item -LiteralPath "function:$name").ScriptBlock.ToString()))
@@ -6824,15 +7387,15 @@ function Start-KhoImportJob {
         $rs.Open()
         $ps = [PowerShell]::Create(); $ps.Runspace = $rs
         $script = @'
-param($src, $kho, $out, $sync, $token)
+param($src, $out, $sync, $token)
 $ErrorActionPreference = 'Stop'
 try {
     $cb = { param($p) $sync.Done = $p.Done; $sync.Total = $p.Total; $sync.Id = $p.Id }.GetNewClosure()
-    $sync.Result = Import-KhoFolder -SourceDir $src -KhoId $kho -OutDir $out -Progress $cb -CancelToken $token
+    $sync.Result = Import-KhoFolder -SourceDir $src -OutDir $out -Progress $cb -CancelToken $token
 } catch { $sync.Error = $_.Exception.Message }
 finally { $sync.Finished = $true }
 '@
-        [void]$ps.AddScript($script).AddArgument($SourceDir).AddArgument($KhoId).AddArgument($OutDir).AddArgument($sync).AddArgument($cts.Token)
+        [void]$ps.AddScript($script).AddArgument($SourceDir).AddArgument($OutDir).AddArgument($sync).AddArgument($cts.Token)
         $async = $ps.BeginInvoke()
     } catch {
         $script:importBusy = $false
