@@ -34,15 +34,6 @@ Test-Case 'warm passes with nothing changed: restart < 10 s and steady < 2.6 s (
     Assert-True (-not $s.statusFileRewrittenByWarmPasses) 'reup-status.json untouched'
     Assert-Equal $s.videos 2500
 }
-Test-Case 'kho assignment of the cold pass: every succeeded video has its account kho, nothing else has one' {
-    Assert-Equal $new.Summary.entriesWithKho $new.Summary.succeeded
-    $m = Read-TestJson (Join-Path (Split-Path $new.Out -Parent) 'out\reup-status.json')
-    foreach ($p in $m.PSObject.Properties) {
-        $isDone = @($p.Value.History | Where-Object { $_.status -eq 'succeeded' }).Count -gt 0
-        if ($isDone -and $p.Value.Kho -notin 'acct:anna', 'acct:bob', 'acct:carl') { throw "video $($p.Name) has Kho '$($p.Value.Kho)'" }
-        if (-not $isDone -and $p.Value.Kho) { throw "unconfirmed video $($p.Name) got Kho '$($p.Value.Kho)'" }
-    }
-}
 if ($old) {
     Test-Case 'A7 behaviour identical: stored result equals the v3.0.1 result once the kho fields are ignored' {
         $a = [IO.File]::ReadAllText($old.Normalized); $b = [IO.File]::ReadAllText($new.Normalized)
@@ -56,19 +47,82 @@ if ($old) {
     }
 } else { Skip-Case 'A7 baseline comparison' 'git / baseline commit not available' }
 
-Test-Case 'kho helpers on 2,500 stored entries: Get-KhoList, auto-assign (idempotent) and effective-id scan stay within 400 / 250 / 250 ms' {
-    $root = New-TestDir
-    $meta = Get-ReupMetadata -OutDir $new.Out
-    $t1 = (Measure-Command { $list = @(Get-KhoList -Metadata $meta) }).TotalMilliseconds
-    Assert-Equal $list.Count 4 'default + 3 account khos'
-    $t2 = (Measure-Command { $changed = Invoke-KhoAutoAssign $meta }).TotalMilliseconds
-    Assert-True (-not $changed) 'second auto-assign is a no-op'
-    $t3 = (Measure-Command { $n = 0; foreach ($p in $meta.PSObject.Properties) { if ((Get-KhoEffectiveId $p.Value) -eq 'acct:anna') { $n++ } } }).TotalMilliseconds
-    Write-Output ("INFO  Get-KhoList {0:N0} ms, Invoke-KhoAutoAssign {1:N0} ms, effective-id scan {2:N0} ms (2,500 entries)" -f $t1, $t2, $t3)
-    Assert-True ($t1 -lt 400) "Get-KhoList $t1 ms"
-    Assert-True ($t2 -lt 250) "Invoke-KhoAutoAssign $t2 ms"
-    Assert-True ($t3 -lt 250) "scan $t3 ms"
-}
+# ---------------- 5 khos x 500 videos (physical khos): gallery build, kho switch, warm sync ----------------
+. (Join-Path $PSScriptRoot 'FakeBackend.ps1')
+$perfWorld = New-TestWorld @('B', 'C', 'D', 'E')
+$perfRoots = @(Get-KhoRoots)
+$server = Start-FakeBackend
+$hex = { param($n) ('{0:x32}' -f [long]$n) }
+try {
+    $users = 'Anna', 'Bob', 'Carl'
+    $scanFiles = New-Object System.Collections.Generic.List[object]
+    $n = 0
+    foreach ($r in $perfRoots) {
+        $meta = [ordered]@{}
+        for ($i = 0; $i -lt 500; $i++) {
+            $n++; $id = [string](7000000 + $n)
+            $path = Join-Path $r "$id-3-hoan-chinh.mp4"
+            [IO.File]::WriteAllText($path, "synthetic $id")
+            $fi = [IO.FileInfo]::new($path)
+            $scanFiles.Add([pscustomobject]@{ FullName = $fi.FullName; Name = $fi.Name; Length = $fi.Length; LastWriteTime = $fi.LastWriteTime; Stamp = "$($fi.Length)-$($fi.LastWriteTimeUtc.Ticks)"; Root = $r })
+            if ($n % 5 -eq 0) {
+                $e = New-TestHistoryEntry -Request (& $hex $n) -User $users[$n % 3] -Accepted ('2026-10-{0:00}T10:00:00Z' -f (1 + $n % 27)) -Created ('2026-10-{0:00}T09:00:00Z' -f (1 + $n % 27))
+                $server.Rows[$id] = ConvertTo-EntriesJson @($e)
+            }
+        }
+        [IO.File]::WriteAllText((Join-Path $r 'reup-status.json'), '{}')
+    }
+    # --- gallery build (what Complete-GalleryScan does per file, without WPF) ---
+    $script:probeCache = @{}
+    $tMeta = (Measure-Command { $metas = Get-GalleryMetaByRoot; $script:galleryMetaByRoot = $metas }).TotalMilliseconds
+    $tBuild = (Measure-Command {
+        Update-KhoKnown
+        $items = New-Object System.Collections.ArrayList
+        foreach ($f in $scanFiles) { [void]$items.Add((New-GalleryItem -File $f -Metadata (Get-GalleryMetaFor ([string]$f.Root)) -Probe $script:probeCache[[string]$f.FullName])) }
+        Set-GalleryAll @($items)
+    }).TotalMilliseconds
+    Write-Output ("INFO  5 khos x 500: read 5 metadata files {0:N0} ms; build 2,500 cards {1:N0} ms" -f $tMeta, $tBuild)
+    Test-Case '5 khos x 500: gallery data build (metadata of 5 folders + 2,500 cards) stays under 3 s (measured about 0.7 s)' {
+        Assert-Equal @($script:galleryAll).Count 2500; Assert-True (($tMeta + $tBuild) -lt 3000) "took $([int]($tMeta + $tBuild)) ms"
+        Assert-Equal @($script:galleryAll | Where-Object { $_.Kho -eq $perfWorld.B.id }).Count 500 'cards carry their kho (the folder they are in)'
+    }
+    # --- kho switch: memory only. Make every folder and kho.json unreadable first: if the switch touched the disk it would fail. ---
+    $script:galleryNowUtc = [DateTime]::UtcNow
+    $script:filterStatus = 'all'; $script:filterSearch = ''; $script:filterDate = 'all'; $script:filterKho = 'all'
+    [void](Select-GalleryItems -Today (Get-Date).Date -UpdateCounts)
+    $orig = $script:root; $hidden = $orig + '-away'
+    Rename-Item -LiteralPath $orig -NewName ([IO.Path]::GetFileName($hidden)) -ErrorAction Stop
+    $times = @()
+    try {
+        foreach ($lib in @(Get-KhoList) + @(@{ id = 'all' })) {
+            $script:filterKho = [string]$lib.id
+            $times += (Measure-Command { $sel = Select-GalleryItems -Today (Get-Date).Date -UpdateCounts }).TotalMilliseconds
+            $expected = $(if ($lib.id -eq 'all') { 2500 } else { 500 })
+            if ($sel.Count -ne $expected) { throw "kho $($lib.id): $($sel.Count) cards, expected $expected" }
+        }
+    } finally { Rename-Item -LiteralPath $hidden -NewName ([IO.Path]::GetFileName($orig)) }
+    $worst = ($times | Measure-Object -Maximum).Maximum
+    Write-Output ("INFO  kho switch (Select-GalleryItems over 2,500 cards, folders unreadable) worst {0:N1} ms, all: {1}" -f $worst, (($times | ForEach-Object { '{0:N1}' -f $_ }) -join ' / '))
+    Test-Case 'kho switch is memory only (all folders were renamed away while measuring) and < 100 ms for every kho and for All' {
+        Assert-True ($worst -lt 100) "worst switch $worst ms"
+    }
+    # --- warm sync over 5 folders ---
+    $cold = 0; $warm = 0; $steady = 0; $state = @{}
+    foreach ($r in $perfRoots) {
+        $payload = { param($last) @{ out_dir = $r; receipts = @(); last_input_sig = $(if ($last) { [string]$last.InputSig } else { '' }); last_file_stamp = $(if ($last) { [string]$last.FileStamp } else { '' }); probe_cursor = ''; identity_cache = $null; file = $null } }
+        $c = Invoke-Worker 'sync' (& $payload $null) $server.Url; if ($c.Errors.Count) { throw "cold: $($c.Errors -join ' | ')" }
+        $wr = Invoke-Worker 'sync' (& $payload $null) $server.Url; if ($wr.Errors.Count) { throw "warm: $($wr.Errors -join ' | ')" }
+        $s = Invoke-Worker 'sync' (& $payload $wr.Result) $server.Url; if ($s.Errors.Count) { throw "steady: $($s.Errors -join ' | ')" }
+        $cold += $c.Ms; $warm += $wr.Ms; $steady += $s.Ms; $state[$r] = $s.Result
+    }
+    Write-Output ("INFO  sync of 5 folders x 500 (sum): cold {0:N0} ms, warm restart {1:N0} ms, steady {2:N0} ms" -f $cold, $warm, $steady)
+    Test-Case 'sync of 5 folders x 500: warm restart < 5 s and steady pass < 3 s in total (measured about 1.3 s and 0.7 s); every steady pass is skipped (no read, no write)' {
+        Assert-True ($warm -lt 5000) "warm restart took $([int]$warm) ms"
+        Assert-True ($steady -lt 3000) "steady took $([int]$steady) ms"
+        foreach ($r in $perfRoots) { Assert-True $state[$r].Skipped "steady pass of $r was not skipped" }
+        Assert-Equal @($perfRoots | Where-Object { @((Get-ReupMetadata -OutDir $_).PSObject.Properties).Count -eq 100 }).Count 5 'each folder stored its own 100 histories'
+    }
+} finally { $server.Stop() }
 
 Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 Complete-Tests
