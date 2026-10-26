@@ -1,38 +1,6 @@
 ﻿# Physical move between khos: happy path with every companion + receipts + metadata, preflight refusals, S2 job blocking, S1 quiet-state
 # (busy flags, TikTok sync suspension, actors refusing while a batch runs), KhoPinned, auto-move candidates and end to end (account kho, auto-created kho).
 . (Join-Path $PSScriptRoot '_load.ps1')
-$ids = @{ }   # per-test ids come from here so a leftover file of one test can never satisfy another
-$script:seq = 1000000000100
-function NextId { $script:seq++; return [string]$script:seq }
-function Item { param($Root, [string]$Id) return [pscustomobject]@{ Id = $Id; Path = (Join-Path $Root "$Id-3-hoan-chinh.mp4") } }
-function Sha { param([string]$Path) return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash }
-function Posts { param($Root) return (Join-Path $Root '.cache\tiktok-posts') }
-function Write-Job {
-    # A retained / live job file of a request: <req>.job with Record.VideoId, plus optional <req>.lock.
-    param($Root, [string]$Req, [string]$VideoId, [switch]$Lock, [string]$Raw = '')
-    $d = Posts $Root; [void][IO.Directory]::CreateDirectory($d)
-    $text = $(if ($Raw) { $Raw } else { ConvertTo-Json @{ Record = @{ VideoId = $VideoId; RequestId = $Req } } -Depth 4 })
-    [IO.File]::WriteAllText((Join-Path $d "$Req.job"), $text, [Text.UTF8Encoding]::new($false))
-    if ($Lock) { [IO.File]::WriteAllText((Join-Path $d "$Req.lock"), '', [Text.UTF8Encoding]::new($false)) }
-}
-function Assert-Moved {
-    # The complete end state of a finished move of $Id from $From to $To (shared with the journal-recovery tests).
-    param($From, $To, [string]$Id, [string]$Req)
-    foreach ($rel in @("$Id-3-hoan-chinh.mp4", ".cache\$Id-1-video-goc.mp4", ".cache\$Id-2-am-thanh-tho.m4a", ".cache\thumbs\$Id.jpg", ".cache\thumbs\$Id.json", ".cache\tiktok-posts\$Req.json")) {
-        Assert-True (-not [IO.File]::Exists((Join-Path $From $rel))) "still in source: $rel"
-        Assert-True ([IO.File]::Exists((Join-Path $To $rel))) "missing in target: $rel"
-    }
-    Assert-Equal ([IO.File]::ReadAllText((Join-Path $To "$Id-3-hoan-chinh.mp4"))) "final $Id" 'final bytes'
-    Assert-Equal ([IO.File]::ReadAllText((Join-Path $To ".cache\$Id-1-video-goc.mp4"))) "source $Id"
-    Assert-Equal ([IO.File]::ReadAllText((Join-Path $To ".cache\$Id-2-am-thanh-tho.m4a"))) "audio $Id"
-    $rec = Read-TestJson (Join-Path $To ".cache\tiktok-posts\$Req.json")
-    Assert-Equal $rec.OutDir $To 'receipt OutDir'; Assert-Equal $rec.SourcePath (Join-Path $To "$Id-3-hoan-chinh.mp4") 'receipt SourcePath'
-    $meta = Get-ReupMetadata -OutDir $To
-    Assert-True ($null -ne $meta.PSObject.Properties[$Id]) 'target entry'
-    Assert-True ($null -eq (Get-ReupMetadata -OutDir $From).PSObject.Properties[$Id]) 'source entry removed'
-    Assert-Equal @(Get-TestJournalFiles).Count 0 'journal gone'
-}
-
 # ---------------- happy path ----------------
 Test-Case 'quiet world: Test-KhoQuiet is empty, nothing blocks' {
     $w = New-TestWorld @('B')
