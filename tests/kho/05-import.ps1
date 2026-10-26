@@ -128,6 +128,29 @@ Test-Case 'importing into the default kho records history but no Kho field' {
     Assert-Equal @($m.'111'.History).Count 2
 }
 
+Test-Case 'F4 importing an IDENTICAL video into the default kho clears a custom Kho; acct:* and KhoManual are never changed' {
+    $src = New-SourceFolder; $out = New-TestDir
+    foreach ($id in '111', '222', '333') { Copy-Item -LiteralPath (Join-Path $src "$id-3-hoan-chinh.mp4") -Destination (Join-Path $out "$id-3-hoan-chinh.mp4") -Force }   # all identical, already present
+    New-Bytes (Join-Path $src '555-3-hoan-chinh.mp4') 3000 11; Copy-Item -LiteralPath (Join-Path $src '555-3-hoan-chinh.mp4') -Destination (Join-Path $out '555-3-hoan-chinh.mp4') -Force
+    Write-TestMetadata $out @{
+        '111' = [ordered]@{ Posted = $false; Date = ''; Kho = $guid }                                  # custom kho -> cleared
+        '222' = [ordered]@{ Posted = $false; Date = ''; Kho = 'acct:keep' }                            # account kho -> kept
+        '333' = [ordered]@{ Posted = $false; Date = ''; Kho = $guid; KhoManual = $true }               # owner's manual choice -> kept
+        '555' = [ordered]@{ Posted = $false; Date = ''; Kho = $guid }                                  # also cleared
+    }
+    $r = Import-KhoFolder -SourceDir $src -KhoId 'default' -OutDir $out
+    Assert-Equal $r.Failed 0; Assert-Equal $r.Added 0 'all four were already present'
+    $m = Read-TestJson (Join-Path $out 'reup-status.json')
+    Assert-True ($null -eq $m.'111'.PSObject.Properties['Kho']) '111 custom Kho removed'
+    Assert-True ($null -eq $m.'555'.PSObject.Properties['Kho']) '555 custom Kho removed'
+    Assert-Equal $m.'222'.Kho 'acct:keep' 'account kho kept'
+    Assert-Equal $m.'333'.Kho $guid 'KhoManual entry kept'; Assert-Equal $m.'333'.KhoManual $true
+    # importing into default again changes nothing (idempotent)
+    $hash = Get-Sha (Join-Path $out 'reup-status.json')
+    [void](Import-KhoFolder -SourceDir $src -KhoId 'default' -OutDir $out)
+    Assert-Equal (Get-Sha (Join-Path $out 'reup-status.json')) $hash 'second run rewrites nothing'
+}
+
 Test-Case 'unreadable source reup-status.json: files and kho still imported, a warning explains the missing history' {
     $src = New-SourceFolder; $out = New-TestDir
     [IO.File]::WriteAllText((Join-Path $src 'reup-status.json'), '{ broken')

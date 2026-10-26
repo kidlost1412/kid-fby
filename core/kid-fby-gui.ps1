@@ -1638,7 +1638,8 @@ function Import-KhoFolder {
                     $cur = $meta.PSObject.Properties[$id]
                     $cur = if ($cur) { $cur.Value } else { $null }
                     if ($cur -and (([string]$cur.Kho).StartsWith('acct:') -or $cur.KhoManual -eq $true)) { continue }
-                    if ($KhoId -ne 'default' -and (Set-MetaKho $meta $id $KhoId $false)) { $any = $true }
+                    if ($KhoId -ne 'default') { if (Set-MetaKho $meta $id $KhoId $false) { $any = $true } }
+                    elseif ($cur -and $cur.PSObject.Properties['Kho']) { [void]$cur.PSObject.Properties.Remove('Kho'); $any = $true }   # Kho chung: bo Kho tuy chinh (acct:/KhoManual da bi bo qua o tren)
                 }
                 return $any
             })
@@ -3442,9 +3443,16 @@ function Get-TikTokBusyTimes {
         if (-not [string]$h.username -or [string]$h.username -ine $u) { continue }
         $t = ConvertTo-TikTokLocalTime ([string]$h.tiktok_schedule_time)
         if ($null -eq $t) { $t = ConvertTo-TikTokLocalTime ([string]$h.planned_for) }
+        # Bai khong hen gio (dang ngay): tinh tai luc backend nhan (accepted_at), chua co thi luc tao.
+        $immediate = $false
+        if ($null -eq $t) { $t = ConvertTo-TikTokLocalTime ([string]$h.accepted_at); $immediate = $true }
+        if ($null -eq $t) { $t = ConvertTo-TikTokLocalTime ([string]$h.created_at) }
         if ($null -eq $t) { continue }
         $st = [string]$h.status
-        if ($st -in $active -or ($st -eq 'succeeded' -and $t -gt $Now)) { $busy.Add($t) }
+        # Bai da/dang di trong HOM NAY (da qua gio) van tinh vao tran moi ngay va khoang cach; ngay cu thi bo.
+        $today = ($t.Date -eq $Now.Date)
+        if ($immediate) { if (($st -in $active -or $st -eq 'succeeded') -and $today) { $busy.Add($t) } }
+        elseif ($st -in $active -or ($st -eq 'succeeded' -and ($t -gt $Now -or $today))) { $busy.Add($t) }
     }
     return $busy.ToArray()
 }
@@ -3542,12 +3550,95 @@ function New-TikTokSpreadJob {
     return @{ Record = $record; Payload = $payload }
 }
 
+function Get-TikTokSpreadSettings {
+    # Ô nhập của hộp thoại rải lịch: ngày 1-10, bài/ngày 1-20, khoảng cách 1-12 giờ. $null nếu BẤT KỲ ô nào không hợp lệ.
+    param([string]$DaysText, [string]$CapText, [string]$SpacingText)
+    $values = New-Object 'System.Collections.Generic.List[int]'
+    foreach ($spec in @(@($DaysText, 1, 10), @($CapText, 1, 20), @($SpacingText, 1, 12))) {
+        $n = 0
+        if (-not [int]::TryParse(([string]$spec[0]).Trim(), [ref]$n) -or $n -lt $spec[1] -or $n -gt $spec[2]) { return $null }
+        $values.Add($n)
+    }
+    return @{ Days = $values[0]; Cap = $values[1]; Gap = $values[2] }
+}
+
+function Get-TikTokSpreadSendResult {
+    # Kết quả THẬT của một tiến trình con sau khi thoát: đọc biên nhận .cache\tiktok-posts\<RequestId>.json.
+    # Đã gửi = bộ đăng nền trả trạng thái nhận việc (pending/queued/running/succeeded...). Lỗi = transfer_failed, preparation_failed, failed, cancelled, missing, unknown,
+    # hoặc biên nhận vẫn 'submitted' / không có (tiến trình chết trước khi chuyển xong). Trả về @{ Sent; Message }.
+    param([string]$OutDir, [string]$RequestId, $ExitCode = $null)
+    $code = $(if ($null -ne $ExitCode -and [string]$ExitCode -ne '') { ' (mã thoát ' + $ExitCode + ')' } else { '' })
+    $path = Join-Path (Join-Path $OutDir '.cache\tiktok-posts') ($RequestId + '.json')
+    if (-not [IO.File]::Exists($path)) { return @{ Sent = $false; Message = 'Không thấy biên nhận gửi video' + $code + '.' } }
+    try { $receipt = [IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop }
+    catch { Write-FileLog ('WARN Rải lịch: không đọc được biên nhận ' + $RequestId + ': ' + $_.Exception.Message); return @{ Sent = $false; Message = 'Không đọc được biên nhận gửi video' + $code + '.' } }
+    $status = ([string]$receipt.Status).Trim().ToLowerInvariant()
+    $text = ([string]$receipt.Message).Trim()
+    if ($status -in @('transfer_failed', 'preparation_failed', 'failed', 'cancelled', 'missing', 'unknown')) {
+        return @{ Sent = $false; Message = $(if ($text) { $text } else { 'Gửi lỗi: ' + $status }) + $code }
+    }
+    if (-not $status -or $status -eq 'submitted') { return @{ Sent = $false; Message = 'Tiến trình gửi đã kết thúc nhưng chưa nhận được xác nhận từ bộ đăng nền' + $code + '.' } }
+    return @{ Sent = $true; Message = $text }
+}
+
 function New-TikTokSpreadRun {
     # Rows: các dòng đã tick và có When (Id, Path, When, ...). Busy: giờ bận của tài khoản trước khi gửi.
-    param([object[]]$Rows, [string]$Account, [string]$Caption, [string[]]$Favorites = @(), [DateTime[]]$Busy = @(), [int]$Days = 7, [int]$DailyCap = 3, [int]$MinSpacingMinutes = 120)
+    # Verifier ({row, job, process} -> @{Sent; Message}) kiểm kết quả thật khi tiến trình con thoát; HistoryReader ({row} -> @{History; Posted; TransferActive}) đọc lịch sử mới nhất ngay trước khi gửi. Không có thì bỏ qua bước đó.
+    param([object[]]$Rows, [string]$Account, [string]$Caption, [string[]]$Favorites = @(), [DateTime[]]$Busy = @(), [int]$Days = 7, [int]$DailyCap = 3, [int]$MinSpacingMinutes = 120, [scriptblock]$Verifier = $null, [scriptblock]$HistoryReader = $null)
     foreach ($r in @($Rows)) { $r | Add-Member -NotePropertyName State -NotePropertyValue 'planned' -Force; $r | Add-Member -NotePropertyName Message -NotePropertyValue '' -Force; $r | Add-Member -NotePropertyName Shifted -NotePropertyValue $false -Force }
     return @{ Rows = @($Rows); Account = $Account; Caption = $Caption; Favorites = @($Favorites); Busy = @($Busy); Days = $Days; DailyCap = $DailyCap; MinSpacing = $MinSpacingMinutes
+             Verifier = $Verifier; HistoryReader = $HistoryReader; CurrentRow = $null; CurrentJob = $null; CurrentStarted = $null; LongWait = $false; InFlight = 0
              Index = 0; Current = $null; Stopped = $false; Finished = $false; Sent = 0; Failed = 0; Skipped = 0; Shifted = 0 }
+}
+
+function Complete-TikTokSpreadCurrent {
+    # Tiến trình con vừa thoát: hàng đã đếm 'sent' lúc giao; nếu biên nhận cho thấy gửi lỗi thì chuyển sang 'failed' (không tính là đã gửi).
+    param($Run)
+    $row = $Run.CurrentRow; $job = $Run.CurrentJob; $proc = $Run.Current
+    $Run.Current = $null; $Run.CurrentRow = $null; $Run.CurrentJob = $null; $Run.LongWait = $false
+    if (-not $Run.Verifier -or -not $row) { return }
+    try { $v = & $Run.Verifier $row $job $proc }
+    catch { $v = @{ Sent = $false; Message = 'Không kiểm tra được kết quả gửi: ' + $_.Exception.Message }; Write-FileLog ('WARN Rải lịch: kiểm kết quả Reel #' + $row.Id + ': ' + $_.Exception.Message) }
+    if ($v.Sent) { return }
+    $row.State = 'failed'; $row.Message = [string]$v.Message; $Run.Sent--; $Run.Failed++
+    Write-FileLog ('WARN Rải lịch: Reel #' + $row.Id + ' gửi lỗi: ' + $row.Message)
+}
+
+function Stop-TikTokSpreadRun {
+    # Dừng NGAY: không giao thêm video nào, kết thúc lượt chạy. Tiến trình con đang chạy (nếu có) vẫn chạy tiếp; kết quả cuối do đồng bộ thường lệ cập nhật. Không bao giờ gửi lại.
+    param($Run)
+    if ($Run.Finished) { return }
+    $Run.Stopped = $true
+    if ($Run.Current) {
+        if ($Run.Current.HasExited) { Complete-TikTokSpreadCurrent $Run }
+        else {
+            if ($Run.CurrentRow) { $Run.CurrentRow.Message = 'Đang gửi — kết quả sẽ cập nhật ở lịch sử đăng.' }
+            $Run.InFlight++; $Run.Current = $null; $Run.CurrentRow = $null; $Run.CurrentJob = $null; $Run.LongWait = $false
+        }
+    }
+    $Run.Finished = $true
+}
+
+function Update-TikTokSpreadRowFromMeta {
+    # Sau bước chuẩn bị (lịch sử vừa được làm mới): tính lại cảnh báo của MỌI dòng. Dòng vừa thành 'active'/'posted' thì bị bỏ tick (chủ phải tick lại mới hẹn). 'active' không bị hạ cấp.
+    param($Row, $Meta)
+    $p = $(if ($Meta) { $Meta.PSObject.Properties[[string]$Row.Id] } else { $null })
+    if (-not $p) { return }
+    $Row.History = @(@($p.Value.History) | Where-Object { $_ })
+    $w = Get-TikTokSpreadWarn -History $Row.History -Posted ([bool]$p.Value.Posted)
+    if ($w -and $w -ne $Row.Warn -and $Row.Warn -ne 'active') {
+        $Row.Warn = $w; $Row.Include = $false
+        if ($w -eq 'posted') {
+            $ok = @($Row.History | Where-Object { [string]$_.status -eq 'succeeded' -and $_.publish_uncertain -ne $true -and [string]$_.username } | Select-Object -First 1)
+            if ($ok.Count) { $Row | Add-Member -NotePropertyName Other -NotePropertyValue ('@' + [string]$ok[0].username) -Force }
+        }
+    }
+}
+
+function Get-TikTokSpreadSummary {
+    param($Run)
+    $left = @($Run.Rows | Where-Object { $_.State -eq 'planned' }).Count
+    return 'Đã gửi ' + $Run.Sent + ', lỗi ' + $Run.Failed + ', chưa gửi ' + $left + $(if ($Run.Skipped) { ' · ' + $Run.Skipped + ' bỏ qua' } else { '' }) + $(if ($Run.Shifted) { ' · ' + $Run.Shifted + ' dời giờ' } else { '' }) + $(if ($Run.InFlight) { ' · ' + $Run.InFlight + ' đang gửi (kết quả cập nhật sau)' } else { '' }) + '.'
 }
 
 function Step-TikTokSpreadRun {
@@ -3556,9 +3647,32 @@ function Step-TikTokSpreadRun {
     # Trả về 'waiting' | 'launched' | 'skipped' | 'failed' | 'finished'.
     param($Run, [scriptblock]$Launcher, [scriptblock]$AfterLaunch = $null, [DateTime]$Now = [DateTime]::Now)
     if ($Run.Finished) { return 'finished' }
-    if ($Run.Current) { if (-not $Run.Current.HasExited) { return 'waiting' }; $Run.Current = $null }
+    if ($Run.Current) {
+        if (-not $Run.Current.HasExited) {
+            if ($Run.CurrentStarted -and ($Now - $Run.CurrentStarted).TotalMinutes -gt 15) { $Run.LongWait = $true }   # chỉ báo; không bao giờ gửi lại
+            return 'waiting'
+        }
+        Complete-TikTokSpreadCurrent $Run
+    }
     if ($Run.Stopped -or $Run.Index -ge $Run.Rows.Count) { $Run.Finished = $true; return 'finished' }
     $row = $Run.Rows[$Run.Index]; $Run.Index++
+    # Kiểm lại lịch sử MỚI NHẤT của video ngay trước khi gửi (có thể vừa có lệnh đang chạy / vừa được đăng từ lúc xem trước).
+    if ($Run.HistoryReader) {
+        $cur = $null
+        try { $cur = & $Run.HistoryReader $row } catch { Write-FileLog ('WARN Rải lịch: không đọc lại lịch sử Reel #' + $row.Id + ': ' + $_.Exception.Message) }
+        if ($cur) {
+            $w = Get-TikTokSpreadWarn -History @($cur.History) -Posted ([bool]$cur.Posted)
+            if (-not $w -and $cur.TransferActive) { $w = 'active' }
+            $why = $null
+            if ($w -eq 'active') { $why = 'Video vừa có lệnh đăng chờ/chạy — bỏ qua, không gửi thêm.' }
+            elseif ($w -eq 'posted' -and -not ($row.Warn -eq 'posted' -and $row.Include)) { $why = 'Video vừa được đăng xong — bỏ qua (tick lại để vẫn hẹn).' }
+            if ($why) {
+                $row.State = 'skipped'; $row.Message = $why; $Run.Skipped++
+                Write-FileLog ('WARN Rải lịch: bỏ qua Reel #' + $row.Id + ' vì ' + $why)
+                return 'skipped'
+            }
+        }
+    }
     if (Get-TikTokScheduleError $row.When $Now) {
         $busy = @($Run.Busy) + @($Run.Rows | Where-Object { $_ -ne $row -and $_.State -in @('planned', 'sent') -and $_.When } | ForEach-Object { $_.When })
         $next = @(Get-TikTokSpreadPlan -Count 1 -Favorites $Run.Favorites -Busy $busy -Now $Now -Days $Run.Days -DailyCap $Run.DailyCap -MinSpacingMinutes $Run.MinSpacing)
@@ -3576,7 +3690,7 @@ function Step-TikTokSpreadRun {
         Write-FileLog ('WARN Rải lịch: không giao được Reel #' + $row.Id + ': ' + $row.Message)
         return 'failed'
     }
-    $row.State = 'sent'; $Run.Sent++; $Run.Current = $proc
+    $row.State = 'sent'; $Run.Sent++; $Run.Current = $proc; $Run.CurrentRow = $row; $Run.CurrentJob = $job; $Run.CurrentStarted = $Now; $Run.LongWait = $false
     if ($AfterLaunch) { try { & $AfterLaunch $row $job } catch { Write-FileLog ('WARN Rải lịch sau khi giao Reel #' + $row.Id + ': ' + $_.Exception.Message) } }
     return 'launched'
 }
@@ -3961,17 +4075,14 @@ function Show-TikTokSpreadDialog {
     }
     $state.Rows = $rows.ToArray()
 
-    $readInt = {
-        param($box, [int]$min, [int]$max)
-        $n = 0
-        if (-not [int]::TryParse(([string]$box.Text).Trim(), [ref]$n) -or $n -lt $min -or $n -gt $max) { return $null }
-        return $n
-    }
+    $readSettings = { Get-TikTokSpreadSettings -DaysText $c.Days.Text -CapText $c.Cap.Text -SpacingText $c.Spacing.Text }.GetNewClosure()
     $updateConfirm = {
         $n = @($state.Rows | Where-Object { $_.When }).Count
         $c.Confirm.Content = 'Hẹn ' + $n + ' video'
         $running = [bool]$state.Run -and -not $state.Run.Finished
-        $c.Confirm.IsEnabled = ($state.Ready -and $state.Native -and $state.Account -and $n -gt 0 -and -not $running -and -not $state.Done -and -not (Test-AutotokUpgradeActive))
+        # Ô ngày / bài mỗi ngày / khoảng cách không hợp lệ thì KHÔNG cho hẹn, ở mọi đường (sửa caption, tick dòng, đổi tài khoản).
+        $inputsOk = $null -ne (& $readSettings)
+        $c.Confirm.IsEnabled = ($inputsOk -and $state.Ready -and $state.Native -and $state.Account -and $n -gt 0 -and -not $running -and -not $state.Done -and -not (Test-AutotokUpgradeActive))
     }.GetNewClosure()
     $render = {
         $state.Rendering = $true
@@ -4014,8 +4125,13 @@ function Show-TikTokSpreadDialog {
     }.GetNewClosure()
     $state.Replan = {
         if ($state.Run) { return }
-        $days = & $readInt $c.Days 1 10; $cap = & $readInt $c.Cap 1 20; $gap = & $readInt $c.Spacing 1 12
-        if ($null -eq $days -or $null -eq $cap -or $null -eq $gap) { $c.Status.Text = 'Số ngày từ 1–10, bài mỗi ngày từ 1–20, khoảng cách từ 1–12 giờ.'; $c.Confirm.IsEnabled = $false; return }
+        $set = & $readSettings
+        if ($null -eq $set) {
+            $c.Status.Text = 'Số ngày từ 1–10, bài mỗi ngày từ 1–20, khoảng cách từ 1–12 giờ.'
+            foreach ($r in $state.Rows) { $r.When = $null }   # không giữ giờ cũ của lần xếp trước
+            & $render; return
+        }
+        $days = $set.Days; $cap = $set.Cap; $gap = $set.Gap
         if (-not $state.Account) { & $render; return }
         try {
             $key = $state.Account.ToLowerInvariant()
@@ -4045,8 +4161,7 @@ function Show-TikTokSpreadDialog {
     }.GetNewClosure()
 
     $c.Close.Add_Click({ $dlg.Close() }.GetNewClosure())
-    $c.Stop.Add_Click({ if ($state.Run) { $state.Run.Stopped = $true }; $c.Stop.IsEnabled = $false }.GetNewClosure())
-    $launcher = { param($record, $payload) Start-TikTokBackgroundJob $record $payload -PassThru }
+    $launcher ={ param($record, $payload) Start-TikTokBackgroundJob $record $payload -PassThru }
     $afterLaunch = {
         param($row, $job)
         $acct = [string]$state.Run.Account
@@ -4058,10 +4173,21 @@ function Show-TikTokSpreadDialog {
     $finish = {
         $run = $state.Run; $state.Done = $true; $c.Stop.Visibility = 'Collapsed'
         $left = @($run.Rows | Where-Object { $_.State -eq 'planned' }).Count
-        $text = 'Đã gửi ' + $run.Sent + '/' + $run.Rows.Count + ' video' + $(if ($run.Shifted) { ' · ' + $run.Shifted + ' video dời giờ' } else { '' }) + $(if ($run.Skipped) { ' · ' + $run.Skipped + ' bỏ qua' } else { '' }) + $(if ($run.Failed) { ' · ' + $run.Failed + ' lỗi' } else { '' }) + $(if ($left) { ' · ' + $left + ' chưa gửi (đã dừng)' } else { '' }) + '.'
+        $text = Get-TikTokSpreadSummary $run
         $c.Summary.Text = $text; $c.Status.Text = $text
-        Show-Toast $text -Kind $(if ($run.Failed -or $run.Skipped -or $left) { 'warning' } else { 'success' })
+        Show-Toast $text -Kind $(if ($run.Failed -or $run.Skipped -or $left -or $run.InFlight) { 'warning' } else { 'success' })
         & $render
+    }.GetNewClosure()
+    # Dừng có hiệu lực NGAY: không giao thêm; tiến trình con đang chạy (nếu có) chạy tiếp, kết quả cuối do đồng bộ thường lệ cập nhật.
+    $c.Stop.Add_Click({
+        if ($state.Run -and -not $state.Run.Finished) { Stop-TikTokSpreadRun -Run $state.Run; $c.Stop.IsEnabled = $false; & $finish }
+    }.GetNewClosure())
+    $verifier = { param($row, $job, $proc) Get-TikTokSpreadSendResult -OutDir ([string]$job.Record.OutDir) -RequestId ([string]$job.Record.RequestId) -ExitCode $proc.ExitCode }
+    $historyReader = {
+        param($row)
+        $m = Get-ReupMetadata -OutDir $outDir
+        $p = $(if ($m) { $m.PSObject.Properties[[string]$row.Id] } else { $null })
+        [pscustomobject]@{ History = @($(if ($p) { @($p.Value.History) | Where-Object { $_ } })); Posted = [bool]($p -and $p.Value.Posted); TransferActive = (Test-TikTokTransferActive ([string]$row.Path)) }
     }.GetNewClosure()
     $tick = {
         if ($state.Task -and $state.Task.Async.IsCompleted) {
@@ -4071,10 +4197,7 @@ function Show-TikTokSpreadDialog {
                 $state.Native = [bool]$result.native_schedule
                 if ($result.changed) { try { Update-Gallery } catch { Write-FileLog ('WARN Rải lịch làm mới kho: ' + $_.Exception.Message) } }
                 try { $fresh = Get-ReupMetadata -OutDir $outDir; if ($fresh) { $state.Meta = $fresh } } catch { Write-FileLog ('WARN Rải lịch đọc siêu dữ liệu: ' + $_.Exception.Message) }
-                foreach ($r in $state.Rows) {
-                    $p = $(if ($state.Meta) { $state.Meta.PSObject.Properties[$r.Id] } else { $null })
-                    if ($p) { $r.History = @(@($p.Value.History) | Where-Object { $_ }); $w = Get-TikTokSpreadWarn -History $r.History -Posted ([bool]$p.Value.Posted); if ($w -eq 'active' -and $r.Warn -ne 'active') { $r.Warn = 'active'; $r.Include = $false } }
-                }
+                foreach ($r in $state.Rows) { Update-TikTokSpreadRowFromMeta -Row $r -Meta $state.Meta }
                 $c.Accounts.Children.Clear(); $group = 'SpreadAccount' + [Guid]::NewGuid().ToString('N')
                 $accounts = @($result.accounts | Where-Object has_valid_session)
                 foreach ($a in $accounts) {
@@ -4106,6 +4229,8 @@ function Show-TikTokSpreadDialog {
                 $c.Status.Text = 'Đang gửi ' + ($state.Run.Sent + $state.Run.Failed + $state.Run.Skipped) + '/' + $n + '…'
                 $c.Summary.Text = $c.Status.Text
                 & $render
+            } elseif ($state.Run.LongWait) {
+                $c.Status.Text = 'Đang chờ video ' + $state.Run.Index + ' gửi xong (đã lâu)… Bấm Dừng để kết thúc; video đó vẫn chạy nền và không bị gửi lại.'
             }
         }
     }.GetNewClosure()
@@ -4115,10 +4240,11 @@ function Show-TikTokSpreadDialog {
             if (Test-AutotokUpgradeActive) { throw 'Bộ đăng nền đang cập nhật. Đợi xong rồi thử lại.' }
             $cap = ([string]$c.Caption.Text).Trim(); if (-not $cap) { throw 'Vui lòng nhập caption.' }
             if (-not $state.Native) { throw 'Bộ đăng nền chưa hỗ trợ hẹn giờ trên TikTok. Cập nhật bộ đăng nền rồi khởi động lại.' }
-            $days = & $readInt $c.Days 1 10; $capDay = & $readInt $c.Cap 1 20; $gap = & $readInt $c.Spacing 1 12
+            $set = & $readSettings
+            if ($null -eq $set) { throw 'Số ngày từ 1–10, bài mỗi ngày từ 1–20, khoảng cách từ 1–12 giờ.' }
             $planned = @($state.Rows | Where-Object { $_.When })
             if (-not $planned.Count) { throw 'Không có video nào có giờ hẹn.' }
-            $state.Run = New-TikTokSpreadRun -Rows $planned -Account $state.Account -Caption $cap -Favorites $state.Chips -Busy $state.Busy -Days $days -DailyCap $capDay -MinSpacingMinutes ($gap * 60)
+            $state.Run = New-TikTokSpreadRun -Rows $planned -Account $state.Account -Caption $cap -Favorites $state.Chips -Busy $state.Busy -Days $set.Days -DailyCap $set.Cap -MinSpacingMinutes ($set.Gap * 60) -Verifier $verifier -HistoryReader $historyReader
             foreach ($ctl in @($c.Days, $c.Cap, $c.Spacing, $c.Caption)) { $ctl.IsEnabled = $false }
             foreach ($rb in $c.Accounts.Children) { $rb.IsEnabled = $false }
             $c.Stop.Visibility = 'Visible'; $c.Stop.IsEnabled = $true; $c.Confirm.IsEnabled = $false
@@ -4132,9 +4258,8 @@ function Show-TikTokSpreadDialog {
         $timer.Stop()
         if ($state.Task) { Stop-TikTokTask $state.Task; $state.Task = $null }
         if ($state.Run -and -not $state.Run.Finished) {
-            $state.Run.Stopped = $true
-            $left = @($state.Run.Rows | Where-Object { $_.State -eq 'planned' }).Count
-            Show-Toast ('Đã dừng rải lịch: đã gửi ' + $state.Run.Sent + ', còn ' + $left + ' video chưa gửi.') -Kind warning
+            Stop-TikTokSpreadRun -Run $state.Run
+            Show-Toast ('Đã dừng rải lịch. ' + (Get-TikTokSpreadSummary $state.Run)) -Kind warning
         }
     }.GetNewClosure())
     $c.Status.Text = 'Đang kiểm tra tài khoản…'

@@ -259,5 +259,186 @@ Test-Case 'runner: empty run finishes at once' {
     Assert-Equal (Step-TikTokSpreadRun -Run $run -Launcher { throw 'x' } -Now $now) 'finished'
 }
 
+# ---------------- review fixes F1-F6 ----------------
+function U { param([DateTime]$d) return $d.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+function HEnt { param($status, $accepted = '', $sched = '', $user = 'anna', $uncertain = $false) return [pscustomobject]@{ username = $user; status = $status; publish_uncertain = $uncertain; accepted_at = $accepted; created_at = ''; tiktok_schedule_time = $sched; planned_for = '' } }
+
+# F1 - refresh recomputes every row; re-check right before each launch
+Test-Case 'F1 refresh: a row that became posted gets the warning and is unticked; a row that became active likewise; a clean row stays ticked' {
+    $a = [pscustomobject]@{ Id = '1'; Warn = ''; Include = $true; History = @(); Other = $null }
+    $b = [pscustomobject]@{ Id = '2'; Warn = ''; Include = $true; History = @(); Other = $null }
+    $c = [pscustomobject]@{ Id = '3'; Warn = ''; Include = $true; History = @(); Other = $null }
+    $meta = [pscustomobject]@{
+        '1' = [pscustomobject]@{ Posted = $true; Date = ''; History = @((HEnt 'succeeded' (U (Local '2026-10-20 08:00')) '' 'bob')) }
+        '2' = [pscustomobject]@{ Posted = $false; Date = ''; History = @((HEnt 'running')) }
+        '3' = [pscustomobject]@{ Posted = $false; Date = ''; History = @((HEnt 'failed')) }
+    }
+    foreach ($r in @($a, $b, $c)) { Update-TikTokSpreadRowFromMeta -Row $r -Meta $meta }
+    Assert-Equal $a.Warn 'posted'; Assert-Equal $a.Include $false; Assert-Equal $a.Other '@bob'
+    Assert-Equal $b.Warn 'active'; Assert-Equal $b.Include $false
+    Assert-Equal $c.Warn ''; Assert-Equal $c.Include $true
+}
+Test-Case 'F1 refresh: an owner-ticked posted row stays ticked, and an active row is never downgraded to posted' {
+    $p = [pscustomobject]@{ Id = '1'; Warn = 'posted'; Include = $true; History = @(); Other = $null }
+    $q = [pscustomobject]@{ Id = '2'; Warn = 'active'; Include = $false; History = @(); Other = $null }
+    $meta = [pscustomobject]@{ '1' = [pscustomobject]@{ Posted = $true; Date = ''; History = @((HEnt 'succeeded')) }; '2' = [pscustomobject]@{ Posted = $true; Date = ''; History = @((HEnt 'succeeded')) } }
+    Update-TikTokSpreadRowFromMeta -Row $p -Meta $meta; Update-TikTokSpreadRowFromMeta -Row $q -Meta $meta
+    Assert-Equal $p.Include $true; Assert-Equal $q.Warn 'active'
+}
+Test-Case 'F1 pre-launch re-check: now active -> skipped; now posted and not explicitly included -> skipped; explicit include -> launched; clean -> launched; reasons logged' {
+    $run = MkRun 4
+    $run.Rows[2].Warn = 'posted'; $run.Rows[2].Include = $true      # owner re-ticked it on purpose
+    $script:hist = @{
+        '1000000000001' = [pscustomobject]@{ History = @((HEnt 'pending')); Posted = $false; TransferActive = $false }
+        '1000000000002' = [pscustomobject]@{ History = @((HEnt 'succeeded')); Posted = $false; TransferActive = $false }
+        '1000000000003' = [pscustomobject]@{ History = @((HEnt 'succeeded')); Posted = $true; TransferActive = $false }
+        '1000000000004' = [pscustomobject]@{ History = @(); Posted = $false; TransferActive = $false }
+    }
+    $run.HistoryReader = { param($row) return $script:hist[$row.Id] }
+    $script:n = 0
+    $launcher = { param($rec, $pay) $script:n++; return [pscustomobject]@{ HasExited = $true } }
+    $script:TestLog.Clear()
+    $res = 1..5 | ForEach-Object { Step-TikTokSpreadRun -Run $run -Launcher $launcher -Now $now }
+    Assert-Equal ($res -join ',') 'skipped,skipped,launched,launched,finished'
+    Assert-Equal $script:n 2
+    Assert-Equal $run.Rows[0].State 'skipped'; Assert-True ($run.Rows[0].Message -like '*chờ/chạy*') 'reason shown in the row'
+    Assert-Equal $run.Rows[1].State 'skipped'; Assert-True ($run.Rows[1].Message -like '*đăng xong*') 'reason shown in the row'
+    Assert-Equal $run.Skipped 2; Assert-Equal $run.Sent 2
+    Assert-True (@($script:TestLog | Where-Object { $_ -like 'WARN Rải lịch: bỏ qua Reel #1000000000001*' }).Count -eq 1) 'skip logged'
+}
+Test-Case 'F1 pre-launch re-check: an active transfer in flight skips the row; a reader that throws is logged and the run goes on' {
+    $run = MkRun 2
+    $run.HistoryReader = { param($row) if ($row.Id -like '*01') { return [pscustomobject]@{ History = @(); Posted = $false; TransferActive = $true } }; throw 'meta locked' }
+    $launcher = { param($rec, $pay) return [pscustomobject]@{ HasExited = $true } }
+    $script:TestLog.Clear()
+    $res = 1..3 | ForEach-Object { Step-TikTokSpreadRun -Run $run -Launcher $launcher -Now $now }
+    Assert-Equal ($res -join ',') 'skipped,launched,finished'
+    Assert-True (@($script:TestLog | Where-Object { $_ -like '*meta locked*' }).Count -eq 1) 'reader failure logged'
+}
+
+# F2 - cap and spacing count posts of the account that already went out today or are in flight
+Test-Case 'F2 busy: succeeded entries today (at schedule time, else accepted_at) and in-flight immediate posts count; yesterday and other accounts do not' {
+    $n = Local '2026-10-26 11:30'
+    $meta = [pscustomobject]@{
+        '1' = [pscustomobject]@{ History = @((HEnt 'succeeded' (U (Local '2026-10-26 08:00')))) }                                          # accepted 08:00 today
+        '2' = [pscustomobject]@{ History = @((HEnt 'succeeded' (U (Local '2026-10-25 20:00')) (U (Local '2026-10-26 10:00')))) }            # scheduled 10:00 today (accepted yesterday)
+        '3' = [pscustomobject]@{ History = @((HEnt 'pending' (U (Local '2026-10-26 11:29')))) }                                           # immediate, in flight
+        '4' = [pscustomobject]@{ History = @((HEnt 'succeeded' (U (Local '2026-10-25 23:00')))) }                                          # yesterday
+        '5' = [pscustomobject]@{ History = @((HEnt 'succeeded' (U (Local '2026-10-26 09:00')) '' 'bob'), (HEnt 'failed' (U (Local '2026-10-26 09:30')))) }
+    }
+    $busy = @(Get-TikTokBusyTimes -Metadata $meta -Account 'anna' -Now $n)
+    Assert-Equal (($busy | Sort-Object | ForEach-Object { $_.ToString('MM-dd HH:mm') }) -join ',') '10-26 08:00,10-26 10:00,10-26 11:29'
+}
+Test-Case 'F2 plan: with 2 already out today + 1 in flight, a cap of 3 leaves nothing for today and the spacing guard applies to the in-flight post' {
+    $n = Local '2026-10-26 11:30'
+    $busy = @((Local '2026-10-26 08:00'), (Local '2026-10-26 10:00'), (Local '2026-10-26 11:29'))
+    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 2 -Favorites $fav -Busy $busy -Now $n -Days 3 -DailyCap 3)) '10-27 08:00,10-27 12:00'
+    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 1 -Favorites @('12:00', '19:00') -Busy $busy -Now $n -Days 1 -DailyCap 9)) '10-26 19:00'
+}
+
+# F3 - a failed child transfer is not "sent"
+function New-Receipt { param([string]$Dir, [string]$Id, [string]$Status, [string]$Message = '') $d = Join-Path $Dir '.cache\tiktok-posts'; [void][IO.Directory]::CreateDirectory($d); [IO.File]::WriteAllText((Join-Path $d "$Id.json"), (@{ RequestId = $Id; Status = $Status; Message = $Message } | ConvertTo-Json), [Text.UTF8Encoding]::new($false)) }
+Test-Case 'F3 send result: accepted-type statuses are sent; transfer_failed / preparation_failed / submitted / unknown / missing file are failures with a reason' {
+    $dir = Join-Path $tmp 'rc'; $id = 'a' * 32
+    foreach ($s in 'pending', 'queued', 'running', 'preparing', 'succeeded') { New-Receipt $dir $id $s; Assert-True ((Get-TikTokSpreadSendResult -OutDir $dir -RequestId $id).Sent) "status $s should count as sent" }
+    foreach ($s in 'transfer_failed', 'preparation_failed', 'failed', 'cancelled', 'missing', 'unknown', 'submitted') { New-Receipt $dir $id $s; Assert-True (-not (Get-TikTokSpreadSendResult -OutDir $dir -RequestId $id).Sent) "status $s should be a failure" }
+    New-Receipt $dir $id 'transfer_failed' 'Chưa xác nhận được việc chuyển tệp.'
+    Assert-True ((Get-TikTokSpreadSendResult -OutDir $dir -RequestId $id -ExitCode 1).Message -like 'Chưa xác nhận được việc chuyển tệp.*mã thoát 1*') 'worker message + exit code'
+    $none = Get-TikTokSpreadSendResult -OutDir $dir -RequestId ('b' * 32)
+    Assert-True (-not $none.Sent -and $none.Message) 'missing receipt'
+    [IO.File]::WriteAllText((Join-Path $dir ('.cache\tiktok-posts\' + ('c' * 32) + '.json')), '{ broken')
+    $script:TestLog.Clear()
+    Assert-True (-not (Get-TikTokSpreadSendResult -OutDir $dir -RequestId ('c' * 32)).Sent) 'corrupt receipt'
+    Assert-True (@($script:TestLog | Where-Object { $_ -like 'WARN Rải lịch: không đọc được biên nhận*' }).Count -eq 1) 'corrupt receipt logged'
+}
+Test-Case 'F3 runner (stub verifier): a failed child turns the row into failed, moves it from Sent to Failed, shows the reason, summary reads Đã gửi X, lỗi Y, chưa gửi Z' {
+    $run = MkRun 3
+    $run.Verifier = { param($row, $job, $proc) if ($row.Id -like '*02') { return @{ Sent = $false; Message = 'boom-reason' } }; return @{ Sent = $true; Message = '' } }
+    $launcher = { param($rec, $pay) return [pscustomobject]@{ HasExited = $true; ExitCode = 0 } }
+    $res = 1..4 | ForEach-Object { Step-TikTokSpreadRun -Run $run -Launcher $launcher -Now $now }
+    Assert-Equal ($res -join ',') 'launched,launched,launched,finished'
+    Assert-Equal $run.Sent 2; Assert-Equal $run.Failed 1
+    Assert-Equal $run.Rows[1].State 'failed'; Assert-Equal $run.Rows[1].Message 'boom-reason'
+    Assert-Equal (Get-TikTokSpreadSummary $run) 'Đã gửi 2, lỗi 1, chưa gửi 0.'
+}
+Test-Case 'F3 runner: a throwing verifier counts as failed (logged), not as sent' {
+    $run = MkRun 1
+    $run.Verifier = { throw 'verifier-broke' }
+    $script:TestLog.Clear()
+    $res = 1..2 | ForEach-Object { Step-TikTokSpreadRun -Run $run -Launcher { param($r, $p) [pscustomobject]@{ HasExited = $true } } -Now $now }
+    Assert-Equal $run.Sent 0; Assert-Equal $run.Failed 1
+    Assert-True (@($script:TestLog | Where-Object { $_ -like '*verifier-broke*' }).Count -ge 1) 'logged'
+}
+Test-Case 'F3 REAL child processes: one writes a transfer_failed receipt and exits 1, one writes pending and exits 0 -> Failed 1, Sent 1, reason from the receipt' {
+    $dir = Join-Path $tmp 'real'; [void][IO.Directory]::CreateDirectory($dir)
+    $child = Join-Path $tmp 'child.ps1'
+    [IO.File]::WriteAllText($child, 'param([string]$Out,[string]$Id,[string]$Status,[string]$Msg,[int]$Code) Start-Sleep -Milliseconds 400; $d=Join-Path $Out ".cache\tiktok-posts"; [void][IO.Directory]::CreateDirectory($d); [IO.File]::WriteAllText((Join-Path $d ($Id+".json")), (@{RequestId=$Id;Status=$Status;Message=$Msg}|ConvertTo-Json)); exit $Code')
+    $rows = @(1..2 | ForEach-Object { $r = Row ('20000000000{0:D2}' -f $_); $r.Path = (Join-Path $dir "$($r.Id)-3-hoan-chinh.mp4"); $r.When = (Local '2026-10-27 08:00').AddHours(3 * $_); $r })
+    $run = New-TikTokSpreadRun -Rows $rows -Account 'anna' -Caption 'c' -Favorites $fav
+    $run.Verifier = { param($row, $job, $proc) Get-TikTokSpreadSendResult -OutDir ([string]$job.Record.OutDir) -RequestId ([string]$job.Record.RequestId) -ExitCode $proc.ExitCode }
+    $script:k = 0
+    $launcher = {
+        param($rec, $pay)
+        $script:k++
+        $st = $(if ($script:k -eq 1) { 'transfer_failed' } else { 'pending' }); $code = $(if ($script:k -eq 1) { 1 } else { 0 })
+        return Start-Process powershell.exe -ArgumentList @('-NoProfile', '-File', ('"' + $child + '"'), '-Out', ('"' + $rec.OutDir + '"'), '-Id', $rec.RequestId, '-Status', $st, '-Msg', '"Chua xac nhan duoc"', '-Code', $code) -WindowStyle Hidden -PassThru
+    }
+    $sw = [Diagnostics.Stopwatch]::StartNew(); $last = ''
+    while ($sw.Elapsed.TotalSeconds -lt 60) { $last = Step-TikTokSpreadRun -Run $run -Launcher $launcher -Now $now; if ($last -eq 'finished') { break }; Start-Sleep -Milliseconds 150 }
+    Assert-Equal $last 'finished'
+    Assert-Equal $run.Sent 1; Assert-Equal $run.Failed 1
+    Assert-Equal $run.Rows[0].State 'failed'; Assert-True ($run.Rows[0].Message -like 'Chua xac nhan duoc*') ('reason: ' + $run.Rows[0].Message)
+    Assert-Equal $run.Rows[1].State 'sent'
+    Assert-Equal (Get-TikTokSpreadSummary $run) 'Đã gửi 1, lỗi 1, chưa gửi 0.'
+}
+
+# F5 - Stop is immediate; long waits are flagged but never resubmitted
+Test-Case 'F5 Stop with a child still running: run finishes at once, nothing more is launched, the child is left alone, the row says it is still sending' {
+    $run = MkRun 3
+    $script:procs = New-Object System.Collections.Generic.List[object]
+    $launcher = { param($rec, $pay) $p = [pscustomobject]@{ HasExited = $false }; $script:procs.Add($p); return $p }
+    [void](Step-TikTokSpreadRun -Run $run -Launcher $launcher -Now $now)
+    Stop-TikTokSpreadRun -Run $run
+    Assert-True $run.Finished 'finished immediately'; Assert-True $run.Stopped 'stopped'
+    Assert-Equal (Step-TikTokSpreadRun -Run $run -Launcher $launcher -Now $now) 'finished'
+    Assert-Equal $script:procs.Count 1
+    Assert-Equal $script:procs[0].HasExited $false 'child untouched'
+    Assert-Equal $run.InFlight 1; Assert-Equal $run.Rows[0].State 'sent'; Assert-True ($run.Rows[0].Message -like '*Đang gửi*') 'row note'
+    Assert-Equal @($run.Rows | Where-Object { $_.State -eq 'planned' }).Count 2
+    Assert-Equal (Get-TikTokSpreadSummary $run) 'Đã gửi 1, lỗi 0, chưa gửi 2 · 1 đang gửi (kết quả cập nhật sau).'
+}
+Test-Case 'F5 Stop when the child already exited reconciles its result first; Stop twice is harmless' {
+    $run = MkRun 2
+    $run.Verifier = { param($row, $job, $proc) @{ Sent = $false; Message = 'late-fail' } }
+    $p = [pscustomobject]@{ HasExited = $false }
+    [void](Step-TikTokSpreadRun -Run $run -Launcher { param($r, $x) $p } -Now $now)
+    $p.HasExited = $true
+    Stop-TikTokSpreadRun -Run $run; Stop-TikTokSpreadRun -Run $run
+    Assert-Equal $run.Failed 1; Assert-Equal $run.Sent 0; Assert-Equal $run.InFlight 0
+}
+Test-Case 'F5 a child running longer than 15 minutes sets LongWait (still waiting, never relaunched); Stop then ends the run' {
+    $run = MkRun 2
+    $script:procs = New-Object System.Collections.Generic.List[object]
+    $launcher = { param($rec, $pay) $p = [pscustomobject]@{ HasExited = $false }; $script:procs.Add($p); return $p }
+    [void](Step-TikTokSpreadRun -Run $run -Launcher $launcher -Now $now)
+    Assert-Equal (Step-TikTokSpreadRun -Run $run -Launcher $launcher -Now $now.AddMinutes(15)) 'waiting'; Assert-True (-not $run.LongWait) 'exactly 15 min is not yet long'
+    Assert-Equal (Step-TikTokSpreadRun -Run $run -Launcher $launcher -Now $now.AddMinutes(16)) 'waiting'; Assert-True $run.LongWait 'long wait flagged'
+    Assert-Equal (Step-TikTokSpreadRun -Run $run -Launcher $launcher -Now $now.AddMinutes(60)) 'waiting'
+    Assert-Equal $script:procs.Count 1 'no automatic resubmit'
+    Stop-TikTokSpreadRun -Run $run
+    Assert-True $run.Finished 'Stop ends it'
+}
+
+# F6 - the three inputs
+Test-Case 'F6 settings: valid -> numbers; any one invalid -> $null (empty, text, 0, out of range, negative, decimal)' {
+    $ok = Get-TikTokSpreadSettings -DaysText '7' -CapText '3' -SpacingText '2'
+    Assert-Equal "$($ok.Days)/$($ok.Cap)/$($ok.Gap)" '7/3/2'
+    $edge = Get-TikTokSpreadSettings -DaysText ' 10 ' -CapText '20' -SpacingText '12'
+    Assert-Equal "$($edge.Days)/$($edge.Cap)/$($edge.Gap)" '10/20/12'
+    foreach ($bad in @(@('', '3', '2'), @('7', 'a', '2'), @('0', '3', '2'), @('11', '3', '2'), @('7', '21', '2'), @('7', '3', '13'), @('7', '3', '0'), @('-1', '3', '2'), @('7', '3', '1.5'), @('7', '3', ''))) {
+        Assert-True ($null -eq (Get-TikTokSpreadSettings -DaysText $bad[0] -CapText $bad[1] -SpacingText $bad[2])) ('should be invalid: ' + ($bad -join '|'))
+    }
+}
+
 Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 Complete-Tests
