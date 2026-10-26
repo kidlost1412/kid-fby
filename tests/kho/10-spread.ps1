@@ -7,7 +7,7 @@ $now = Local '2026-10-26 10:00'    # bounds: min 10:20 today, max 11-05 10:00
 $fav = @('08:00', '12:00', '19:00', '21:00')
 
 # ---------------- allocator ----------------
-Test-Case 'plan: today partly past -> 08:00 skipped (< now+20 min), cap 3/day, then next day' {
+Test-Case 'plan: one video per slot in time order; today partly past -> 08:00 skipped (< now+20 min), no per-day limit' {
     Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 5 -Favorites $fav -Now $now)) '10-26 12:00,10-26 19:00,10-26 21:00,10-27 08:00,10-27 12:00'
 }
 Test-Case 'plan: empty / invalid favourites fall back to the default chips 08:00,12:00,19:00,21:00' {
@@ -15,13 +15,16 @@ Test-Case 'plan: empty / invalid favourites fall back to the default chips 08:00
     Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 5 -Favorites @() -Now $now)) $expected
     Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 5 -Favorites @('25:00', 'abc', '7:5') -Now $now)) $expected
 }
+Test-Case 'plan: favourites given out of order are still assigned chronologically' {
+    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 3 -Favorites @('21:00', '12:00', '19:00') -Now $now)) '10-26 12:00,10-26 19:00,10-26 21:00'
+}
 Test-Case 'plan: Count 0 or negative -> empty' {
     Assert-Equal @(Get-TikTokSpreadPlan -Count 0 -Favorites $fav -Now $now).Count 0
     Assert-Equal @(Get-TikTokSpreadPlan -Count -3 -Favorites $fav -Now $now).Count 0
 }
-Test-Case 'plan: slot exactly at now+20 min is allowed, one minute earlier is not' {
-    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 1 -Favorites @('10:20') -Now $now -Days 1)) '10-26 10:20'
-    Assert-Equal @(Get-TikTokSpreadPlan -Count 1 -Favorites @('10:19') -Now $now -Days 1).Count 0
+Test-Case 'plan: slot exactly at now+20 min is allowed, one minute earlier moves to the next day' {
+    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 1 -Favorites @('10:20') -Now $now)) '10-26 10:20'
+    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 1 -Favorites @('10:19') -Now $now)) '10-27 10:19'
 }
 Test-Case 'plan: midnight - now 23:50 pushes the minimum to 00:10 tomorrow, 00:00 tomorrow is then too early' {
     $n = Local '2026-10-26 23:50'
@@ -32,45 +35,39 @@ Test-Case 'plan: now just after midnight keeps the same day' {
     $n = Local '2026-10-26 00:00'
     Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 2 -Favorites @('00:10', '00:30', '08:00') -Now $n)) '10-26 00:30,10-26 08:00'
 }
-Test-Case 'plan: busy collision within 120 min is skipped; exactly 120 min is allowed' {
+Test-Case 'plan: a slot within 60 min of a busy post is skipped; exactly 60 min is allowed, 59 is not' {
     $busy = @((Local '2026-10-26 12:30'))
-    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 2 -Favorites @('12:00', '19:00', '21:00') -Busy $busy -Now $now -Days 1)) '10-26 19:00,10-26 21:00'
-    $edge = @((Local '2026-10-26 17:00'))
-    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 1 -Favorites @('19:00') -Busy $edge -Now $now -Days 1)) '10-26 19:00'
-    $edge2 = @((Local '2026-10-26 17:01'))
-    Assert-Equal @(Get-TikTokSpreadPlan -Count 1 -Favorites @('19:00') -Busy $edge2 -Now $now -Days 1).Count 0
+    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 2 -Favorites @('12:00', '19:00', '21:00') -Busy $busy -Now $now)) '10-26 19:00,10-26 21:00'
+    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 1 -Favorites @('19:00') -Busy @((Local '2026-10-26 18:00')) -Now $now)) '10-26 19:00'
+    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 1 -Favorites @('19:00') -Busy @((Local '2026-10-26 18:01')) -Now $now)) '10-27 19:00'
+    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 1 -Favorites @('19:00') -Busy @((Local '2026-10-26 20:00')) -Now $now)) '10-26 19:00'
+    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 1 -Favorites @('19:00') -Busy @((Local '2026-10-26 19:59')) -Now $now)) '10-27 19:00'
 }
-Test-Case 'plan: spacing is configurable (60 min lets 12:30 coexist with 13:30)' {
-    $busy = @((Local '2026-10-26 12:30'))
-    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 1 -Favorites @('13:30') -Busy $busy -Now $now -Days 1 -MinSpacingMinutes 60)) '10-26 13:30'
-    Assert-Equal @(Get-TikTokSpreadPlan -Count 1 -Favorites @('13:30') -Busy $busy -Now $now -Days 1 -MinSpacingMinutes 61).Count 0
+Test-Case 'plan: no daily limit - a day already full of posts still gets one video per free slot' {
+    $busy = @((Local '2026-10-26 03:00'), (Local '2026-10-26 05:00'), (Local '2026-10-26 07:00'))
+    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 3 -Favorites @('12:00', '19:00', '21:00') -Busy $busy -Now $now)) '10-26 12:00,10-26 19:00,10-26 21:00'
 }
-Test-Case 'plan: daily cap counts existing posts (even past ones) on that day' {
-    $busy = @((Local '2026-10-26 03:00'), (Local '2026-10-26 05:00'))   # 2 already today -> only 1 more today
-    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 3 -Favorites @('12:00', '19:00', '21:00') -Busy $busy -Now $now)) '10-26 12:00,10-27 12:00,10-27 19:00'
-    $full = @((Local '2026-10-26 03:00'), (Local '2026-10-26 05:00'), (Local '2026-10-26 07:00'))
-    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 1 -Favorites @('12:00') -Busy $full -Now $now)) '10-27 12:00'
+Test-Case 'plan: 10-day bound - a daily favourite yields 10 slots (tomorrow .. 11-05) and no more' {
+    $r = @(Get-TikTokSpreadPlan -Count 50 -Favorites @('09:00') -Now $now)   # today 09:00 is past; bounds end 11-05 10:00
+    Assert-Equal $r.Count 10
+    Assert-Equal $r[0].ToString('MM-dd HH:mm') '10-27 09:00'
+    Assert-Equal $r[-1].ToString('MM-dd HH:mm') '11-05 09:00'
 }
-Test-Case 'plan: cap 1 gives one per day' {
-    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 3 -Favorites $fav -Now $now -DailyCap 1)) '10-26 12:00,10-27 08:00,10-28 08:00'
-}
-Test-Case 'plan: 10-day bound - Days is clamped to 10 (today + 9), so a daily favourite yields 9 slots' {
-    $r = @(Get-TikTokSpreadPlan -Count 50 -Favorites @('09:00') -Now $now -Days 99)
-    Assert-Equal $r.Count 9
-    Assert-Equal $r[-1].ToString('MM-dd HH:mm') '11-04 09:00'
-    Assert-Equal @(Get-TikTokSpreadPlan -Count 50 -Favorites @('09:00') -Now $now -Days 0).Count 0   # clamps to 1 day = today only; 09:00 today is past
+Test-Case 'plan: the 10-day bound is inclusive of the exact limit and excludes one minute after' {
+    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 50 -Favorites @('10:00') -Now $now | Select-Object -Last 1)) '11-05 10:00'
+    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 50 -Favorites @('10:01') -Now $now | Select-Object -Last 1)) '11-04 10:01'
 }
 Test-Case 'plan: Bounds.Max is respected' {
     $b = @{ Min = (Local '2026-10-26 10:20'); Max = (Local '2026-10-27 12:00') }
     Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 9 -Favorites @('08:00', '12:00', '19:00') -Now $now -Bounds $b)) '10-26 12:00,10-26 19:00,10-27 08:00,10-27 12:00'
 }
-Test-Case 'plan: not enough room returns fewer, in ascending order' {
-    $r = @(Get-TikTokSpreadPlan -Count 10 -Favorites $fav -Now $now -Days 1)
-    Assert-Equal (Fmt $r) '10-26 12:00,10-26 19:00,10-26 21:00'
+Test-Case 'plan: more videos than slots returns only the slots, ascending (4 slots/day: 3 today + 9 full days x 4 + 1 on the last day = 40)' {
+    $r = @(Get-TikTokSpreadPlan -Count 100 -Favorites $fav -Now $now)
+    Assert-Equal $r.Count 40
     for ($i = 1; $i -lt $r.Count; $i++) { Assert-True ($r[$i] -gt $r[$i - 1]) 'ascending' }
 }
-Test-Case 'plan: planned slots keep spacing between themselves (favourites 20 min apart, spacing 120)' {
-    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 3 -Favorites @('12:00', '12:20', '14:00', '14:20', '16:00') -Now $now -Days 1)) '10-26 12:00,10-26 14:00,10-26 16:00'
+Test-Case 'plan: slots of the owner that are close together are all used (no spacing between planned slots)' {
+    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 3 -Favorites @('12:00', '12:20', '14:00') -Now $now)) '10-26 12:00,10-26 12:20,10-26 14:00'
 }
 
 # ---------------- warnings / rows ----------------
@@ -100,12 +97,13 @@ Test-Case 'times: an active row that is still ticked is never scheduled' {
     Assert-True ($null -eq $rows[0].When) 'active row got a time'
     Assert-Equal $rows[1].When.ToString('MM-dd HH:mm') '10-26 12:00'
 }
-Test-Case 'times: not enough room -> unplaced count, last rows stay without time' {
-    $rows = @(1..5 | ForEach-Object { Row "$_" })
-    $un = Set-TikTokSpreadTimes -Rows $rows -Favorites $fav -Now $now -Days 1
+Test-Case 'times: more videos than the 10-day window holds -> unplaced count, last rows stay without time' {
+    $rows = @(1..12 | ForEach-Object { Row "$_" })
+    $un = Set-TikTokSpreadTimes -Rows $rows -Favorites @('09:00') -Now $now   # 10 slots 10-27 .. 11-05
     Assert-Equal $un 2
-    Assert-Equal @($rows | Where-Object { $_.When }).Count 3
-    Assert-True ($null -eq $rows[4].When) 'row 5 should be unplaced'
+    Assert-Equal @($rows | Where-Object { $_.When }).Count 10
+    Assert-Equal $rows[9].When.ToString('MM-dd HH:mm') '11-05 09:00'
+    Assert-True ($null -eq $rows[10].When -and $null -eq $rows[11].When) 'rows 11 and 12 should be unplaced'
 }
 Test-Case 'times: re-planning clears old times first' {
     $rows = @((Row '1'), (Row '2'))
@@ -147,9 +145,9 @@ Test-Case 'job: record and payload have the single-post shape; scheduled_for is 
 
 # ---------------- serial runner ----------------
 function MkRun {
-    param([int]$n, [datetime[]]$whens = @(), [int]$days = 7)
+    param([int]$n, [datetime[]]$whens = @())
     $rows = @(1..$n | ForEach-Object { $r = Row ('10000000000{0:D2}' -f $_); $r.Path = "C:\out\$($r.Id)-3-hoan-chinh.mp4"; $r.When = $(if ($whens.Count -ge $_) { $whens[$_ - 1] } else { (Local '2026-10-27 08:00').AddHours(3 * $_) }); $r })
-    return New-TikTokSpreadRun -Rows $rows -Account 'anna' -Caption 'cap' -Favorites $fav -Days $days
+    return New-TikTokSpreadRun -Rows $rows -Account 'anna' -Caption 'cap' -Favorites $fav
 }
 Test-Case 'runner: strictly one child at a time; next job starts only after the previous process exits' {
     $run = MkRun 3
@@ -207,7 +205,7 @@ Test-Case 're-validation: a time that became too close is shifted to the next fr
     $late = Local '2026-10-26 10:30'
     Assert-Equal (Step-TikTokSpreadRun -Run $run -Launcher $launcher -Now $late) 'launched'
     $shifted = [DateTime]::Parse($script:procs[0].Rec.ScheduledFor, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToLocalTime()
-    # 12:00 is held by row 2 (spacing 120) -> 12:00 clash; 19:00 is free (21:00 busy is exactly 120 away)
+    # 12:00 is held by row 2 (clash); 19:00 is free (21:00 busy is 120 min away)
     Assert-Equal $shifted.ToString('MM-dd HH:mm') '10-26 19:00'
     Assert-True ($shifted -ge $late.AddMinutes(20)) 'shifted slot is not at least 20 min ahead'
     Assert-Equal $run.Shifted 1; Assert-True $run.Rows[0].Shifted 'row flag'
@@ -223,8 +221,8 @@ Test-Case 're-validation: still valid time is untouched' {
     Assert-Equal ([DateTime]::Parse($script:procs[0].Rec.ScheduledFor, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToLocalTime().ToString('HH:mm')) '11:00'
 }
 Test-Case 're-validation: no free slot left -> row skipped (logged), launcher NOT called, never posts now' {
-    $run = MkRun 1 @((Local '2026-10-26 10:25')) 1
-    $run.Busy = @((Local '2026-10-26 12:00'), (Local '2026-10-26 19:00'), (Local '2026-10-26 21:00'))   # day full (cap 3)
+    $run = MkRun 1 @((Local '2026-10-26 10:25'))
+    $run.Busy = @(0..10 | ForEach-Object { $d = $_; 8, 12, 19, 21 | ForEach-Object { (Local '2026-10-26 00:00').AddDays($d).AddHours($_) } })   # every slot of the 10 days is taken
     $script:called = 0
     $launcher = { param($rec, $pay) $script:called++; return [pscustomobject]@{ HasExited = $true } }
     $script:TestLog.Clear()
@@ -329,11 +327,12 @@ Test-Case 'F2 busy: succeeded entries today (at schedule time, else accepted_at)
     $busy = @(Get-TikTokBusyTimes -Metadata $meta -Account 'anna' -Now $n)
     Assert-Equal (($busy | Sort-Object | ForEach-Object { $_.ToString('MM-dd HH:mm') }) -join ',') '10-26 08:00,10-26 10:00,10-26 11:29'
 }
-Test-Case 'F2 plan: with 2 already out today + 1 in flight, a cap of 3 leaves nothing for today and the spacing guard applies to the in-flight post' {
+Test-Case 'F2 plan: posts already out today and one in flight - the 60-min guard applies to the in-flight post' {
     $n = Local '2026-10-26 11:30'
     $busy = @((Local '2026-10-26 08:00'), (Local '2026-10-26 10:00'), (Local '2026-10-26 11:29'))
-    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 2 -Favorites $fav -Busy $busy -Now $n -Days 3 -DailyCap 3)) '10-27 08:00,10-27 12:00'
-    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 1 -Favorites @('12:00', '19:00') -Busy $busy -Now $n -Days 1 -DailyCap 9)) '10-26 19:00'
+    # now 11:30 -> min 11:50; 12:00 is 31 min from the in-flight 11:29 post -> skipped; no daily limit any more
+    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 2 -Favorites $fav -Busy $busy -Now $n)) '10-26 19:00,10-26 21:00'
+    Assert-Equal (Fmt (Get-TikTokSpreadPlan -Count 1 -Favorites @('12:00', '19:00') -Busy $busy -Now $n)) '10-26 19:00'
 }
 
 # F3 - a failed child transfer is not "sent"
@@ -429,15 +428,31 @@ Test-Case 'F5 a child running longer than 15 minutes sets LongWait (still waitin
     Assert-True $run.Finished 'Stop ends it'
 }
 
-# F6 - the three inputs
-Test-Case 'F6 settings: valid -> numbers; any one invalid -> $null (empty, text, 0, out of range, negative, decimal)' {
-    $ok = Get-TikTokSpreadSettings -DaysText '7' -CapText '3' -SpacingText '2'
-    Assert-Equal "$($ok.Days)/$($ok.Cap)/$($ok.Gap)" '7/3/2'
-    $edge = Get-TikTokSpreadSettings -DaysText ' 10 ' -CapText '20' -SpacingText '12'
-    Assert-Equal "$($edge.Days)/$($edge.Cap)/$($edge.Gap)" '10/20/12'
-    foreach ($bad in @(@('', '3', '2'), @('7', 'a', '2'), @('0', '3', '2'), @('11', '3', '2'), @('7', '21', '2'), @('7', '3', '13'), @('7', '3', '0'), @('-1', '3', '2'), @('7', '3', '1.5'), @('7', '3', ''))) {
-        Assert-True ($null -eq (Get-TikTokSpreadSettings -DaysText $bad[0] -CapText $bad[1] -SpacingText $bad[2])) ('should be invalid: ' + ($bad -join '|'))
-    }
+# Owner bug: typing the caption into the box shown below the schedule (the row box) still said "enter a caption"
+function CapRow { param($id, $caption = '', $when = 'x') return [pscustomobject]@{ Id = $id; Caption = $caption; When = $(if ($when) { Local '2026-10-27 12:00' } else { $null }) } }
+Test-Case 'caption: owner case - common box empty, every row typed its own caption -> no problem' {
+    Assert-Equal (Get-SpreadCaptionProblem -Rows @((CapRow '1000000000011' 'Một #a'), (CapRow '1000000000012' 'Hai #b')) -Common '') ''
+}
+Test-Case 'caption: common caption alone covers rows without their own' {
+    Assert-Equal (Get-SpreadCaptionProblem -Rows @((CapRow '1000000000011'), (CapRow '1000000000012' 'Hai')) -Common 'Chung') ''
+}
+Test-Case 'caption: a row empty in both places is named exactly; the others are not' {
+    $m = Get-SpreadCaptionProblem -Rows @((CapRow '1000000000011' 'Một'), (CapRow '1000000000012'), (CapRow '1000000000013' '   ')) -Common ''
+    Assert-True ($m -like 'Video *000012*000013 chưa có caption*') $m
+    Assert-True ($m -notlike '*000011*') $m
+}
+Test-Case 'caption: whitespace-only common caption does not count; rows without a time or unticked are ignored' {
+    Assert-True ((Get-SpreadCaptionProblem -Rows @((CapRow '1000000000011')) -Common "  `t ") -like 'Video * chưa có caption*') 'blank common caption accepted'
+    Assert-Equal (Get-SpreadCaptionProblem -Rows @((CapRow '1000000000011' '' '')) -Common '') ''
+}
+Test-Case 'caption: more than 3 missing -> first 3 named plus a count' {
+    $m = Get-SpreadCaptionProblem -Rows @(1..5 | ForEach-Object { CapRow ('10000000000{0:D2}' -f $_) }) -Common ''
+    Assert-True ($m -like '*và 2 video nữa*') $m
+}
+Test-Case 'caption: effective caption = own (trimmed) else common (trimmed)' {
+    Assert-Equal (Get-SpreadEffectiveCaption -Row (CapRow '1' '  Riêng ') -Common 'Chung') 'Riêng'
+    Assert-Equal (Get-SpreadEffectiveCaption -Row (CapRow '1' '') -Common ' Chung  ') 'Chung'
+    Assert-Equal (Get-SpreadEffectiveCaption -Row (CapRow '1' '') -Common '') ''
 }
 
 Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue

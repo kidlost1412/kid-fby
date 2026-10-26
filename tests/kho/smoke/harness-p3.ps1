@@ -194,7 +194,19 @@ $script:HTimer.Add_Tick({
                     $day2 = [DateTime]::Today.AddDays(2)
                     $global:H.Data.T1 = $day2.AddHours(9).AddMinutes(5); $global:H.Data.T2 = $day2.AddHours(13).AddMinutes(30); $global:H.Data.T3 = $day2.AddHours(18).AddMinutes(20)
                     $r[0].Time.Text = $global:H.Data.T1.ToString('dd/MM HH:mm'); $r[1].Time.Text = $global:H.Data.T2.ToString('dd/MM HH:mm'); $r[2].Time.Text = $global:H.Data.T3.ToString('dd/MM HH:mm'); Pump
+                    # Owner case: the common caption box is EMPTY and the caption is typed only into the per-row boxes shown below the schedule.
+                    $d.FindName('Caption').Text = ''; Pump
+                    Expect 'clearing the common caption clears the rows that were not edited' ($r[0].Cap.Text + $r[1].Cap.Text + $r[2].Cap.Text) ''
                     $r[0].Cap.Text = 'Một #a'; $r[2].Cap.Text = 'FAILME hỏng'; Pump
+                    Click-Btn $d.FindName('Confirm')
+                    Expect 'a row without any caption blocks Confirm: the dialog stays open' (@($win.OwnedWindows).Count) 1
+                    $missing = Get-ReelLabel ([string]@($global:H.Data.Items)[1].Id)
+                    Expect 'the message names exactly the row that is missing a caption' (($d.FindName('Status').Text -like "*$missing*chưa có caption*") -and ($d.FindName('Status').Text -notlike ('*' + (Get-ReelLabel ([string]@($global:H.Data.Items)[0].Id)) + '*'))) $true
+                    $r[1].Cap.Text = 'Mẫu của Anna #anna'; Pump
+                    Expect 'rows typed their own caption: the three row boxes keep what was typed' ($r[0].Cap.Text + '|' + $r[1].Cap.Text + '|' + $r[2].Cap.Text) 'Một #a|Mẫu của Anna #anna|FAILME hỏng'
+                    $sv = $r[0].Time.Template.FindName('PART_ContentHost', $r[0].Time)
+                    Expect 'time box shows the full "dd/MM HH:mm" (no horizontal scrolling needed)' ($sv.ScrollableWidth -lt 0.5 -and $r[0].Time.Text.Length -eq 11) $true
+                    Expect 'the removed inputs are gone (days / per-day cap / spacing)' (($null -eq $d.FindName('Days')) -and ($null -eq $d.FindName('Cap')) -and ($null -eq $d.FindName('Spacing'))) $true
                     Expect 'valid edited times -> Confirm enabled' $d.FindName('Confirm').IsEnabled $true
                     HShot 'p3-07-spread-edited' $d
                     Click-Btn $d.FindName('Confirm')

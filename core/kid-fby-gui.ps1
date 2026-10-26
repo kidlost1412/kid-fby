@@ -4532,29 +4532,23 @@ function Get-NextFreeTikTokSlot {
 
 # ------------------------------------------------------------- Rải lịch: nhiều video -> nhiều giờ hẹn (T4) ----
 function Get-TikTokSpreadPlan {
-    # Giờ hẹn (giờ máy) cho $Count video của MỘT tài khoản, tăng dần: từ hôm nay đến hết $Days ngày (1..10), mỗi ngày đi qua các giờ yêu thích ('HH:mm', thiếu thì 08:00/12:00/19:00/21:00).
-    # Bỏ giờ < +20 phút hoặc > +10 ngày (Bounds), giờ cách bất kỳ giờ bận/đã xếp < $MinSpacingMinutes phút, và ngày đã đủ $DailyCap bài (tính cả bài đang bận). Hết chỗ thì trả ít hơn $Count.
-    param([int]$Count, [string[]]$Favorites = @(), [DateTime[]]$Busy = @(), [DateTime]$Now = [DateTime]::Now, [int]$Days = 7, [int]$DailyCap = 3, [int]$MinSpacingMinutes = 120, $Bounds = $null)
+    # Giờ hẹn (giờ máy) cho $Count video của MỘT tài khoản, tăng dần, MỖI KHUNG GIỜ MỘT VIDEO: đi từng ngày từ hôm nay qua các khung giờ ('HH:mm'; thiếu/không hợp lệ thì 08:00/12:00/19:00/21:00).
+    # Bỏ giờ < +20 phút hoặc > +10 ngày (Bounds) và giờ cách một giờ bận (bài đã hẹn/đang chờ của tài khoản trên mọi kho) dưới 60 phút. Hết chỗ (quá 10 ngày) thì trả ít hơn $Count.
+    param([int]$Count, [string[]]$Favorites = @(), [DateTime[]]$Busy = @(), [DateTime]$Now = [DateTime]::Now, $Bounds = $null)
     $plan = New-Object 'System.Collections.Generic.List[DateTime]'
     if ($Count -le 0) { return $plan.ToArray() }
     if ($null -eq $Bounds) { $Bounds = Get-TikTokScheduleBounds $Now }
-    $Days = [Math]::Max(1, [Math]::Min(10, $Days))
     $times = @(@($Favorites) | Where-Object { $_ -match '^([01]\d|2[0-3]):[0-5]\d$' } | Sort-Object -Unique)
     if (-not $times.Count) { $times = @(Get-TikTokTimeChips $null) }
-    $taken = New-Object 'System.Collections.Generic.List[DateTime]'
-    foreach ($b in @($Busy)) { $taken.Add($b) }
-    for ($d = 0; $d -lt $Days -and $plan.Count -lt $Count; $d++) {
+    for ($d = 0; $d -le 10 -and $plan.Count -lt $Count; $d++) {
         $day = $Now.Date.AddDays($d)
-        $used = 0
-        foreach ($b in $taken) { if ($b.Date -eq $day) { $used++ } }
         foreach ($t in $times) {
-            if ($plan.Count -ge $Count -or $used -ge $DailyCap) { break }
+            if ($plan.Count -ge $Count) { break }
             $slot = $day.AddHours([int]$t.Substring(0, 2)).AddMinutes([int]$t.Substring(3, 2))
             if ($slot -lt $Bounds.Min -or $slot -gt $Bounds.Max) { continue }
             $clash = $false
-            foreach ($b in $taken) { if ([Math]::Abs(($slot - $b).TotalMinutes) -lt $MinSpacingMinutes) { $clash = $true; break } }
-            if ($clash) { continue }
-            $plan.Add($slot); $taken.Add($slot); $used++
+            foreach ($b in @($Busy)) { if ([Math]::Abs(($slot - $b).TotalMinutes) -lt 60) { $clash = $true; break } }
+            if (-not $clash) { $plan.Add($slot) }
         }
     }
     return $plan.ToArray()
@@ -4572,10 +4566,10 @@ function Get-TikTokSpreadWarn {
 
 function Set-TikTokSpreadTimes {
     # Gán giờ cho các dòng đang tick (không phải 'active'), theo thứ tự dòng; dòng còn lại When=$null. Trả về số dòng tick nhưng không còn chỗ.
-    param([object[]]$Rows, [string[]]$Favorites = @(), [DateTime[]]$Busy = @(), [DateTime]$Now = [DateTime]::Now, [int]$Days = 7, [int]$DailyCap = 3, [int]$MinSpacingMinutes = 120)
+    param([object[]]$Rows, [string[]]$Favorites = @(), [DateTime[]]$Busy = @(), [DateTime]$Now = [DateTime]::Now)
     foreach ($r in @($Rows)) { $r.When = $null }
     $eligible = @(@($Rows) | Where-Object { $_.Include -and $_.Warn -ne 'active' })
-    $plan = @(Get-TikTokSpreadPlan -Count $eligible.Count -Favorites $Favorites -Busy $Busy -Now $Now -Days $Days -DailyCap $DailyCap -MinSpacingMinutes $MinSpacingMinutes)
+    $plan = @(Get-TikTokSpreadPlan -Count $eligible.Count -Favorites $Favorites -Busy $Busy -Now $Now)
     for ($i = 0; $i -lt $plan.Count; $i++) { $eligible[$i].When = $plan[$i] }
     return ($eligible.Count - $plan.Count)
 }
@@ -4607,16 +4601,21 @@ function New-TikTokSpreadJob {
     return @{ Record = $record; Payload = $payload }
 }
 
-function Get-TikTokSpreadSettings {
-    # Ô nhập của hộp thoại rải lịch: ngày 1-10, bài/ngày 1-20, khoảng cách 1-12 giờ. $null nếu BẤT KỲ ô nào không hợp lệ.
-    param([string]$DaysText, [string]$CapText, [string]$SpacingText)
-    $values = New-Object 'System.Collections.Generic.List[int]'
-    foreach ($spec in @(@($DaysText, 1, 10), @($CapText, 1, 20), @($SpacingText, 1, 12))) {
-        $n = 0
-        if (-not [int]::TryParse(([string]$spec[0]).Trim(), [ref]$n) -or $n -lt $spec[1] -or $n -gt $spec[2]) { return $null }
-        $values.Add($n)
-    }
-    return @{ Days = $values[0]; Cap = $values[1]; Gap = $values[2] }
+function Get-SpreadEffectiveCaption {
+    # Caption THỰC SỰ được gửi cho một dòng: caption riêng của dòng nếu có chữ, không thì caption chung (đã cắt khoảng trắng).
+    param($Row, [string]$Common = '')
+    $own = $(if ($Row.PSObject.Properties['Caption']) { ([string]$Row.Caption).Trim() } else { '' })
+    if ($own) { return $own }
+    return ([string]$Common).Trim()
+}
+
+function Get-SpreadCaptionProblem {
+    # '' khi MỌI dòng sẽ gửi (có giờ hẹn) đều có caption thực sự; ngược lại thông báo nói rõ video nào còn thiếu.
+    param([object[]]$Rows, [string]$Common = '')
+    $missing = @(@($Rows) | Where-Object { $_ -and $_.When -and -not (Get-SpreadEffectiveCaption -Row $_ -Common $Common) })
+    if (-not $missing.Count) { return '' }
+    $names = @($missing | Select-Object -First 3 | ForEach-Object { Get-ReelLabel $_.Id })
+    return 'Video ' + ($names -join ', ') + $(if ($missing.Count -gt 3) { ' và ' + ($missing.Count - 3) + ' video nữa' } else { '' }) + ' chưa có caption: nhập vào ô "Caption chung" hoặc vào ô caption dưới giờ hẹn của video đó.'
 }
 
 function ConvertFrom-SpreadTimeText {
@@ -4639,16 +4638,12 @@ function ConvertFrom-SpreadTimeText {
 }
 
 function Get-SpreadRowWarning {
-    # D10: cảnh báo (không chặn) cho MỘT dòng sau khi sửa giờ: quá gần bài khác (các dòng khác + giờ bận của tài khoản) hoặc ngày đó vượt số bài tối đa. '' nếu ổn.
-    param([DateTime]$When, [DateTime[]]$Others = @(), [DateTime[]]$Busy = @(), [int]$MinSpacingMinutes = 120, [int]$DailyCap = 3)
-    $all = @(@($Others) + @($Busy))
-    $parts = New-Object 'System.Collections.Generic.List[string]'
+    # D10: cảnh báo (không chặn) cho MỘT dòng sau khi sửa giờ: cách một bài khác (các dòng khác + giờ bận của tài khoản) dưới 60 phút. '' nếu ổn.
+    param([DateTime]$When, [DateTime[]]$Others = @(), [DateTime[]]$Busy = @())
     $nearest = $null
-    foreach ($b in $all) { $gap = [Math]::Abs(($When - $b).TotalMinutes); if ($gap -lt $MinSpacingMinutes -and ($null -eq $nearest -or $gap -lt $nearest)) { $nearest = $gap } }
-    if ($null -ne $nearest) { $parts.Add('Cách một bài khác chỉ ' + [int][Math]::Round($nearest) + ' phút (nên từ ' + $MinSpacingMinutes + ' phút).') }
-    $sameDay = @($all | Where-Object { $_.Date -eq $When.Date }).Count + 1
-    if ($sameDay -gt $DailyCap) { $parts.Add('Ngày ' + $When.ToString('dd/MM') + ' sẽ có ' + $sameDay + ' bài (tối đa ' + $DailyCap + ').') }
-    return ($parts -join ' ')
+    foreach ($b in @(@($Others) + @($Busy))) { $gap = [Math]::Abs(($When - $b).TotalMinutes); if ($gap -lt 60 -and ($null -eq $nearest -or $gap -lt $nearest)) { $nearest = $gap } }
+    if ($null -eq $nearest) { return '' }
+    return 'Cách một bài khác chỉ ' + [int][Math]::Round($nearest) + ' phút (nên từ 60 phút).'
 }
 
 function Get-TikTokSpreadSendResult {
@@ -4673,9 +4668,9 @@ function Get-TikTokSpreadSendResult {
 function New-TikTokSpreadRun {
     # Rows: các dòng đã tick và có When (Id, Path, When, ...). Busy: giờ bận của tài khoản trước khi gửi.
     # Verifier ({row, job, process} -> @{Sent; Message}) kiểm kết quả thật khi tiến trình con thoát; HistoryReader ({row} -> @{History; Posted; TransferActive}) đọc lịch sử mới nhất ngay trước khi gửi. Không có thì bỏ qua bước đó.
-    param([object[]]$Rows, [string]$Account, [string]$Caption, [string[]]$Favorites = @(), [DateTime[]]$Busy = @(), [int]$Days = 7, [int]$DailyCap = 3, [int]$MinSpacingMinutes = 120, [scriptblock]$Verifier = $null, [scriptblock]$HistoryReader = $null)
+    param([object[]]$Rows, [string]$Account, [string]$Caption, [string[]]$Favorites = @(), [DateTime[]]$Busy = @(), [scriptblock]$Verifier = $null, [scriptblock]$HistoryReader = $null)
     foreach ($r in @($Rows)) { $r | Add-Member -NotePropertyName State -NotePropertyValue 'planned' -Force; $r | Add-Member -NotePropertyName Message -NotePropertyValue '' -Force; $r | Add-Member -NotePropertyName Shifted -NotePropertyValue $false -Force }
-    return @{ Rows = @($Rows); Account = $Account; Caption = $Caption; Favorites = @($Favorites); Busy = @($Busy); Days = $Days; DailyCap = $DailyCap; MinSpacing = $MinSpacingMinutes
+    return @{ Rows = @($Rows); Account = $Account; Caption = $Caption; Favorites = @($Favorites); Busy = @($Busy)
              Verifier = $Verifier; HistoryReader = $HistoryReader; CurrentRow = $null; CurrentJob = $null; CurrentStarted = $null; LongWait = $false; InFlight = 0
              Index = 0; Current = $null; Stopped = $false; Finished = $false; Sent = 0; Failed = 0; Skipped = 0; Shifted = 0 }
 }
@@ -4764,7 +4759,7 @@ function Step-TikTokSpreadRun {
     }
     if (Get-TikTokScheduleError $row.When $Now) {
         $busy = @($Run.Busy) + @($Run.Rows | Where-Object { $_ -ne $row -and $_.State -in @('planned', 'sent') -and $_.When } | ForEach-Object { $_.When })
-        $next = @(Get-TikTokSpreadPlan -Count 1 -Favorites $Run.Favorites -Busy $busy -Now $Now -Days $Run.Days -DailyCap $Run.DailyCap -MinSpacingMinutes $Run.MinSpacing)
+        $next = @(Get-TikTokSpreadPlan -Count 1 -Favorites $Run.Favorites -Busy $busy -Now $Now)
         if (-not $next.Count) {
             $row.State = 'skipped'; $row.Message = 'Giờ hẹn đã quá gần và không còn giờ trống.'; $Run.Skipped++
             Write-FileLog ('WARN Rải lịch: bỏ qua ' + (Get-ReelLabel $row.Id) + ' vì ' + $row.Message)
@@ -5248,7 +5243,7 @@ function Invoke-SpreadRunTick {
 function Start-TikTokSpreadBackground {
     # Tạo và chạy một lượt rải lịch NỀN. Rows: các dòng đã tick và có When (mỗi dòng có thể có Caption riêng). Throws khi đã có lượt khác.
     # -Launcher/-Verifier/-HistoryReader/-NoTimer: chỗ cắm cho test; mặc định là tiến trình nền thật, biên nhận thật và DispatcherTimer.
-    param([object[]]$Rows, [string]$Account, [string]$Caption, [string[]]$Favorites = @(), [DateTime[]]$Busy = @(), [int]$Days = 7, [int]$DailyCap = 3, [int]$MinSpacingMinutes = 120,
+    param([object[]]$Rows, [string]$Account, [string]$Caption, [string[]]$Favorites = @(), [DateTime[]]$Busy = @(),
           [scriptblock]$Launcher = $null, [scriptblock]$Verifier = $null, [scriptblock]$HistoryReader = $null, [switch]$NoTimer)
     if (Test-SpreadRunActive) { throw 'Đang có một lượt rải lịch chạy. Đợi xong hoặc bấm Dừng ở dải dưới cùng.' }
     if (-not $Launcher) { $Launcher = { param($record, $payload) Start-TikTokBackgroundJob $record $payload -PassThru } }
@@ -5261,7 +5256,7 @@ function Start-TikTokSpreadBackground {
             [pscustomobject]@{ History = @($(if ($p) { @($p.Value.History) | Where-Object { $_ } })); Posted = [bool]($p -and $p.Value.Posted); TransferActive = (Test-TikTokTransferActive ([string]$row.Path)) }
         }
     }
-    $run = New-TikTokSpreadRun -Rows $Rows -Account $Account -Caption $Caption -Favorites $Favorites -Busy $Busy -Days $Days -DailyCap $DailyCap -MinSpacingMinutes $MinSpacingMinutes -Verifier $Verifier -HistoryReader $HistoryReader
+    $run = New-TikTokSpreadRun -Rows $Rows -Account $Account -Caption $Caption -Favorites $Favorites -Busy $Busy -Verifier $Verifier -HistoryReader $HistoryReader
     $script:spreadRun = @{ Run = $run; Launcher = $Launcher; AfterLaunch = { param($row, $job) Complete-SpreadLaunch $row $job }; Notified = @{}; Total = @($Rows).Count }
     Update-SpreadStatusUi -Text ('Đang gửi lịch 0/' + @($Rows).Count + '…') -Fraction 0
     if (-not $NoTimer) {
@@ -5296,15 +5291,10 @@ function Show-TikTokSpreadDialog {
  <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"><StackPanel Margin="0,0,10,0">
   <TextBlock Text="Chọn tài khoản đăng" FontWeight="ExtraBold"/>
   <WrapPanel x:Name="Accounts" Margin="0,8,0,12"/>
-  <WrapPanel Margin="0,0,0,8">
-   <StackPanel Margin="0,0,18,8"><TextBlock Text="Rải trong (ngày, 1–10)" FontWeight="SemiBold"/><TextBox x:Name="Days" Text="7" Width="90" MinHeight="44" MaxLength="2" TextAlignment="Center" VerticalContentAlignment="Center" Margin="0,6,0,0" AutomationProperties.Name="Số ngày"/></StackPanel>
-   <StackPanel Margin="0,0,18,8"><TextBlock Text="Tối đa bài mỗi ngày" FontWeight="SemiBold"/><TextBox x:Name="Cap" Text="3" Width="90" MinHeight="44" MaxLength="2" TextAlignment="Center" VerticalContentAlignment="Center" Margin="0,6,0,0" AutomationProperties.Name="Tối đa bài mỗi ngày"/></StackPanel>
-   <StackPanel Margin="0,0,0,8"><TextBlock Text="Cách nhau ít nhất (giờ)" FontWeight="SemiBold"/><TextBox x:Name="Spacing" Text="2" Width="90" MinHeight="44" MaxLength="2" TextAlignment="Center" VerticalContentAlignment="Center" Margin="0,6,0,0" AutomationProperties.Name="Khoảng cách giữa hai bài (giờ)"/></StackPanel>
-  </WrapPanel>
   <TextBlock x:Name="Hours" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource TextMuted}" Margin="0,0,0,12"/>
-  <TextBlock Text="Mô tả video / caption (dùng cho mọi video)" FontWeight="SemiBold"/>
+  <TextBlock Text="Caption chung (tự điền cho mọi video chưa sửa caption riêng)" FontWeight="SemiBold"/>
   <TextBox x:Name="Caption" AcceptsReturn="True" TextWrapping="Wrap" MaxLength="2200" Height="92" VerticalScrollBarVisibility="Auto" Margin="0,6,0,14"/>
-  <TextBlock Text="Xem trước giờ hẹn" FontWeight="ExtraBold"/>
+  <TextBlock Text="Xem trước giờ hẹn (mỗi video một khung giờ; sửa giờ hoặc caption riêng ngay trên từng dòng)" FontWeight="ExtraBold" TextWrapping="Wrap"/>
   <Border Background="{DynamicResource Surface1}" BorderBrush="{DynamicResource InkFaint}" BorderThickness="1" CornerRadius="16" Padding="10" Margin="0,8,0,8"><StackPanel x:Name="Rows"/></Border>
   <TextBlock x:Name="Summary" TextWrapping="Wrap" FontWeight="SemiBold"/>
  </StackPanel></ScrollViewer>
@@ -5319,7 +5309,7 @@ function Show-TikTokSpreadDialog {
     $ownerWin = if ($Owner) { $Owner } else { $win }
     if ($ownerWin -and $ownerWin.IsVisible) { $dlg.Owner = $ownerWin }
     $dlg.MaxHeight = [Math]::Max(460, [Windows.SystemParameters]::WorkArea.Height - 40)
-    $c = @{}; foreach ($name in @('Sub', 'Accounts', 'Days', 'Cap', 'Spacing', 'Hours', 'Caption', 'Rows', 'Summary', 'Close', 'Confirm', 'Status')) { $c[$name] = $dlg.FindName($name) }
+    $c = @{}; foreach ($name in @('Sub', 'Accounts', 'Hours', 'Caption', 'Rows', 'Summary', 'Close', 'Confirm', 'Status')) { $c[$name] = $dlg.FindName($name) }
     $state = @{ Task = $null; Ready = $false; Native = $false; Account = ''; Prefs = (Read-TikTokPrefs); Libraries = @(); MetaByRoot = $null; PrepQueue = (New-Object System.Collections.Generic.Queue[string]); AccountsLoaded = $false; Rows = @(); Unplaced = 0; Chips = @(); Busy = @()
                 Dirty = $false; Programmatic = $false; Rendering = $false; Replan = $null; Done = $false }
     try { $state.Libraries = @((Get-KhoRegistry).libraries) } catch { Write-FileLog ('WARN Rải lịch kho: ' + $_.Exception.Message) }
@@ -5341,23 +5331,22 @@ function Show-TikTokSpreadDialog {
         $rows.Add([pscustomobject]@{ Id = [string]$it.Id; Path = [string]$it.Path; Root = $itemRoot; Kho = [string]$it.Kho; Warn = $warn; Include = ($warn -eq ''); When = $null; Other = $other; History = $hist; Caption = ''; CaptionEdited = $false; TimeEdited = $false; TimeBad = $false; TimeText = ''; TimeBox = $null; NoteBox = $null; CaptionBox = $null })
     }
     $state.Rows = $rows.ToArray()
+    # Chiều rộng ô giờ: đo chữ "88/88 88:88" (ExtraBold, cỡ chữ hộp thoại) + đệm + viền + dư, để "dd/MM HH:mm" luôn hiện đủ ở mọi DPI (đơn vị WPF độc lập thiết bị).
+    $ft = New-Object Windows.Media.FormattedText('88/88 88:88', [Globalization.CultureInfo]::GetCultureInfo('vi-VN'), [Windows.FlowDirection]::LeftToRight,
+        (New-Object Windows.Media.Typeface($dlg.FontFamily, [Windows.FontStyles]::Normal, [Windows.FontWeights]::ExtraBold, [Windows.FontStretches]::Normal)), 15.0, [Windows.Media.Brushes]::Black, 1.0)
+    $state.TimeBoxWidth = [Math]::Ceiling($ft.WidthIncludingTrailingWhitespace) + 20 + 4 + 14
 
-    $readSettings = { Get-TikTokSpreadSettings -DaysText $c.Days.Text -CapText $c.Cap.Text -SpacingText $c.Spacing.Text }.GetNewClosure()
     $updateConfirm = {
         $n = @($state.Rows | Where-Object { $_.When }).Count
         $c.Confirm.Content = 'Hẹn ' + $n + ' video'
-        # Ô ngày / bài mỗi ngày / khoảng cách không hợp lệ thì KHÔNG cho hẹn, ở mọi đường (sửa caption, tick dòng, đổi tài khoản).
-        $inputsOk = $null -ne (& $readSettings)
-        $c.Confirm.IsEnabled = ($inputsOk -and $state.Ready -and $state.Native -and $state.Account -and $n -gt 0 -and -not @($state.Rows | Where-Object { $_.Include -and $_.TimeBad }).Count -and -not $state.Done -and -not (Test-AutotokUpgradeActive))
+        $c.Confirm.IsEnabled = ($state.Ready -and $state.Native -and $state.Account -and $n -gt 0 -and -not @($state.Rows | Where-Object { $_.Include -and $_.TimeBad }).Count -and -not $state.Done -and -not (Test-AutotokUpgradeActive))
     }.GetNewClosure()
     # D10: giờ và caption sửa được ở từng dòng. Sửa giờ chỉ kiểm tra lại CHÍNH dòng đó (giờ hợp lệ trong khoảng TikTok cho phép; cách bài khác / số bài mỗi ngày
     # chỉ là cảnh báo), không xếp lại các dòng khác. Giờ sai: viền đỏ, dòng không có giờ và nút Hẹn tắt.
     $state.RowWarning = {
         param($r)
-        $set = & $readSettings
-        $gap = $(if ($set) { $set.Gap * 60 } else { 120 }); $cap = $(if ($set) { $set.Cap } else { 3 })
         $others = @($state.Rows | Where-Object { $_ -ne $r -and $_.Include -and $_.When } | ForEach-Object { [DateTime]$_.When })
-        return (Get-SpreadRowWarning -When ([DateTime]$r.When) -Others $others -Busy @($state.Busy) -MinSpacingMinutes $gap -DailyCap $cap)
+        return (Get-SpreadRowWarning -When ([DateTime]$r.When) -Others $others -Busy @($state.Busy))
     }.GetNewClosure()
     $state.TimeEdited = {
         param($s, $e)
@@ -5387,7 +5376,7 @@ function Show-TikTokSpreadDialog {
             $c.Rows.Children.Clear()
             foreach ($r in $state.Rows) {
                 $g = New-Object Windows.Controls.Grid
-                foreach ($w in @(44, 190, 150, -1)) { $col = New-Object Windows.Controls.ColumnDefinition; $col.Width = $(if ($w -gt 0) { [Windows.GridLength]::new($w) } else { [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star) }); [void]$g.ColumnDefinitions.Add($col) }
+                foreach ($w in @(44, 190, 0, -1)) { $col = New-Object Windows.Controls.ColumnDefinition; $col.Width = $(if ($w -gt 0) { [Windows.GridLength]::new($w) } elseif ($w -eq 0) { [Windows.GridLength]::Auto } else { [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star) }); [void]$g.ColumnDefinitions.Add($col) }
                 $g.Margin = [Windows.Thickness]::new(0, 2, 0, 8)
                 foreach ($hh in 1..2) { $rd = New-Object Windows.Controls.RowDefinition; $rd.Height = [Windows.GridLength]::Auto; [void]$g.RowDefinitions.Add($rd) }
                 $cb = New-Object Windows.Controls.CheckBox; $cb.IsChecked = [bool]$r.Include; $cb.IsEnabled = ($r.Warn -ne 'active'); $cb.MinHeight = 32; $cb.VerticalAlignment = 'Center'; $cb.Tag = $r
@@ -5401,7 +5390,8 @@ function Show-TikTokSpreadDialog {
                 [Windows.Controls.Grid]::SetColumn($cb, 0); [void]$g.Children.Add($cb)
                 $t1 = New-Object Windows.Controls.TextBlock; $t1.Text = (Get-ReelLabel $r.Id); $t1.VerticalAlignment = 'Center'; $t1.FontWeight = 'SemiBold'
                 [Windows.Controls.Grid]::SetColumn($t1, 1); [void]$g.Children.Add($t1)
-                $t2 = New-Object Windows.Controls.TextBox; $t2.Width = 138; $t2.MinHeight = 36; $t2.VerticalContentAlignment = 'Center'; $t2.FontWeight = 'ExtraBold'; $t2.Margin = [Windows.Thickness]::new(0, 0, 8, 0)
+                $t2 = New-Object Windows.Controls.TextBox; $t2.MinHeight = 36; $t2.VerticalContentAlignment = 'Center'; $t2.FontWeight = 'ExtraBold'; $t2.Margin = [Windows.Thickness]::new(0, 0, 8, 0)
+                $t2.Padding = [Windows.Thickness]::new(10, 6, 10, 6); $t2.MinWidth = $state.TimeBoxWidth   # đủ chỗ cho "dd/MM HH:mm" đầy đủ, không cuộn ngang
                 $t2.Text = $(if ($r.When) { ([DateTime]$r.When).ToString('dd/MM HH:mm') } elseif ($r.TimeBad) { [string]$r.TimeText } else { '' }); $t2.Tag = $r; $t2.IsEnabled = ($r.Warn -ne 'active'); $t2.MaxLength = 12
                 [Windows.Automation.AutomationProperties]::SetName($t2, 'Giờ hẹn ' + (Get-ReelLabel $r.Id) + ' (dd/MM HH:mm)')
                 if ($r.TimeBad) { $t2.BorderBrush = $dlg.FindResource('Danger') }
@@ -5412,7 +5402,7 @@ function Show-TikTokSpreadDialog {
                 $note = ''
                 if ($r.Warn -eq 'active') { $note = 'Đang có lệnh đăng chờ/chạy — bỏ qua.' }
                 elseif ($r.Warn -eq 'posted') { $note = 'Đã đăng' + $(if ($r.Other) { ' ở ' + $r.Other } else { '' }) + $(if ($r.Include) { ' — vẫn hẹn lại.' } else { ' — tick để vẫn hẹn.' }) }
-                elseif ($r.Include -and -not $r.When) { $note = 'Không đủ chỗ trống trong số ngày đã chọn.' }
+                elseif ($r.Include -and -not $r.When) { $note = 'Quá 10 ngày — chưa có giờ (nhập giờ tay hoặc bỏ tick).' }
                 $t3.Text = $note
                 $r.NoteBox = $t3
                 if ($r.Include -and $r.When -and -not $r.TimeBad -and $r.Warn -ne 'active') { $w0 = & $state.RowWarning $r; if ($w0) { $t3.Text = $w0 } }
@@ -5427,17 +5417,10 @@ function Show-TikTokSpreadDialog {
             }
         } finally { $state.Rendering = $false }
         $placed = @($state.Rows | Where-Object { $_.When }).Count
-        $c.Summary.Text = $(if (-not $state.Account) { '' } else { $placed.ToString() + '/' + $items.Count + ' video có giờ hẹn' + $(if ($state.Unplaced -gt 0) { ' · ' + $state.Unplaced + ' video không đủ chỗ trống (tăng số ngày hoặc giảm khoảng cách)' } else { '' }) + '.' })
+        $c.Summary.Text = $(if (-not $state.Account) { '' } else { $placed.ToString() + '/' + $items.Count + ' video có giờ hẹn' + $(if ($state.Unplaced -gt 0) { ' · Còn ' + $state.Unplaced + ' video chưa có giờ (quá 10 ngày)' } else { '' }) + '.' })
         & $updateConfirm
     }.GetNewClosure()
     $state.Replan = {
-        $set = & $readSettings
-        if ($null -eq $set) {
-            $c.Status.Text = 'Số ngày từ 1–10, bài mỗi ngày từ 1–20, khoảng cách từ 1–12 giờ.'
-            foreach ($r in $state.Rows) { $r.When = $null }   # không giữ giờ cũ của lần xếp trước
-            & $render; return
-        }
-        $days = $set.Days; $cap = $set.Cap; $gap = $set.Gap
         if ($state.HistoryGap) { $metaRead = Get-GalleryMetaChecked; $state.MetaByRoot = $metaRead.Map; $state.HistoryGap = $metaRead.Gap }   # retry on every re-plan
         if ($state.HistoryGap) {
             # An unreadable kho history may hide a booking of this account: no automatic slots. Rows with a hand-typed time keep it.
@@ -5457,13 +5440,12 @@ function Show-TikTokSpreadDialog {
             $kept = @($state.Rows | Where-Object { $_.TimeEdited -and $_.Include -and $_.Warn -ne 'active' })
             $free = @($state.Rows | Where-Object { $kept -notcontains $_ })
             $keptBusy = @($kept | Where-Object { $_.When } | ForEach-Object { [DateTime]$_.When })
-            $state.Unplaced = Set-TikTokSpreadTimes -Rows $free -Favorites $state.Chips -Busy (@($state.Busy) + $keptBusy) -Days $days -DailyCap $cap -MinSpacingMinutes ($gap * 60)
-            $c.Hours.Text = 'Giờ yêu thích dùng để xếp: ' + ($state.Chips -join ', ') + $(if ($slotLib -and @($slotLib.slots).Count) { ' (khung giờ đã đặt cho kho @' + $state.Account + ').' } else { ' (theo giờ bạn hay dùng cho @' + $state.Account + ').' })
+            $state.Unplaced = Set-TikTokSpreadTimes -Rows $free -Favorites $state.Chips -Busy (@($state.Busy) + $keptBusy)
+            $c.Hours.Text = 'Mỗi video một khung giờ, theo thứ tự, trong 10 ngày tới: ' + ($state.Chips -join ', ') + $(if ($slotLib -and @($slotLib.slots).Count) { ' (khung giờ đã đặt cho kho @' + $state.Account + ').' } else { ' (kho chưa đặt khung giờ: dùng giờ bạn hay đăng hoặc 08:00, 12:00, 19:00, 21:00).' })
             $c.Status.Text = ''
         } catch { Write-FileLog ('WARN Rải lịch xếp giờ: ' + $_.Exception.Message); $c.Status.Text = 'Không xếp được giờ: ' + $_.Exception.Message }
         & $render
     }.GetNewClosure()
-    foreach ($box in @($c.Days, $c.Cap, $c.Spacing)) { $box.Add_TextChanged({ if (-not $state.Rendering -and $state.Ready) { & $state.Replan } }.GetNewClosure()) }
     $c.Caption.Add_TextChanged({
         if (-not $state.Programmatic) { $state.Dirty = $true }
         # Caption chung = mẫu của mọi dòng chưa được sửa riêng.
@@ -5534,15 +5516,16 @@ function Show-TikTokSpreadDialog {
             if (-not $c.Confirm.IsEnabled) { return }
             if (Test-SpreadRunActive) { throw 'Đang có một lượt rải lịch chạy. Đợi xong hoặc bấm Dừng ở dải dưới cùng.' }
             if (Test-AutotokUpgradeActive) { throw 'Bộ đăng nền đang cập nhật. Đợi xong rồi thử lại.' }
-            $cap = ([string]$c.Caption.Text).Trim(); if (-not $cap) { throw 'Vui lòng nhập caption.' }
+            $cap = ([string]$c.Caption.Text).Trim()
             if (-not $state.Native) { throw 'Bộ đăng nền chưa hỗ trợ hẹn giờ trên TikTok. Cập nhật bộ đăng nền rồi khởi động lại.' }
-            $set = & $readSettings
-            if ($null -eq $set) { throw 'Số ngày từ 1–10, bài mỗi ngày từ 1–20, khoảng cách từ 1–12 giờ.' }
             $planned = @($state.Rows | Where-Object { $_.When })
             if (-not $planned.Count) { throw 'Không có video nào có giờ hẹn.' }
-            foreach ($p in $planned) { if (-not ([string]$p.Caption).Trim()) { $p.Caption = $cap } }
+            # Caption thực sự của mỗi dòng = caption riêng nếu có, không thì caption chung; dòng nào trống cả hai thì báo đúng dòng đó.
+            $problem = Get-SpreadCaptionProblem -Rows $planned -Common $cap
+            if ($problem) { throw $problem }
+            foreach ($p in $planned) { $p.Caption = Get-SpreadEffectiveCaption -Row $p -Common $cap }
             # D9: hộp thoại đóng ngay; lượt gửi chạy nền (dải tiến trình ở dưới cùng, nút Dừng, toast khi có lỗi và khi xong).
-            [void](Start-TikTokSpreadBackground -Rows $planned -Account $state.Account -Caption $cap -Favorites $state.Chips -Busy $state.Busy -Days $set.Days -DailyCap $set.Cap -MinSpacingMinutes ($set.Gap * 60))
+            [void](Start-TikTokSpreadBackground -Rows $planned -Account $state.Account -Caption $cap -Favorites $state.Chips -Busy $state.Busy)
             $state.Done = $true
             $dlg.Close()
         } catch { $c.Status.Text = $_.Exception.Message; & $updateConfirm }

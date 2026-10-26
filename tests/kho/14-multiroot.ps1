@@ -66,7 +66,7 @@ Test-Case 'busy times: the account''s scheduled posts on ALL kho folders count; 
     $extra = @(Ent 'req9' 'anna' (Utc (Local '2026-10-30 08:00')) 'preparing')
     Assert-Equal @(Get-TikTokAccountBusyTimes -Account 'anna' -Now $now -ExtraEntries $extra).Count 3 'extra (in-flight) entries are added'
 }
-Test-Case 'spread planning avoids the busy times of the account across both roots (120 min spacing) and fills the free slots in order' {
+Test-Case 'spread planning avoids the busy times of the account across both roots (60 min) and fills the free slots in order' {
     $w = New-TestWorld @('B')
     $now = Local '2026-10-26 10:00'
     function Ent { param([string]$Req, [string]$When) $e = New-TestHistoryEntry -Request $Req -User 'anna' -Status 'pending'; $e.tiktok_schedule_time = $When; return $e }
@@ -74,11 +74,13 @@ Test-Case 'spread planning avoids the busy times of the account across both root
     Write-TestMetadata $w.B.path @{ '2' = [ordered]@{ Posted = $false; Date = ''; History = @((Ent 'b1' (Utc (Local '2026-10-26 19:30')))) } }
     $busy = @(Get-TikTokAccountBusyTimes -Account 'anna' -Now $now)
     Assert-Equal $busy.Count 2
-    $plan = @(Get-TikTokSpreadPlan -Count 3 -Favorites @('12:00', '19:00', '21:00') -Busy $busy -Now $now -Days 2)
-    # 12:00 is 30 min from 12:30, 19:00 30 min from 19:30, 21:00 is 90 min from 19:30 -> all three of day 1 are skipped; day 2 is free
-    Assert-Equal (($plan | ForEach-Object { $_.ToString('MM-dd HH:mm') }) -join ',') '10-27 12:00,10-27 19:00,10-27 21:00'
-    $onlyA = @(Get-TikTokSpreadPlan -Count 1 -Favorites @('19:00') -Busy @($busy | Where-Object { $_.Hour -eq 12 }) -Now $now -Days 1)
-    Assert-Equal $onlyA.Count 1 'ignoring the second root would wrongly offer 19:00 today (the multi-root rule prevents that)'
+    $plan = @(Get-TikTokSpreadPlan -Count 3 -Favorites @('12:00', '19:00', '21:00') -Busy $busy -Now $now)
+    # 12:00 is 30 min from 12:30 and 19:00 is 30 min from 19:30 -> skipped; 21:00 is 90 min from 19:30 -> free
+    Assert-Equal (($plan | ForEach-Object { $_.ToString('MM-dd HH:mm') }) -join ',') '10-26 21:00,10-27 12:00,10-27 19:00'
+    $both19 = @(Get-TikTokSpreadPlan -Count 1 -Favorites @('19:00') -Busy $busy -Now $now)
+    Assert-Equal $both19[0].ToString('MM-dd HH:mm') '10-27 19:00'
+    $onlyA = @(Get-TikTokSpreadPlan -Count 1 -Favorites @('19:00') -Busy @($busy | Where-Object { $_.Hour -eq 12 }) -Now $now)
+    Assert-Equal $onlyA[0].ToString('MM-dd HH:mm') '10-26 19:00' 'ignoring the second root would wrongly offer 19:00 today (the multi-root rule prevents that)'
 }
 
 # ---------------- S6: no entry creation for a missing file ----------------

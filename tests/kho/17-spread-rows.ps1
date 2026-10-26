@@ -31,20 +31,15 @@ Test-Case 'time text: a date that already passed this year means next year (Dece
     $r = ConvertFrom-SpreadTimeText -Text '02/01 08:00' -Now $dec
     Assert-True $r.Ok; Assert-Equal $r.When.ToString('yyyy-MM-dd HH:mm') '2027-01-02 08:00'
 }
-Test-Case 'row warning: too close to another row (90 min < 120) and to a busy time' {
-    $w = Get-SpreadRowWarning -When (Local '2026-10-27 12:00') -Others @((Local '2026-10-27 13:30')) -MinSpacingMinutes 120 -DailyCap 3
-    Assert-Equal $w 'Cách một bài khác chỉ 90 phút (nên từ 120 phút).'
-    $w2 = Get-SpreadRowWarning -When (Local '2026-10-27 12:00') -Busy @((Local '2026-10-27 11:00')) -MinSpacingMinutes 120 -DailyCap 3
-    Assert-Equal $w2 'Cách một bài khác chỉ 60 phút (nên từ 120 phút).'
+Test-Case 'row warning: too close to another row (90 min is fine, 30 min is not) and to a busy time' {
+    Assert-Equal (Get-SpreadRowWarning -When (Local '2026-10-27 12:00') -Others @((Local '2026-10-27 12:30'))) 'Cách một bài khác chỉ 30 phút (nên từ 60 phút).'
+    Assert-Equal (Get-SpreadRowWarning -When (Local '2026-10-27 12:00') -Busy @((Local '2026-10-27 11:10'))) 'Cách một bài khác chỉ 50 phút (nên từ 60 phút).'
+    Assert-Equal (Get-SpreadRowWarning -When (Local '2026-10-27 12:00') -Others @((Local '2026-10-27 13:30'))) ''
 }
-Test-Case 'row warning: exactly the minimum spacing is fine; a far-away day is fine' {
-    Assert-Equal (Get-SpreadRowWarning -When (Local '2026-10-27 12:00') -Others @((Local '2026-10-27 14:00')) -MinSpacingMinutes 120 -DailyCap 3) ''
-    Assert-Equal (Get-SpreadRowWarning -When (Local '2026-10-27 12:00') -Others @((Local '2026-10-28 12:30')) -MinSpacingMinutes 120 -DailyCap 3) ''
-}
-Test-Case 'row warning: daily cap counts the other rows and busy posts of that day plus this one' {
-    $others = @((Local '2026-10-27 06:00'), (Local '2026-10-27 09:00'), (Local '2026-10-27 22:00'))
-    Assert-Equal (Get-SpreadRowWarning -When (Local '2026-10-27 15:00') -Others $others -MinSpacingMinutes 120 -DailyCap 3) 'Ngày 27/10 sẽ có 4 bài (tối đa 3).'
-    Assert-Equal (Get-SpreadRowWarning -When (Local '2026-10-27 15:00') -Others $others[0..1] -MinSpacingMinutes 120 -DailyCap 3) ''
+Test-Case 'row warning: exactly 60 min is fine; a far-away day is fine; the nearest post is the one reported' {
+    Assert-Equal (Get-SpreadRowWarning -When (Local '2026-10-27 12:00') -Others @((Local '2026-10-27 13:00'))) ''
+    Assert-Equal (Get-SpreadRowWarning -When (Local '2026-10-27 12:00') -Others @((Local '2026-10-28 12:30'))) ''
+    Assert-Equal (Get-SpreadRowWarning -When (Local '2026-10-27 12:00') -Others @((Local '2026-10-27 12:40'), (Local '2026-10-27 11:45'))) 'Cách một bài khác chỉ 15 phút (nên từ 60 phút).'
 }
 Test-Case 'slots: add normalises, sorts, de-duplicates; bad input throws a Vietnamese message' {
     Assert-Equal ((Get-KhoSlotsWith -Slots @('19:00') -Text '7:30') -join ',') '07:30,19:00'
