@@ -90,7 +90,7 @@ function page(opts = {}) {
   });
 
   const job = (over) => Object.assign({ id: 'job-1', nonce: 'N1', mode: 'post', visibility: 'private', schedule_time: null,
-    caption: 'Xin chào \u{1F338} #việt', expect_account: 'me.user', expect_user_id: null, chunk_credentials: 'omit' }, over);
+    caption: 'Xin chào \u{1F338} #việt', expect_account: 'me.user', expect_user_id: ME.user_id_str, chunk_credentials: 'omit' }, over);
   function run(over, nonce = 'N1') {
     win.postMessage({ __autotok: 1, kind: 'arm', nonce, mode: 'block' });                       // content.js arms first
     const j = job(over);
@@ -152,8 +152,11 @@ test('post: authorization denied by server -> nothing sent, definite failure', a
 });
 
 // ---------- R2: public / scheduled / no expect_account are refused before any upload ----------
-for (const [name, over] of [['public', { visibility: 'public' }], ['scheduled', { schedule_time: '2026-11-01T10:00:00+07:00' }],
-  ['no expect_account', { expect_account: null }], ['friends', { visibility: 'friends' }]]) {
+const soon = new Date(Date.now() + 5 * 60000).toISOString();
+const inDays = (d) => new Date(Date.now() + d * 86400000).toISOString();
+for (const [name, over] of [['private scheduled', { schedule_time: inDays(2) }], ['public scheduled 5 min ahead (<15)', { visibility: 'public', schedule_time: soon }],
+  ['public scheduled 31 days ahead', { visibility: 'public', schedule_time: inDays(31) }],
+  ['no expect_account', { expect_account: null }], ['no expect_user_id', { expect_user_id: null }], ['friends', { visibility: 'friends' }], ['bad option value', { options: { allow_duet: 'x' } }]]) {
   test(`post: ${name} job is refused before upload and never authorized`, async () => {
     const p = page();
     p.run(over);
@@ -269,4 +272,50 @@ test('no STS secret, session token or storage Auth in any message leaving the MA
   const r = await p.done();
   const all = JSON.stringify(p.msgs) + JSON.stringify(r);
   for (const s of [STS.secret_acess_key, STS.session_token, STORE_AUTH, STS.access_key_id]) assert.equal(all.includes(s), false, 'leaked ' + s.slice(0, 6));
+});
+
+// ---------- production validation + options (protocol v1 job shape) ----------
+test('public immediate post is allowed and every non-default option reaches the body', async () => {
+  const p = page();
+  p.run({ visibility: 'public', options: { allow_comment: 0, allow_duet: 1, allow_stitch: 1, ai_label: 1 } });
+  const r = await p.done();
+  assert.equal(r.outcome, 'posted', JSON.stringify(r));
+  assert.equal(r.schedule_time, null);
+  const f = JSON.parse(p.posts()[0].body).feature_common_info_list[0];
+  assert.deepEqual([f.privacy_setting_info.visibility_type, f.privacy_setting_info.allow_comment, f.privacy_setting_info.allow_duet, f.privacy_setting_info.allow_stitch], [0, 0, 1, 1]);
+  assert.deepEqual(f.aigc_info, { aigc_label_type: 1 });
+  assert.equal('schedule_time' in f, false);
+  assert.equal(p.authReqs[0].visibility_type, 0);
+  assert.equal(p.authReqs[0].schedule_time, null);
+  assert.equal(JSON.stringify(p.authReqs[0].identity), JSON.stringify({ username: 'me.user', user_id: ME.user_id_str }));
+});
+
+test('missing options use the Python defaults (comment on, duet/stitch/ai off)', async () => {
+  const p = page();
+  p.run({ visibility: 'public' });
+  await p.done();
+  const f = JSON.parse(p.posts()[0].body).feature_common_info_list[0];
+  assert.deepEqual([f.privacy_setting_info.allow_comment, f.privacy_setting_info.allow_duet, f.privacy_setting_info.allow_stitch, 'aigc_info' in f], [1, 0, 0, false]);
+});
+
+test('public scheduled post: schedule_unix goes into the body, authorize and the result', async () => {
+  const unix = Math.floor(Date.now() / 1000) + 3 * 86400;
+  const p = page();
+  p.run({ visibility: 'public', schedule_time: new Date(unix * 1000).toISOString(), schedule_unix: unix });
+  const r = await p.done();
+  assert.equal(r.outcome, 'posted', JSON.stringify(r));
+  assert.equal(JSON.parse(p.posts()[0].body).feature_common_info_list[0].schedule_time, unix);
+  assert.equal(p.authReqs[0].schedule_time, unix);
+  assert.equal(r.schedule_time, unix);
+  assert.equal(p.posts().length, 1);
+});
+
+test('result carries a sanitized response (secret keys dropped) and ids', async () => {
+  const p = page({ xhr: (x) => x.reply(200, '{"status_code":0,"status_msg":"","data":{"item_id":"7701245450858351893","session_token":"SECRET"},"msToken":"SECRET2"}') });
+  p.run({ visibility: 'public' });
+  const r = await p.done();
+  assert.equal(r.item_id, '7701245450858351893');
+  assert.equal(JSON.stringify(r.response).includes('SECRET'), false);
+  assert.equal(r.response.data.item_id, '7701245450858351893');
+  assert.equal(r.status_code, 0);
 });

@@ -6279,6 +6279,9 @@
   {
    "text": "Xin chào 🌸 #việtnam",
    "visibility": 0,
+   "allowComment": true,
+   "allowDuet": false,
+   "allowStitch": true,
    "aiLabel": false,
    "probe": null,
    "schedule": null,
@@ -6347,6 +6350,9 @@
   {
    "text": "hello #tag @alice",
    "visibility": 1,
+   "allowComment": true,
+   "allowDuet": false,
+   "allowStitch": true,
    "aiLabel": true,
    "probe": {
     "width": 720,
@@ -6440,6 +6446,9 @@
   {
    "text": "lịch #hẹn\ndòng",
    "visibility": 0,
+   "allowComment": true,
+   "allowDuet": false,
+   "allowStitch": true,
    "aiLabel": false,
    "probe": {
     "width": 1080,
@@ -6499,6 +6508,389 @@
         }
        ],
        "markup_text": "lịch <h id=\"0\">#hẹn</h>\ndòng",
+       "music_info": {
+        "origin_volume": "100"
+       },
+       "poster_delay": 0,
+       "cloud_edit_is_use_video_canvas": false,
+       "is_upload_audio_track": false,
+       "mature_theme_type": 0,
+       "cloud_edit_video_width": 1080,
+       "cloud_edit_video_height": 1920,
+       "video_track_time_range_list": [
+        {
+         "start_time_in_ms": 0,
+         "end_time_in_ms": 9000
+        }
+       ],
+       "has_original_audio": 0
+      }
+     }
+    ]
+   }
+  },
+  {
+   "text": "public now, defaults",
+   "visibility": 0,
+   "allowComment": true,
+   "allowDuet": false,
+   "allowStitch": false,
+   "aiLabel": false,
+   "probe": {
+    "width": 720,
+    "height": 1280,
+    "duration_ms": 15032,
+    "has_audio": true
+   },
+   "schedule": null,
+   "payload": {
+    "post_common_info": {
+     "creation_id": "CrEaTiOnId_0123456789",
+     "enter_post_page_from": 8,
+     "post_type": 3
+    },
+    "feature_common_info_list": [
+     {
+      "geofencing_regions": [],
+      "playlist_name": "",
+      "playlist_id": "",
+      "tcm_params": "{\"commerce_toggle_info\":{}}",
+      "sound_exemption": 0,
+      "music_copyright": {
+       "result": 1
+      },
+      "anchors": [],
+      "vedit_common_info": {
+       "draft": "",
+       "video_id": "v0123456789abcdef"
+      },
+      "privacy_setting_info": {
+       "visibility_type": 0,
+       "allow_duet": 0,
+       "allow_stitch": 0,
+       "allow_comment": 1,
+       "allow_content_reuse": 1,
+       "allow_ai_remix": 2
+      },
+      "content_check_id": ""
+     }
+    ],
+    "single_post_req_list": [
+     {
+      "batch_index": 0,
+      "video_id": "v0123456789abcdef",
+      "is_long_video": 0,
+      "single_post_feature_info": {
+       "text": "public now, defaults",
+       "text_extra": [],
+       "markup_text": "public now, defaults",
+       "music_info": {
+        "origin_volume": "100"
+       },
+       "poster_delay": 0,
+       "cloud_edit_is_use_video_canvas": false,
+       "is_upload_audio_track": false,
+       "mature_theme_type": 0,
+       "cloud_edit_video_width": 720,
+       "cloud_edit_video_height": 1280,
+       "video_track_time_range_list": [
+        {
+         "start_time_in_ms": 0,
+         "end_time_in_ms": 15032
+        }
+       ],
+       "has_original_audio": 1
+      }
+     }
+    ]
+   }
+  },
+  {
+   "text": "public now, all non-default",
+   "visibility": 0,
+   "allowComment": false,
+   "allowDuet": true,
+   "allowStitch": true,
+   "aiLabel": true,
+   "probe": {
+    "width": 1080,
+    "height": 1920,
+    "duration_ms": 9000,
+    "has_audio": false
+   },
+   "schedule": null,
+   "payload": {
+    "post_common_info": {
+     "creation_id": "CrEaTiOnId_0123456789",
+     "enter_post_page_from": 8,
+     "post_type": 3
+    },
+    "feature_common_info_list": [
+     {
+      "geofencing_regions": [],
+      "playlist_name": "",
+      "playlist_id": "",
+      "tcm_params": "{\"commerce_toggle_info\":{}}",
+      "sound_exemption": 0,
+      "music_copyright": {
+       "result": 1
+      },
+      "anchors": [],
+      "vedit_common_info": {
+       "draft": "",
+       "video_id": "v0123456789abcdef"
+      },
+      "privacy_setting_info": {
+       "visibility_type": 0,
+       "allow_duet": 1,
+       "allow_stitch": 1,
+       "allow_comment": 0,
+       "allow_content_reuse": 1,
+       "allow_ai_remix": 2
+      },
+      "content_check_id": "",
+      "aigc_info": {
+       "aigc_label_type": 1
+      }
+     }
+    ],
+    "single_post_req_list": [
+     {
+      "batch_index": 0,
+      "video_id": "v0123456789abcdef",
+      "is_long_video": 0,
+      "single_post_feature_info": {
+       "text": "public now, all non-default",
+       "text_extra": [],
+       "markup_text": "public now, all non-default",
+       "music_info": {
+        "origin_volume": "100"
+       },
+       "poster_delay": 0,
+       "cloud_edit_is_use_video_canvas": false,
+       "is_upload_audio_track": false,
+       "mature_theme_type": 0,
+       "cloud_edit_video_width": 1080,
+       "cloud_edit_video_height": 1920,
+       "video_track_time_range_list": [
+        {
+         "start_time_in_ms": 0,
+         "end_time_in_ms": 9000
+        }
+       ],
+       "has_original_audio": 0
+      }
+     }
+    ]
+   }
+  },
+  {
+   "text": "private, comments off",
+   "visibility": 1,
+   "allowComment": false,
+   "allowDuet": false,
+   "allowStitch": false,
+   "aiLabel": false,
+   "probe": null,
+   "schedule": null,
+   "payload": {
+    "post_common_info": {
+     "creation_id": "CrEaTiOnId_0123456789",
+     "enter_post_page_from": 8,
+     "post_type": 3
+    },
+    "feature_common_info_list": [
+     {
+      "geofencing_regions": [],
+      "playlist_name": "",
+      "playlist_id": "",
+      "tcm_params": "{\"commerce_toggle_info\":{}}",
+      "sound_exemption": 0,
+      "music_copyright": {
+       "result": 1
+      },
+      "anchors": [],
+      "vedit_common_info": {
+       "draft": "",
+       "video_id": "v0123456789abcdef"
+      },
+      "privacy_setting_info": {
+       "visibility_type": 1,
+       "allow_duet": 0,
+       "allow_stitch": 0,
+       "allow_comment": 0,
+       "allow_content_reuse": 1,
+       "allow_ai_remix": 2
+      },
+      "content_check_id": ""
+     }
+    ],
+    "single_post_req_list": [
+     {
+      "batch_index": 0,
+      "video_id": "v0123456789abcdef",
+      "is_long_video": 0,
+      "single_post_feature_info": {
+       "text": "private, comments off",
+       "text_extra": [],
+       "markup_text": "private, comments off",
+       "music_info": {
+        "origin_volume": "100"
+       },
+       "poster_delay": 0,
+       "cloud_edit_is_use_video_canvas": false,
+       "is_upload_audio_track": false,
+       "mature_theme_type": 0
+      }
+     }
+    ]
+   }
+  },
+  {
+   "text": "public scheduled, duet+stitch on, ai",
+   "visibility": 0,
+   "allowComment": true,
+   "allowDuet": true,
+   "allowStitch": true,
+   "aiLabel": true,
+   "probe": {
+    "width": 720,
+    "height": 1280,
+    "duration_ms": 15032,
+    "has_audio": true
+   },
+   "schedule": 1793367000,
+   "payload": {
+    "post_common_info": {
+     "creation_id": "CrEaTiOnId_0123456789",
+     "enter_post_page_from": 8,
+     "post_type": 3
+    },
+    "feature_common_info_list": [
+     {
+      "geofencing_regions": [],
+      "playlist_name": "",
+      "playlist_id": "",
+      "tcm_params": "{\"commerce_toggle_info\":{}}",
+      "sound_exemption": 0,
+      "music_copyright": {
+       "result": 1
+      },
+      "anchors": [],
+      "vedit_common_info": {
+       "draft": "",
+       "video_id": "v0123456789abcdef"
+      },
+      "privacy_setting_info": {
+       "visibility_type": 0,
+       "allow_duet": 1,
+       "allow_stitch": 1,
+       "allow_comment": 1,
+       "allow_content_reuse": 1,
+       "allow_ai_remix": 2
+      },
+      "content_check_id": "",
+      "aigc_info": {
+       "aigc_label_type": 1
+      },
+      "schedule_time": 1793367000
+     }
+    ],
+    "single_post_req_list": [
+     {
+      "batch_index": 0,
+      "video_id": "v0123456789abcdef",
+      "is_long_video": 0,
+      "single_post_feature_info": {
+       "text": "public scheduled, duet+stitch on, ai",
+       "text_extra": [],
+       "markup_text": "public scheduled, duet+stitch on, ai",
+       "music_info": {
+        "origin_volume": "100"
+       },
+       "poster_delay": 0,
+       "cloud_edit_is_use_video_canvas": false,
+       "is_upload_audio_track": false,
+       "mature_theme_type": 0,
+       "cloud_edit_video_width": 720,
+       "cloud_edit_video_height": 1280,
+       "video_track_time_range_list": [
+        {
+         "start_time_in_ms": 0,
+         "end_time_in_ms": 15032
+        }
+       ],
+       "has_original_audio": 1
+      }
+     }
+    ]
+   }
+  },
+  {
+   "text": "public scheduled, comments off #lịch",
+   "visibility": 0,
+   "allowComment": false,
+   "allowDuet": false,
+   "allowStitch": false,
+   "aiLabel": false,
+   "probe": {
+    "width": 1080,
+    "height": 1920,
+    "duration_ms": 9000,
+    "has_audio": false
+   },
+   "schedule": 1793999999,
+   "payload": {
+    "post_common_info": {
+     "creation_id": "CrEaTiOnId_0123456789",
+     "enter_post_page_from": 8,
+     "post_type": 3
+    },
+    "feature_common_info_list": [
+     {
+      "geofencing_regions": [],
+      "playlist_name": "",
+      "playlist_id": "",
+      "tcm_params": "{\"commerce_toggle_info\":{}}",
+      "sound_exemption": 0,
+      "music_copyright": {
+       "result": 1
+      },
+      "anchors": [],
+      "vedit_common_info": {
+       "draft": "",
+       "video_id": "v0123456789abcdef"
+      },
+      "privacy_setting_info": {
+       "visibility_type": 0,
+       "allow_duet": 0,
+       "allow_stitch": 0,
+       "allow_comment": 0,
+       "allow_content_reuse": 1,
+       "allow_ai_remix": 2
+      },
+      "content_check_id": "",
+      "schedule_time": 1793999999
+     }
+    ],
+    "single_post_req_list": [
+     {
+      "batch_index": 0,
+      "video_id": "v0123456789abcdef",
+      "is_long_video": 0,
+      "single_post_feature_info": {
+       "text": "public scheduled, comments off #lịch",
+       "text_extra": [
+        {
+         "end": 36,
+         "hashtag_name": "lịch",
+         "start": 31,
+         "tag_id": "0",
+         "type": 1,
+         "user_id": ""
+        }
+       ],
+       "markup_text": "public scheduled, comments off <h id=\"0\">#lịch</h>",
        "music_info": {
         "origin_volume": "100"
        },

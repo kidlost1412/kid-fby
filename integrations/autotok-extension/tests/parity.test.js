@@ -81,7 +81,7 @@ test('full post body matches Python _payload', () => {
   for (const c of fx.payloads) {
     const { markup, textExtra } = L.buildCaption(c.text, fx.users);
     const p = L.buildPayload({ creationId: 'CrEaTiOnId_0123456789', videoId: 'v0123456789abcdef', caption: c.text, markup, textExtra,
-      visibility: c.visibility, allowComment: true, allowDuet: false, allowStitch: true, aiLabel: c.aiLabel, probe: c.probe, scheduleTime: c.schedule });
+      visibility: c.visibility, allowComment: c.allowComment, allowDuet: c.allowDuet, allowStitch: c.allowStitch, aiLabel: c.aiLabel, probe: c.probe, scheduleTime: c.schedule });
     assert.deepEqual(p, c.payload, c.text);
   }
 });
@@ -100,4 +100,25 @@ test('schedule rules: window, private, shift after slow upload', () => {
   assert.equal(L.visibilityCode('public'), 0);
   assert.equal(L.visibilityCode('private'), 1);
   assert.throws(() => L.visibilityCode('friends'));
+});
+
+test('validateJob maps protocol options exactly as tiktok_adapter does (bool(int(options.get(k, default))))', () => {
+  const now = 1_800_000_000;
+  const job = (o) => Object.assign({ caption: 'x', visibility: 'public', schedule_time: null }, o);
+  assert.deepEqual(L.validateJob(job({}), now).options, { allowComment: true, allowDuet: false, allowStitch: false, aiLabel: false });
+  assert.deepEqual(L.validateJob(job({ options: { allow_comment: 0, allow_duet: 1, allow_stitch: 1, ai_label: 1 } }), now).options, { allowComment: false, allowDuet: true, allowStitch: true, aiLabel: true });
+  assert.deepEqual(L.validateJob(job({ options: { allow_comment: '0', ai_label: '1' } }), now).options.aiLabel, true);   // int('1') in Python
+  assert.throws(() => L.validateJob(job({ options: { allow_duet: 'x' } }), now), /allow_duet/);
+});
+
+test('validateJob: public/private immediate and public scheduled pass; private scheduled, friends, out of window are refused', () => {
+  const now = 1_800_000_000;
+  const job = (o) => Object.assign({ caption: 'x', visibility: 'public' }, o);
+  assert.equal(L.validateJob(job({}), now).vis, 0);
+  assert.equal(L.validateJob(job({ visibility: 'private' }), now).vis, 1);
+  assert.equal(L.validateJob(job({ schedule_unix: now + 900 }), now).scheduleUnix, now + 900);
+  assert.equal(L.validateJob(job({ schedule_time: new Date((now + 3600) * 1000).toISOString() }), now).scheduleUnix, now + 3600);
+  for (const bad of [{ visibility: 'private', schedule_unix: now + 3600 }, { visibility: 'friends' }, { schedule_unix: now + 899 }, { schedule_unix: now + 30 * 86400 + 1 }, { caption: '  ' }, { schedule_time: 'nope' }]) {
+    assert.throws(() => L.validateJob(job(bad), now), (e) => e.code === 'validate', JSON.stringify(bad));
+  }
 });

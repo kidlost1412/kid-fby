@@ -1,12 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "AutoTok P0 (thu nghiem)",
-  "description": "Prototype P0: dang TikTok tu Chrome that. Chi dung de thu.",
-  "version": "0.0.1",
+  "name": "AutoTok",
+  "description": "Cau noi giua ung dung Kid FB.Y va Chrome: dang TikTok tu profile da dang nhap.",
+  "version": "1.0.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAus70KmgYItoNv0rK9xtxKRqlTMzIEg7iRK/ZbINW6t/glZZptK9r+4JIdrmC9CJy5UJCwmCNZX9fwYx5Bri4n9q+kWDbGESJH/1nPSjCEUwJAA7+HbCJGwSTJJl1Yet6IWUSiG1xKjt+noU2nRwi6WnqhD8F8aIN7YL/FDTl5kIxXROF+abDB+gAz9oOoCGFMM3ng+jeAnZpDpjWrw2V3FPpoikKXPLH5y8BuK3e0uNzdS2HwC2G1i0VmbwlG6ZRQ/A19kpCNjFxaNeLZ47LJ/tfY1xLm4Emr3hKfzscjcYk+TMjI+3LDm9oo9sA43gTza0/WL/+cyS5LkfihFbWUwIDAQAB",
   "minimum_chrome_version": "120",
   "permissions": ["storage", "alarms", "tabs"],
-  "host_permissions": ["https://www.tiktok.com/*", "http://127.0.0.1:8799/*"],
+  "host_permissions": ["https://www.tiktok.com/*", "http://127.0.0.1:8765/*", "http://127.0.0.1:8799/*"],
   "background": { "service_worker": "sw.js" },
   "content_scripts": [
     {
@@ -17,7 +17,7 @@
     },
     {
       "matches": ["https://www.tiktok.com/tiktokstudio/*"],
-      "js": ["selectors.js", "content.js"],
+      "js": ["content.js"],
       "run_at": "document_start"
     }
   ],
