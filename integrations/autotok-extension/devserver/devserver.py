@@ -29,6 +29,7 @@ class State:
     def __init__(self, token: str, video: Path, log_path: Path | None, allow_post: bool = False, state_path: Path | None = None):
         self.token = token
         self.allow_post = allow_post
+        self.allow_public_schedule = False
         self.state_path = state_path
         self.video = video
         self.stale_s = 120.0
@@ -106,14 +107,17 @@ class State:
         if mode == "post":
             if not self.allow_post:
                 raise ValueError("mode 'post' needs the server to be started with --allow-post")
-            if visibility != "private" or schedule_time:
-                raise ValueError("post is limited to visibility=private and no schedule in this prototype")
+            sched_public = self.allow_public_schedule and visibility == "public" and bool(schedule_time)
+            if not sched_public and (visibility != "private" or schedule_time):
+                raise ValueError("post is limited to visibility=private and no schedule "
+                                 "(or public+schedule with --allow-public-schedule) in this prototype")
             if not expect_account:
                 raise ValueError("post needs expect_account")
         job = {
             "id": "job-" + secrets.token_hex(4), "nonce": secrets.token_hex(8), "caption": caption,
             "visibility": visibility, "schedule_time": schedule_time, "mode": mode,
             "expect_account": expect_account, "chunk_credentials": chunk_credentials, "expect_user_id": expect_user_id,
+            "allow_public_schedule": bool(mode == "post" and self.allow_public_schedule and visibility == "public" and schedule_time),
             "video": {"name": self.video.name, "size": self.video.stat().st_size,
                       "type": mimetypes.guess_type(self.video.name)[0] or "video/mp4"},
         }
@@ -363,6 +367,7 @@ def main(argv=None) -> int:
     ap.add_argument("--expect-account", default=None, help="TikTok unique id the page must be logged in as")
     ap.add_argument("--port", type=int, default=8799)
     ap.add_argument("--log", type=Path, default=Path(__file__).with_name("logs") / "autotok-dev.jsonl")
+    ap.add_argument("--allow-public-schedule", action="store_true", help="also allow ONE public scheduled post (needs --allow-post + --schedule)")
     ap.add_argument("--allow-post", action="store_true", help="REQUIRED for --mode post (really posts to TikTok, one private video)")
     ap.add_argument("--expect-user-id", default=None, help="numeric TikTok user_id_str the page must be logged in as")
     ap.add_argument("--state", type=Path, default=Path(__file__).with_name("logs") / "state.json", help="durable job/authorization state")
@@ -373,6 +378,7 @@ def main(argv=None) -> int:
         a.log.parent.mkdir(parents=True, exist_ok=True)
     a.state.parent.mkdir(parents=True, exist_ok=True)
     state = State(a.token, a.video.resolve(), a.log, a.allow_post, a.state)
+    state.allow_public_schedule = a.allow_public_schedule
     if a.mode == "post" and not a.i_know_this_reposts:
         prior = state.prior_post_for_video()
         if prior:

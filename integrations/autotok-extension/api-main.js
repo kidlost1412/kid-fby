@@ -216,7 +216,8 @@
     if (!MODES.includes(job.mode)) return post('done', { result: { outcome: 'failed', definite: true, reason: 'mode-disabled', detail: job.mode } });
     const t0 = Date.now();
     try {
-      if (job.mode === 'post' && (job.visibility !== 'private' || job.schedule_time)) throw new StepFail('validate', 'post is limited to private, unscheduled in this prototype');
+      const schedPublic = job.allow_public_schedule === true && job.visibility === 'public' && !!job.schedule_time;
+      if (job.mode === 'post' && !schedPublic && (job.visibility !== 'private' || job.schedule_time)) throw new StepFail('validate', 'post is limited to private, unscheduled in this prototype');
       const resp = await fetch(msg.blobUrl);
       const blob = await resp.blob();
       post('blob-ready', {});                      // content.js may revoke the Blob URL now
