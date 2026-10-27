@@ -252,7 +252,9 @@ comes from `AUTOTOK_BROWSER_PATH` or the standard locations; `AUTOTOK_CHROME_LAU
 After a launch the claim deadline is 180 s from the launch. Without a known profile the job fails at
 the claim deadline with "Chrome chưa mở và chưa biết profile Chrome — mở Chrome hoặc chọn profile
 trong Kết nối Chrome" (without chrome.exe: "Chrome chưa mở và không tìm thấy chrome.exe trên máy —
-hãy mở Chrome"). All of this happens before any claim, so the publish gate is unchanged.
+hãy mở Chrome"). All of this happens before any claim, so the publish gate is unchanged. The
+columns it needs (`extension_clients.chrome_profile_dir`, `last_launch_at`,
+`extension_jobs.launched_at`) come with database schema 5.
 
 Per account: at most one non-terminal child (partial unique index). Further jobs wait in
 `pending_ext`, FIFO by `scheduled_for`, then id. Other accounts are independent.

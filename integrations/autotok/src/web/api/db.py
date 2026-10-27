@@ -126,7 +126,7 @@ def init_db(eng: Engine | None = None) -> None:
 
 
 # Stored in SQLite's PRAGMA user_version once every step of _migrate has finished.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _add_column(conn, table: str, column: str, ddl: str) -> bool:
@@ -185,9 +185,6 @@ def _migrate(eng: Engine) -> None:
             # pending_ext/waiting_ext statuses. extension_clients/extension_jobs come from create_all.
             _add_column(conn, "accounts", "publisher", "VARCHAR(16) NOT NULL DEFAULT 'cookies'")
             _add_column(conn, "accounts", "chrome_user_id", "VARCHAR(32)")
-            _add_column(conn, "extension_clients", "chrome_profile_dir", "VARCHAR(64)")
-            _add_column(conn, "extension_clients", "last_launch_at", "DATETIME")
-            _add_column(conn, "extension_jobs", "launched_at", "DATETIME")
             # Rollback safety at the database level: no version (v3.1.0 included, which claims any 'pending'
             # row) can move a Chrome account's job to 'running', i.e. into the cookie upload path.
             if list(conn.exec_driver_sql("PRAGMA table_info(scheduled_uploads)")):
@@ -200,6 +197,12 @@ def _migrate(eng: Engine) -> None:
                 conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ux_extension_jobs_active_account "
                                      "ON extension_jobs (account_id) WHERE state NOT IN "
                                      "('posted','rejected','uncertain','revoked','failed')")
+        if version < 5:
+            # Opening Chrome for a due job. Separate step: databases already at v4 must get these too
+            # (_add_column skips columns that exist, e.g. added by hand on a test copy).
+            _add_column(conn, "extension_clients", "chrome_profile_dir", "VARCHAR(64)")
+            _add_column(conn, "extension_clients", "last_launch_at", "DATETIME")
+            _add_column(conn, "extension_jobs", "launched_at", "DATETIME")
         conn.exec_driver_sql(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 

@@ -490,7 +490,7 @@ def test_migration_v2_to_v3_keeps_rows_with_defaults(tmp_path):
         con = sqlite3.connect(path)
         cols = {r[1] for r in con.execute("PRAGMA table_info(upload_history)")}
         assert set(V3_COLUMNS) <= cols
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 5
         con.close()
         with Session(engine) as s:
             e = s.get(UploadHistory, "schedule:1:x")
@@ -511,7 +511,7 @@ def test_fresh_database_is_v3(tmp_path):
         db.init_db()
         con = sqlite3.connect(path)
         assert set(V3_COLUMNS) <= {r[1] for r in con.execute("PRAGMA table_info(upload_history)")}
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 5
         con.close()
     finally:
         db.override_engine(old)

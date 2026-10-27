@@ -87,23 +87,23 @@ def home(tmp_path):
     return h
 
 
-def test_fresh_install_is_v4_with_tables_defaults_and_index(tmp_path):
+def test_fresh_install_is_v5_with_tables_defaults_and_index(tmp_path):
     db = tmp_path / "fresh.db"
     new_init(db)
-    assert q(db, "PRAGMA user_version") == [(4,)]
+    assert q(db, "PRAGMA user_version") == [(5,)]
     cols = {r[1]: r for r in q(db, "PRAGMA table_info(accounts)")}
     assert "'cookies'" in str(cols["publisher"][4]) and cols["publisher"][3] == 1  # SQL default, NOT NULL
     names = {r[0] for r in q(db, "SELECT name FROM sqlite_master")}
     assert {"extension_clients", "extension_jobs", "ux_extension_jobs_active_account"} <= names
 
 
-def test_v3_to_v4_keeps_rows_and_defaults_publisher(old_src, home):
+def test_v3_to_v5_keeps_rows_and_defaults_publisher(old_src, home):
     db = home / "tiktok.db"
     run_old(old_src, db, home, OLD_CREATE)
     assert q(db, "PRAGMA user_version") == [(3,)]
     new_init(db)
     new_init(db)  # repeatable
-    assert q(db, "PRAGMA user_version") == [(4,)]
+    assert q(db, "PRAGMA user_version") == [(5,)]
     assert q(db, "SELECT username, cookie_path, publisher, chrome_user_id FROM accounts") == [
         ("old", "C:/x/tiktok_session-old.cookie", "cookies", None)]
     assert q(db, "SELECT status, attempts FROM scheduled_uploads") == [("pending", 0)]
@@ -122,7 +122,7 @@ def test_interrupted_migration_is_finished_on_next_start(old_src, home):
     con.commit()
     con.close()
     new_init(db)
-    assert q(db, "PRAGMA user_version") == [(4,)]
+    assert q(db, "PRAGMA user_version") == [(5,)]
     assert {r[1] for r in q(db, "PRAGMA table_info(accounts)")} >= {"publisher", "chrome_user_id"}
     assert q(db, "SELECT count(*) FROM sqlite_master WHERE name='ux_extension_jobs_active_account'") == [(1,)]
 
@@ -146,10 +146,10 @@ def test_concurrent_start_on_a_v3_database(old_src, home):
                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE) for _ in range(3)]
     errs = [p.communicate(timeout=120)[1] for p in procs]
     assert [p.returncode for p in procs] == [0, 0, 0], errs
-    assert q(db, "PRAGMA user_version") == [(4,)]
+    assert q(db, "PRAGMA user_version") == [(5,)]
 
 
-def test_old_version_insert_after_v4_gets_cookies_publisher(old_src, home):
+def test_old_version_insert_after_v5_gets_cookies_publisher(old_src, home):
     db = home / "tiktok.db"
     new_init(db)
     run_old(old_src, db, home, r"""
@@ -160,7 +160,7 @@ db.init_db()
 with Session(db.engine) as s:
     s.add(Account(username="made.by.old", cookie_path="x")); s.commit()
 """)
-    assert q(db, "PRAGMA user_version") == [(4,)]  # the old version never lowers it
+    assert q(db, "PRAGMA user_version") == [(5,)]  # the old version never lowers it
     assert q(db, "SELECT publisher FROM accounts WHERE username='made.by.old'") == [("cookies",)]
 
 
@@ -199,4 +199,53 @@ print(json.dumps(calls))
     assert json.loads(out.strip().splitlines()[-1]) == []  # the old cookie path never ran them
     assert q(db, "SELECT id, status, attempts, result_text FROM scheduled_uploads ORDER BY id") == before
     assert q(db, "SELECT state FROM extension_jobs") == [("authorized",)]
-    assert q(db, "PRAGMA user_version") == [(4,)]
+    assert q(db, "PRAGMA user_version") == [(5,)]
+
+V5_COLUMNS = {"extension_clients": {"chrome_profile_dir", "last_launch_at"}, "extension_jobs": {"launched_at"}}
+
+
+def _cols(db, table):
+    return {r[1] for r in q(db, f"PRAGMA table_info({table})")}
+
+
+def test_fresh_install_has_the_v5_columns(tmp_path):
+    db = tmp_path / "fresh.db"
+    new_init(db)
+    for table, cols in V5_COLUMNS.items():
+        assert cols <= _cols(db, table)
+
+
+def test_v4_database_from_the_p1_build_gets_the_v5_columns(tmp_path):
+    """The owner's test copy: user_version 4, tables from the first P1 build without the fix2 columns."""
+    db = tmp_path / "v4.db"
+    new_init(db)
+    con = sqlite3.connect(db)
+    for table, cols in V5_COLUMNS.items():
+        for col in cols:
+            con.execute(f"ALTER TABLE {table} DROP COLUMN {col}")
+    con.execute("INSERT INTO extension_clients (token_hash, label, ext_version, protocol, created_at)"
+                " VALUES ('h', 'Chrome', '1.0.0', 1, '2026-10-27 00:00:00')")
+    con.execute("PRAGMA user_version = 4")
+    con.commit()
+    con.close()
+    assert not (V5_COLUMNS["extension_clients"] & _cols(db, "extension_clients"))
+    new_init(db)
+    new_init(db)  # repeatable
+    assert q(db, "PRAGMA user_version") == [(5,)]
+    for table, cols in V5_COLUMNS.items():
+        assert cols <= _cols(db, table)
+    assert q(db, "SELECT label, chrome_profile_dir FROM extension_clients") == [("Chrome", None)]
+
+
+def test_v4_database_that_already_has_the_columns_migrates_cleanly(tmp_path):
+    """Columns added by hand while user_version stayed 4: harmless."""
+    db = tmp_path / "v4-hand.db"
+    new_init(db)
+    con = sqlite3.connect(db)
+    con.execute("PRAGMA user_version = 4")
+    con.commit()
+    con.close()
+    new_init(db)
+    assert q(db, "PRAGMA user_version") == [(5,)]
+    for table, cols in V5_COLUMNS.items():
+        assert cols <= _cols(db, table)
