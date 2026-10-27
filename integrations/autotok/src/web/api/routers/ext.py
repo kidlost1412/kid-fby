@@ -327,7 +327,32 @@ def list_clients(session: Session = Depends(get_session)):
                         else "no_identity" if not c.tiktok_user_id
                         else "conflict" if ext.in_conflict(session, c) else "ok"),
              "conflict": bool(c.tiktok_user_id) and ext.online(c) and ext.in_conflict(session, c),
-             "created_at": ext.iso(c.created_at)} for c in rows]
+             "created_at": ext.iso(c.created_at), "chrome_profile_dir": c.chrome_profile_dir,
+             "last_launch_at": ext.iso(c.last_launch_at)} for c in rows]
+
+
+@router.patch("/clients/{client_id}", dependencies=[Depends(gui_only)])
+async def update_client(client_id: int, request: Request, session: Session = Depends(get_session)):
+    """GUI sets the Chrome profile folder name of a paired client (an extension cannot read it itself)."""
+    body = await _json(request)
+    return await run_in_threadpool(_update_client, body, client_id, session)
+
+
+def _update_client(body: dict, client_id: int, session: Session):
+    client = session.get(ExtensionClient, client_id)
+    if client is None or client.revoked_at is not None:
+        raise ExtError(404, "unknown_client", "không có Chrome này")
+    if "chrome_profile_dir" in body:
+        value = body["chrome_profile_dir"]
+        if value in (None, ""):
+            client.chrome_profile_dir = None
+        elif isinstance(value, str) and ext.valid_profile_dir(value):
+            client.chrome_profile_dir = value
+        else:
+            raise ExtError(400, "bad_request", "Tên profile Chrome không hợp lệ (ví dụ: Default, Profile 1)")
+    session.add(client)
+    session.commit()
+    return {"ok": True, "id": client.id, "chrome_profile_dir": client.chrome_profile_dir}
 
 
 @router.delete("/clients/{client_id}", status_code=204, dependencies=[Depends(gui_only)])

@@ -185,6 +185,9 @@ def _migrate(eng: Engine) -> None:
             # pending_ext/waiting_ext statuses. extension_clients/extension_jobs come from create_all.
             _add_column(conn, "accounts", "publisher", "VARCHAR(16) NOT NULL DEFAULT 'cookies'")
             _add_column(conn, "accounts", "chrome_user_id", "VARCHAR(32)")
+            _add_column(conn, "extension_clients", "chrome_profile_dir", "VARCHAR(64)")
+            _add_column(conn, "extension_clients", "last_launch_at", "DATETIME")
+            _add_column(conn, "extension_jobs", "launched_at", "DATETIME")
             # Rollback safety at the database level: no version (v3.1.0 included, which claims any 'pending'
             # row) can move a Chrome account's job to 'running', i.e. into the cookie upload path.
             if list(conn.exec_driver_sql("PRAGMA table_info(scheduled_uploads)")):

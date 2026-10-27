@@ -134,6 +134,9 @@ class ExtensionClient(SQLModel, table=True):
     created_at: datetime = Field(default_factory=now_utc)
     last_seen_at: Optional[datetime] = None
     revoked_at: Optional[datetime] = None  # removed in the GUI: the token no longer works
+    # Chrome profile folder name (e.g. "Profile 1"), set by the GUI: lets the backend open this Chrome itself.
+    chrome_profile_dir: Optional[str] = Field(default=None, max_length=64)
+    last_launch_at: Optional[datetime] = None  # throttles launches of this profile
 
 
 class ExtensionJob(SQLModel, table=True):
@@ -166,6 +169,7 @@ class ExtensionJob(SQLModel, table=True):
     auth_sha: Optional[str] = None
     auth_creation_id: Optional[str] = None
     cancel_requested: bool = False
+    launched_at: Optional[datetime] = None  # Chrome was started for this job: its claim deadline counts from here
     note: Optional[str] = None  # why it was revoked / timed out
     result_json: Optional[str] = None  # first result the extension reported
     result_at: Optional[datetime] = None
