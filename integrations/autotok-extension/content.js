@@ -207,7 +207,8 @@
     } catch (e) {
       let dom = null; try { dom = S.report(); } catch (_) { /* ignore */ }
       const code = e instanceof StepError ? e.code : 'exception';
-      // Nothing can have been posted (no post path exists), so every failure here is definite.
+      // Reported as 'failed' (not notSent): if a post was already authorized the SW downgrades this to 'uncertain'
+      // (e.g. a timeout while waiting for the runner). Only api-main.js can say notSent:true.
       result = { outcome: 'failed', definite: true, reason: code, detail: e.message, dom };
       console.error('[autotok]', e);
     }

@@ -132,10 +132,21 @@ async function startJob(job, local) {
 }
 
 async function finishJob(id, result) {
-  const a = await patchActive({ finished: true, result, finishedAt: Date.now() }, id);
-  // patchActive returned null -> no such active job
+  // Re-read `authorized` under the lock: once a post was authorized, a plain "failed" can no longer be trusted as
+  // definite (the click may have happened) unless the page code explicitly said nothing was sent.
+  let a = null;
+  let final = result;
+  await locked(async () => {
+    const cur = await getActive();
+    if (!cur || cur.id !== id) return;
+    if (cur.authorized && result && result.outcome === 'failed' && result.notSent !== true) {
+      final = Object.assign({}, result, { outcome: 'uncertain', definite: false, downgraded_from: 'failed' });
+    }
+    a = Object.assign({}, cur, { finished: true, result: final, finishedAt: Date.now() });
+    await chrome.storage.local.set({ activeJob: a });
+  });
   if (!a) return { ok: false, reason: 'no-active-job' };
-  const full = Object.assign({ id, nonce: a.nonce, elapsed_ms: Date.now() - a.startedAt, authorized: a.authorized }, result);
+  const full = Object.assign({ id, nonce: a.nonce, elapsed_ms: Date.now() - a.startedAt, authorized: a.authorized }, final);
   await log(`kết quả job ${id}: ${full.outcome}${full.reason ? ' (' + full.reason + ')' : ''}`);
   await chrome.storage.local.set({ lastResult: full });
   if (full.identity && full.identity.value) await chrome.storage.local.set({ account: full.identity.value });
@@ -298,7 +309,7 @@ const handlers = {
     const a = await jobFor(sender, msg);
     if (!a) return { ok: false };
     await patchActive({ phase: msg.phase, pct: msg.pct == null ? null : msg.pct, lastBeat: Date.now() }, a.id);
-    if (msg.phase === 'identity' && msg.extra && msg.extra.account) await chrome.storage.local.set({ account: msg.extra.account });
+    if (msg.phase === 'identity' && msg.extra && msg.extra.ok && msg.extra.username) await chrome.storage.local.set({ account: msg.extra.username });
     await log(`[${msg.phase}] ${msg.msg || ''}${msg.pct != null ? ' ' + msg.pct + '%' : ''}`);
     if (!a.local) api('/api/progress', { method: 'POST', body: { id: a.id, nonce: a.nonce, phase: msg.phase, msg: msg.msg, pct: msg.pct, extra: msg.extra } })
       .catch((e) => (isGone(e) ? dropOrphan(a, null, 'progress ' + e.message) : log('gửi tiến độ lỗi: ' + e.message, 'WARN')));

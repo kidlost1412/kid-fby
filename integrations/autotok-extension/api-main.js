@@ -9,6 +9,7 @@
   const AID = 1988, REGION = 'ap-singapore-1';
   const MODES = ['selftest', 'intercept', 'post'];
   const gate = L.createPublishGate();
+  let sentFlag = false;          // true from the moment xhr.send is invoked: any later problem is uncertain
   let running = false;           // single-flight: a duplicate 'run' message is ignored
   let NONCE = null;
 
@@ -171,21 +172,25 @@
   async function publishOnce(bodyStr) {
     const url = '/tiktok/web/project/post/v1/?app_name=tiktok_web&channel=tiktok_web&device_platform=web&tz_name='
       + encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone) + '&aid=' + AID;
-    await gate.check(bodyStr, NONCE);                 // throws -> nothing sent; consumes the grant synchronously on success
-    const xhr = new XMLHttpRequest();                 // same tick as the consume: no await between check and send
+    try { await gate.check(bodyStr, NONCE); } catch (e) { throw new StepFail('gate', e.message, { notSent: true }); }  // refused before send: definite
+    // From here the grant is consumed. No await between the check and send.
+    const xhr = new XMLHttpRequest();
     const settled = new Promise((resolve) => {
       xhr.onload = () => resolve({ status: xhr.status, text: String(xhr.responseText || '') });
       xhr.onerror = () => resolve({ error: 'network', blocked: !!xhr.__autotokBlocked });
       xhr.ontimeout = () => resolve({ error: 'timeout' });
       xhr.onabort = () => resolve({ error: 'abort' });
     });
-    xhr.open('POST', url, true);
-    xhr.withCredentials = true;
-    xhr.timeout = 180000;
-    xhr.setRequestHeader('content-type', 'application/json');
+    try {
+      xhr.open('POST', url, true);
+      xhr.withCredentials = true;
+      xhr.timeout = 180000;
+      xhr.setRequestHeader('content-type', 'application/json');
+    } catch (e) { return { setupError: String(e && e.message) }; }       // nothing was sent
     window.__autotokHook.allow(xhr);
-    xhr.send(bodyStr);                                // never retried after this line
-    return settled;                                   // correlated to this exact XHR object
+    sentFlag = true;
+    try { xhr.send(bodyStr); } catch (e) { return { error: 'send-threw', message: String(e && e.message) }; }   // may have reached the network
+    return settled;                                   // correlated to this exact XHR object; never retried
   }
 
   async function doPost(job, up, body, id) {
@@ -197,10 +202,10 @@
     if (!auth.ok) throw new StepFail('authorize', 'denied: ' + auth.reason);   // nothing sent
     gate.arm({ sha, creationId: up.ids.creation_id, nonce: NONCE });
     progress('post', 'ĐÃ cấp quyền, gửi 1 lần', null, { sha: sha.slice(0, 12) });
-    let res;
-    try { res = await publishOnce(bodyStr); } catch (e) { throw new StepFail('gate', e.message); }   // check failed: not sent
-    if (res.blocked) return { outcome: 'failed', definite: true, reason: 'blocked-by-hook', note: 'không gì được gửi' };
-    if (res.error) return { outcome: 'uncertain', reason: 'xhr-' + res.error, note: 'đã gửi, không có phản hồi' };
+    const res = await publishOnce(bodyStr);           // throws StepFail('gate', notSent) only when refused before send
+    if (res.setupError) return { outcome: 'failed', definite: true, notSent: true, reason: 'publish-setup-failed', detail: res.setupError };
+    if (res.blocked) return { outcome: 'failed', definite: true, notSent: true, reason: 'blocked-by-hook', note: 'không gì được gửi' };
+    if (res.error) return { outcome: 'uncertain', reason: 'xhr-' + res.error, detail: res.message, note: 'đã gửi, không có phản hồi' };
     const m = L.mapPublishResult(res.status, res.text);
     if (m.outcome === 'uncertain') m.text = res.text.slice(0, 300);
     return Object.assign(m, { creation_id: up.ids.creation_id, video_id: up.ids.video_id, body_sha256: sha, identity: id });
@@ -227,7 +232,9 @@
       }
       post('done', { result });
     } catch (e) {
-      post('done', { result: { outcome: 'failed', definite: true, reason: e instanceof StepFail ? 'step:' + e.step : 'exception', detail: String(e.message).slice(0, 400), step: e.extra || null, elapsed_ms: Date.now() - t0 } });
+      const notSent = e instanceof StepFail && e.extra && e.extra.notSent === true;
+      if (sentFlag) post('done', { result: { outcome: 'uncertain', reason: 'error-after-send', detail: String(e.message).slice(0, 400), elapsed_ms: Date.now() - t0 } });
+      else post('done', { result: { outcome: 'failed', definite: true, notSent, reason: e instanceof StepFail ? 'step:' + e.step : 'exception', detail: String(e.message).slice(0, 400), step: e.extra || null, elapsed_ms: Date.now() - t0 } });
     }
   }
 

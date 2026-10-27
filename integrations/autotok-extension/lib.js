@@ -168,13 +168,16 @@
   function mapPublishResult(status, text) {
     const base = { http: status };
     if (status !== 200) {
+      if (!(status > 0)) return Object.assign(base, { outcome: 'uncertain', reason: 'http-status-' + status });   // Python _publish_in_browser: status <= 0
       if (status >= 500 || status === 408 || status === 429) return Object.assign(base, { outcome: 'uncertain', reason: 'http-' + status });
       return Object.assign(base, { outcome: 'rejected', definite: true, reason: 'http-' + status });
     }
     let j;
-    try { j = parseKeepNumbers(text); } catch (_) { return Object.assign(base, { outcome: 'uncertain', reason: 'non-json' }); }
+    const srcs = [];                                  // raw source text of every status_code (0.0 / 5.0 / 1e0 are not ints in Python)
+    try { j = JSON.parse(text, function (k, v, ctx) { if (k === 'status_code' && ctx && typeof ctx.source === 'string') srcs.push({ holder: this, source: ctx.source }); return typeof v === 'number' && ctx && typeof ctx.source === 'string' && /^[0-9]{16,}$/.test(ctx.source) ? ctx.source : v; }); } catch (_) { return Object.assign(base, { outcome: 'uncertain', reason: 'non-json' }); }
     const code = j && typeof j === 'object' ? j.status_code : undefined;
-    if (typeof code !== 'number' || !Number.isInteger(code)) return Object.assign(base, { outcome: 'uncertain', reason: 'no-usable-status_code' });
+    const raw = srcs.find((x) => x.holder === j);
+    if (typeof code !== 'number' || !Number.isInteger(code) || !raw || !/^-?[0-9]+$/.test(raw.source)) return Object.assign(base, { outcome: 'uncertain', reason: 'no-usable-status_code' });
     if (code !== 0) return Object.assign(base, { outcome: 'rejected', definite: true, reason: 'status_code', status_code: code, status_msg: typeof j.status_msg === 'string' ? j.status_msg : '' });
     const id = extractPostId(j);
     return Object.assign(base, { outcome: 'posted', status_code: 0, item_id: id, no_item_id: id == null });

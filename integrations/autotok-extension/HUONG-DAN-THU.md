@@ -71,7 +71,7 @@ Kiểm offline: `node --test tests\parity.test.js` (đối chiếu với Python)
 ## P0c – chế độ `post` (CHỈ khi anh đồng ý lúc đó)
 Điều kiện BẮT BUỘC cùng lúc: server chạy với `--allow-post`; job `--mode post --visibility private` (không hẹn giờ) và có `--expect-account <username>` (nên thêm `--expect-user-id <số>`); tiện ích đã nạp bản mới.
 Trước khi tải lên và ngay trước khi đăng, trang phải đang đăng nhập đúng tài khoản (chỉ tin endpoint passport: `username` + `user_id_str`).
-Server ghi quyền đăng vào `devserver\logs\state.json` TRƯỚC khi trả lời; khởi động lại server thì việc đã cấp quyền thành `uncertain`, không bao giờ cấp lại/giao lại. "Xoá việc" sau khi đã cấp quyền chỉ ghi nhận, không huỷ quyền.
+Server ghi quyền đăng vào `devserver\logs\state.json` TRƯỚC khi trả lời; khởi động lại server thì việc đã cấp quyền thành `uncertain`, không bao giờ cấp lại/giao lại. **Chạy lại đúng lệnh `--mode post` KHÔNG an toàn nếu không có bảo vệ: server sẽ TỪ CHỐI khởi động (mã thoát 2) khi `state.json` đã có việc post cho cùng video ở trạng thái đã cấp quyền / không rõ / đã đăng. Phải kiểm tra tài khoản TikTok trước; chỉ khi chắc chắn muốn đăng lại mới thêm cờ `--i-know-this-reposts`.** "Xoá việc" sau khi đã cấp quyền chỉ ghi nhận, không huỷ quyền.
 Chỉ có đúng 1 lần gửi, gắn với hash nội dung; kết quả: `posted` (`item_id`), `rejected` (`status_code`), hoặc `uncertain` (không phản hồi — phải kiểm tra tài khoản bằng tay).
 Nếu SDK của TikTok chưa bọc XHR sau 30 giây → `sdk-not-ready`, chưa gửi gì.
 Kiểm offline: `node --test tests\parity.test.js tests\gate.test.js`.

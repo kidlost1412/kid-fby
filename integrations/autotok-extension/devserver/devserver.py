@@ -39,6 +39,19 @@ class State:
         self.order: list[str] = []
         self._load()
 
+    def prior_post_for_video(self):
+        """(job id, state) of an earlier post job for the same video (name + size) that may have posted, else None."""
+        v = {"name": self.video.name, "size": self.video.stat().st_size if self.video.is_file() else None}
+        for jid in self.order:
+            e = self.jobs[jid]
+            j = e["job"]
+            if j.get("mode") != "post" or (j.get("video") or {}).get("name") != v["name"] or (j.get("video") or {}).get("size") != v["size"]:
+                continue
+            outcome = (e.get("result") or {}).get("outcome")
+            if e["state"] in ("authorized", "uncertain") or e["authorized"] or (e["state"] == "done" and outcome in (None, "posted", "uncertain")):
+                return jid, e["state"]
+        return None
+
     # ---- durable state (authorization must survive a restart) ----
     def _persist(self) -> None:
         """Write the job table atomically (temp file + os.replace). Caller holds self.lock. Raises on failure."""
@@ -105,12 +118,18 @@ class State:
                       "type": mimetypes.guess_type(self.video.name)[0] or "video/mp4"},
         }
         with self.lock:
-            self.jobs[job["id"]] = {"job": job, "state": "queued", "claims": 0, "authorized": False,
+            entry = {"job": job, "state": "queued", "claims": 0, "authorized": False,
                                     "authorized_at": None, "auth_sha": None, "auth_creation_id": None,
                                     "cancel_requested": False, "late_result": None,
                                     "result": None, "progress": [], "last_seen": 0.0}
+            self.jobs[job["id"]] = entry
             self.order.append(job["id"])
-            self._persist()
+            try:
+                self._persist()
+            except OSError:                       # not durable => never served
+                del self.jobs[job["id"]]
+                self.order.remove(job["id"])
+                raise
         self.log("job-added", id=job["id"], mode=mode, visibility=visibility, schedule_time=schedule_time)
         return job
 
@@ -200,7 +219,7 @@ def make_server(state: State, port: int = 8799) -> ThreadingHTTPServer:
                 except ValueError as exc:
                     return self._json(400, {"error": str(exc)})
                 return self._json(200, job)
-            e = self._entry(str(body.get("id", "")), body.get("nonce"))
+            e = self._entry(str(body.get("id", "")), str(body.get("nonce") or ""))   # a missing nonce never matches
             if e is None:
                 return
             if path == "/api/progress":
@@ -347,12 +366,19 @@ def main(argv=None) -> int:
     ap.add_argument("--allow-post", action="store_true", help="REQUIRED for --mode post (really posts to TikTok, one private video)")
     ap.add_argument("--expect-user-id", default=None, help="numeric TikTok user_id_str the page must be logged in as")
     ap.add_argument("--state", type=Path, default=Path(__file__).with_name("logs") / "state.json", help="durable job/authorization state")
+    ap.add_argument("--i-know-this-reposts", action="store_true", help="allow queuing a post job for a video that already has an authorized/uncertain/posted post job in state.json")
     ap.add_argument("--chunk-credentials", choices=("omit", "include"), default="omit", help="fetch credentials mode for the storage host")
     a = ap.parse_args(argv)
     if a.log:
         a.log.parent.mkdir(parents=True, exist_ok=True)
     a.state.parent.mkdir(parents=True, exist_ok=True)
     state = State(a.token, a.video.resolve(), a.log, a.allow_post, a.state)
+    if a.mode == "post" and not a.i_know_this_reposts:
+        prior = state.prior_post_for_video()
+        if prior:
+            print(f"error: state.json already has a post job for this video ({prior[0]}, state={prior[1]}). Its outcome is "
+                  "unknown or it was posted; check the TikTok account first. Re-run with --i-know-this-reposts to post again.", file=sys.stderr)
+            return 2
     try:
         state.add_job(a.caption, a.mode, a.visibility, a.schedule, a.expect_account, a.chunk_credentials, a.expect_user_id)
     except ValueError as exc:

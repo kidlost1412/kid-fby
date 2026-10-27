@@ -234,6 +234,18 @@ class DevServerTest(unittest.TestCase):
         e = self.state.jobs[j["id"]]
         self.assertEqual((e["state"], e["authorized"]), ("claimed", False))              # rolled back: not granted
 
+    def test_prior_post_detection_and_override_flag(self):
+        sp = Path(self.tmp.name) / "s4.json"
+        j = self._post_job(sp)
+        self.assertTrue(self.call("/api/authorize", {"id": j["id"], "nonce": j["nonce"], **BIND})[1]["ok"])
+        self.assertEqual(self.state.prior_post_for_video()[0], j["id"])
+        self.call("/api/result", {"id": j["id"], "nonce": j["nonce"], "outcome": "rejected", "definite": True})
+        e = self.state.jobs[j["id"]]
+        e["authorized"] = False                                                      # a definite rejection never posted
+        self.assertIsNone(self.state.prior_post_for_video())
+        e["result"]["outcome"] = "posted"
+        self.assertEqual(self.state.prior_post_for_video()[1], "done")
+
     def test_chunk_credentials_validated_and_passed(self):
         self.start()
         self.assertEqual(self.state.add_job("c", "selftest")["chunk_credentials"], "omit")
