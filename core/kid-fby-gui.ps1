@@ -2845,7 +2845,7 @@ function Invoke-AutotokInstallTick {
 # Every backend call goes through the 'ext' background action (never on the UI thread); one operation at a time, in order.
 $script:chromeCookieChoice = @()   # ids of accounts the owner put back on Cookie: never switched to Chrome automatically (settings.json)
 $script:chromeUi = @{ Task = $null; Op = $null; Ops = (New-Object System.Collections.ArrayList); Timer = $null; LastPoll = [DateTime]::MinValue
-    Clients = @(); Accounts = @(); ChromeOk = $false; Tried = @{}; Deferred = @{}; ReloadToasted = $false; PairExpires = ''; PairClients = 0; Building = $false }
+    Clients = @(); Accounts = @(); ChromeOk = $false; Tried = @{}; ProfileTried = @{}; Deferred = @{}; ReloadToasted = $false; PairExpires = ''; PairClients = 0; Building = $false }
 
 function Select-ChromeClientForAccount {
     # Which Chrome an account is bound to when the owner picks "Chrome": the one reporting the same TikTok username;
@@ -2958,7 +2958,7 @@ function Complete-ChromeOp {
         }
         if (-not $silent) { Set-ChromeStatusText $text }
         if ($op.Kind -eq 'set-publisher' -and [int]$r.status -eq 409 -and [string]$r.text -notmatch '[^\u0000-\u007F]') { $text = Get-ChromePublisherBusyText }
-        if ($op.Kind -in @('set-publisher', 'from-chrome', 'remove-client')) { Show-Toast $text -Kind warning; Update-ChromeLists; Add-ChromeOp 'refresh' @{ op = 'refresh' } @{ Silent = $false } }
+        if ($op.Kind -in @('set-publisher', 'from-chrome', 'remove-client', 'set-profile')) { Show-Toast $text -Kind warning; Update-ChromeLists; Add-ChromeOp 'refresh' @{ op = 'refresh' } @{ Silent = $false } }
         return
     }
     switch ($op.Kind) {
@@ -2983,6 +2983,7 @@ function Complete-ChromeOp {
             Set-ChromeStatusText 'Nhập 6 số này vào tiện ích (bấm biểu tượng tiện ích trên Chrome). Mã dùng một lần.'
             Update-ChromeCountdown
         }
+        'set-profile' { Add-ChromeOp 'refresh' @{ op = 'refresh' } @{ Silent = $true } }
         'remove-client' { Show-Toast 'Đã gỡ Chrome này.' -Kind success; Add-ChromeOp 'refresh' @{ op = 'refresh' } @{ Silent = $false } }
         'from-chrome' {
             $a = $r.text | ConvertFrom-Json
@@ -3037,6 +3038,62 @@ function New-ChromeButton {
     return $b
 }
 
+function Get-ChromeLocalStatePath { return (Join-Path ([string]$env:LOCALAPPDATA) 'Google\Chrome\User Data\Local State') }
+
+function Read-ChromeProfiles {
+    # Chrome profiles from Local State (profile.info_cache). Chrome keeps the file open: read with sharing, tolerate a BOM.
+    # Returns @{ Ok; Profiles = @(@{ Dir; Label }); LastUsed; Error }. A missing/unreadable/odd file is Ok=$false, never an exception.
+    param([string]$Path = (Get-ChromeLocalStatePath))
+    $fail = { param($why) Write-FileLog "WARN Chrome Local State '$Path': $why"; return @{ Ok = $false; Profiles = @(); LastUsed = ''; Error = 'Không đọc được danh sách profile Chrome' } }
+    if (-not $Path -or -not [IO.File]::Exists($Path)) { return (& $fail 'missing') }
+    try {
+        $fs = New-Object IO.FileStream($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        try { $sr = New-Object IO.StreamReader($fs, (New-Object Text.UTF8Encoding($false)), $true); $text = $sr.ReadToEnd() } finally { $fs.Dispose() }
+        $json = $text.TrimStart([char]0xFEFF) | ConvertFrom-Json -ErrorAction Stop
+    } catch { return (& $fail $_.Exception.Message) }
+    $cache = $null
+    if ($json -and $json.PSObject.Properties['profile'] -and $json.profile -and $json.profile.PSObject.Properties['info_cache']) { $cache = $json.profile.info_cache }
+    if (-not $cache) { return (& $fail 'no profile.info_cache') }
+    $list = New-Object System.Collections.Generic.List[object]
+    foreach ($prop in $cache.PSObject.Properties) {
+        $dir = [string]$prop.Name
+        if ($dir -notmatch '^[^\\/:*?"<>|\x00-\x1f]+$' -or $dir -eq '.' -or $dir -eq '..') { continue }   # same rule as the backend: no path separators
+        $info = $prop.Value
+        $name = ''; $who = ''
+        if ($info) {
+            if ($info.PSObject.Properties['name']) { $name = [string]$info.name }
+            if ($info.PSObject.Properties['gaia_name'] -and [string]$info.gaia_name) { $who = [string]$info.gaia_name }
+            elseif ($info.PSObject.Properties['user_name'] -and [string]$info.user_name) { $who = [string]$info.user_name }
+        }
+        if (-not $name) { $name = $dir }
+        $list.Add(@{ Dir = $dir; Label = $(if ($who) { "$name ($who)" } else { $name }) })
+    }
+    $last = ''
+    if ($json.profile.PSObject.Properties['last_used']) { $last = [string]$json.profile.last_used }
+    return @{ Ok = $true; Profiles = $list.ToArray(); LastUsed = $last; Error = '' }
+}
+
+function Get-ChromeProfileChoice {
+    # What the combo shows for a client: its saved profile, else Chrome's last used one. Default = true when it is only a suggestion
+    # (the caller saves it once). Hidden = the backend does not know the field (older backend).
+    param($Client, $Profiles)
+    # Tested by name: a property whose value is null must still count as present.
+    if (@($Client.PSObject.Properties.Name) -notcontains 'chrome_profile_dir') { return @{ Hidden = $true; Dir = ''; Default = $false } }
+    $saved = [string]$Client.chrome_profile_dir
+    if ($saved) { return @{ Hidden = $false; Dir = $saved; Default = $false } }
+    $known = @(@($Profiles.Profiles) | Where-Object { $_.Dir -ceq $Profiles.LastUsed })
+    if ($Profiles.Ok -and $known.Count) { return @{ Hidden = $false; Dir = [string]$Profiles.LastUsed; Default = $true } }
+    return @{ Hidden = $false; Dir = ''; Default = $false }
+}
+
+function Invoke-ChromeProfileChoice {
+    param($Combo)
+    if ($script:chromeUi.Building -or $Combo.SelectedIndex -lt 0) { return }
+    $item = $Combo.SelectedItem
+    if ($item.Tag -ceq [string]$Combo.Tag.Current) { return }
+    Add-ChromeOp 'set-profile' @{ op = 'set-profile'; client_id = [int]$Combo.Tag.Id; chrome_profile_dir = [string]$item.Tag } @{ ClientId = [string]$Combo.Tag.Id; Dir = [string]$item.Tag }
+}
+
 function Update-ChromeLists {
     if (-not $ui.ListChromeClients) { return }
     $s = $script:chromeUi
@@ -3047,6 +3104,7 @@ function Update-ChromeLists {
             [void]$ui.ListChromeClients.Children.Add((New-ChromeText 'Bộ đăng TikTok hiện tại chưa hỗ trợ Chrome. Bấm Cập nhật / Kiểm tra bộ đăng ở thẻ trên.' $true))
             return
         }
+        $profiles = Read-ChromeProfiles
         if (-not $s.Clients.Count) { [void]$ui.ListChromeClients.Children.Add((New-ChromeText 'Chưa có Chrome nào. Cài tiện ích rồi bấm Tạo mã ghép nối.' $true)) }
         foreach ($cl in $s.Clients) {
             $row = New-Object Windows.Controls.DockPanel; $row.Margin = [Windows.Thickness]::new(0, 4, 0, 4)
@@ -3072,6 +3130,28 @@ function Update-ChromeLists {
             [void]$info.Children.Add((New-ChromeText ($name + $(if ([string]$cl.label) { ' · ' + [string]$cl.label } else { '' })) $false $true))
             [void]$info.Children.Add((New-ChromeText ((Get-ChromeClientStatusText $cl) + ' · thấy ' + (Format-ChromeLastSeen ([string]$cl.last_seen_at)) + $(if ([string]$cl.ext_version) { ' · tiện ích ' + [string]$cl.ext_version } else { '' })) $true))
             if ([bool]$cl.need_reload) { [void]$info.Children.Add((New-ChromeText 'Có bản tiện ích mới — vào chrome://extensions bấm ⟳' $false $true)) }
+            $choice = Get-ChromeProfileChoice $cl $profiles
+            if (-not $choice.Hidden) {
+                if (-not $profiles.Ok) { [void]$info.Children.Add((New-ChromeText $profiles.Error $true)) }
+                else {
+                    $pl = New-Object Windows.Controls.StackPanel; $pl.Orientation = 'Horizontal'; $pl.Margin = [Windows.Thickness]::new(0, 4, 0, 0)
+                    [void]$pl.Children.Add((New-ChromeText 'Profile Chrome: ' $true))
+                    $pc = New-Object Windows.Controls.ComboBox; $pc.MinWidth = 220; $pc.MinHeight = 44
+                    [Windows.Automation.AutomationProperties]::SetName($pc, 'Profile Chrome cho ' + $name)
+                    $entries = @(@($profiles.Profiles) | ForEach-Object { @{ Dir = $_.Dir; Label = $_.Label } })
+                    if ($choice.Dir -and -not @($entries | Where-Object { $_.Dir -ceq $choice.Dir }).Count) { $entries += @{ Dir = $choice.Dir; Label = $choice.Dir } }
+                    foreach ($e in $entries) { $ci = New-Object Windows.Controls.ComboBoxItem; $ci.Content = $e.Label; $ci.Tag = $e.Dir; [void]$pc.Items.Add($ci); if ($e.Dir -ceq $choice.Dir) { $pc.SelectedItem = $ci } }
+                    $pc.Tag = @{ Id = [int]$cl.id; Current = $choice.Dir }
+                    $pc.Add_SelectionChanged({ param($sender, $e) Invoke-ChromeProfileChoice $sender })
+                    [void]$pl.Children.Add($pc)
+                    [void]$info.Children.Add($pl)
+                    [void]$info.Children.Add((New-ChromeText 'App sẽ tự mở profile này khi Chrome tắt mà đến giờ đăng' $true))
+                    if ($choice.Default -and -not $s.ProfileTried.ContainsKey([string]$cl.id)) {
+                        $s.ProfileTried[[string]$cl.id] = $true   # saved automatically, once per session
+                        Add-ChromeOp 'set-profile' @{ op = 'set-profile'; client_id = [int]$cl.id; chrome_profile_dir = [string]$choice.Dir } @{ Auto = $true; ClientId = [string]$cl.id; Dir = [string]$choice.Dir; Silent = $true }
+                    }
+                }
+            }
             [void]$row.Children.Add($info)
             [void]$ui.ListChromeClients.Children.Add($row)
         }
@@ -3475,6 +3555,7 @@ $script:tikTokWorker = {
                 return @{ok=$true;status=200;chrome=$chrome;clients=$clientsText;accounts=(ConvertTo-Json -InputObject @(Get-Json ($BaseUrl+'/api/accounts')) -Depth 5 -Compress)}
             }
             if($op -eq 'pair-code'){return (Send-Ext 'POST' '/api/ext/pair-code' @{})}
+            if($op -eq 'set-profile'){return (Send-Ext 'PATCH' ('/api/ext/clients/'+[int]$payload.client_id) @{chrome_profile_dir=[string]$payload.chrome_profile_dir})}
             if($op -eq 'remove-client'){return (Send-Ext 'DELETE' ('/api/ext/clients/'+[int]$payload.client_id) $null)}
             if($op -eq 'from-chrome'){return (Send-Ext 'POST' '/api/accounts/from-chrome' @{client_id=[int]$payload.client_id})}
             if($op -eq 'set-publisher'){

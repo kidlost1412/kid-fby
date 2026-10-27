@@ -261,4 +261,75 @@ Test-Case 'auto-switch 409: account is NOT marked handled (Tried cleared, so the
     Assert-Equal @($script:TestLog | Where-Object { $_ -like '*sẽ chuyển sang Chrome*' }).Count 0 'no second toast'
     Assert-True (-not $s.Tried.ContainsKey('7')) 'still retriable'
 }
+# ---------------------------------------------------------------- Chrome profile per client ----
+function New-LocalState {
+    param([string]$Json, [switch]$Bom)
+    $p = Join-Path (New-TestDir) 'Local State'
+    [IO.File]::WriteAllText($p, $Json, (New-Object Text.UTF8Encoding([bool]$Bom)))
+    return $p
+}
+$localJson = '{"profile":{"last_used":"Profile 1","info_cache":{"Default":{"name":"Anh Ba","user_name":"ba@gmail.com","gaia_name":"Ba Nguyen"},"Profile 1":{"name":"Shop Bé","user_name":"shop@gmail.com"},"Profile 2":{"name":""},"Bad\\Name":{"name":"x"},"..":{"name":"y"}}}}'
+Test-Case 'Local State: names, gaia_name beats user_name, empty name falls back to the directory, path-like keys are dropped, last_used read' {
+    $r = Read-ChromeProfiles (New-LocalState $localJson)
+    Assert-True $r.Ok 'ok'
+    Assert-Equal (($r.Profiles | ForEach-Object { $_.Dir }) -join ',') 'Default,Profile 1,Profile 2'
+    Assert-Equal $r.Profiles[0].Label 'Anh Ba (Ba Nguyen)'
+    Assert-Equal $r.Profiles[1].Label 'Shop Bé (shop@gmail.com)'
+    Assert-Equal $r.Profiles[2].Label 'Profile 2'
+    Assert-Equal $r.LastUsed 'Profile 1'
+}
+Test-Case 'Local State: UTF-8 BOM is accepted; a file held open by another writer is still readable' {
+    Assert-True (Read-ChromeProfiles (New-LocalState $localJson -Bom)).Ok 'BOM'
+    $p = New-LocalState $localJson
+    $hold = New-Object IO.FileStream($p, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+    try { Assert-True (Read-ChromeProfiles $p).Ok 'open by Chrome' } finally { $hold.Dispose() }
+}
+Test-Case 'Local State: missing file, empty file, garbage and no info_cache give the Vietnamese error, not an exception' {
+    foreach ($path in @((Join-Path (New-TestDir) 'nope'), (New-LocalState ''), (New-LocalState 'not json {'), (New-LocalState '{"profile":{}}'), (New-LocalState '[]'))) {
+        $r = Read-ChromeProfiles $path
+        Assert-True (-not $r.Ok) "should fail: $path"; Assert-Equal $r.Error 'Không đọc được danh sách profile Chrome'; Assert-Equal @($r.Profiles).Count 0
+    }
+}
+Test-Case 'default selection: saved dir wins; else last_used (only if it is a known profile); old backend (no field) hides the combo' {
+    $profiles = Read-ChromeProfiles (New-LocalState $localJson)
+    $c = Cl 1 'a'; $c | Add-Member -NotePropertyName chrome_profile_dir -NotePropertyValue $null
+    $x = Get-ChromeProfileChoice $c $profiles
+    Assert-Equal $x.Dir 'Profile 1'; Assert-True $x.Default 'suggestion to save'; Assert-True (-not $x.Hidden) 'visible'
+    $c.chrome_profile_dir = 'Default'
+    $x = Get-ChromeProfileChoice $c $profiles
+    Assert-Equal $x.Dir 'Default'; Assert-True (-not $x.Default) 'saved value is not re-saved'
+    Assert-True (Get-ChromeProfileChoice (Cl 2 'b') $profiles).Hidden 'old backend'
+    $c2 = Cl 3 'c'; $c2 | Add-Member -NotePropertyName chrome_profile_dir -NotePropertyValue ''
+    $bad = Read-ChromeProfiles (New-LocalState '{"profile":{"last_used":"Ghost","info_cache":{"Default":{"name":"x"}}}}')
+    $x = Get-ChromeProfileChoice $c2 $bad
+    Assert-Equal $x.Dir ''; Assert-True (-not $x.Default) 'unknown last_used is not saved'
+    $x = Get-ChromeProfileChoice $c2 (Read-ChromeProfiles (Join-Path (New-TestDir) 'nope'))
+    Assert-Equal $x.Dir ''; Assert-True (-not $x.Default) 'unreadable Local State saves nothing'
+}
+Test-Case 'set-profile: PATCH /api/ext/clients/5 with {"chrome_profile_dir":"Profile 1"}, CSRF header, no Origin' {
+    $fake = Start-FakeBackend @{ 'PATCH /api/ext/clients/5' = @{ Status = 200; Body = '{"id":5,"chrome_profile_dir":"Profile 1"}' } } 1
+    $r = Invoke-ExtAction $fake @{ op = 'set-profile'; client_id = 5; chrome_profile_dir = 'Profile 1' }
+    Assert-Equal $r.Error ''; Assert-Equal $r.Result[0].status 200
+    $seen = $fake.Seen[0]
+    Assert-Equal $seen.Method 'PATCH'; Assert-Equal ($seen.Body | ConvertFrom-Json).chrome_profile_dir 'Profile 1'
+    Assert-True ($null -eq $seen.Origin) 'no Origin'; Assert-Equal $seen.Csrf 'autotok'
+}
+Test-Case 'set-profile refused by the backend (400): returned with status, UI toasts the error and refreshes' {
+    $fake = Start-FakeBackend @{ 'PATCH /api/ext/clients/5' = @{ Status = 422; Body = '{"detail":"tên profile không hợp lệ"}' } } 1
+    $r = Invoke-ExtAction $fake @{ op = 'set-profile'; client_id = 5; chrome_profile_dir = 'a/b' }
+    Assert-Equal $r.Result[0].ok $false
+    $script:ui = @{}; $script:TestLog.Clear()
+    $script:chromeUi = @{ Task = 1; Op = @{ Kind = 'set-profile'; Ctx = @{ ClientId = '5'; Dir = 'a/b' } }; Ops = (New-Object System.Collections.ArrayList); Tried = @{}; Deferred = @{}; ProfileTried = @{}; Building = $false }
+    $script:stubResult = $r.Result[0]
+    Complete-ChromeOp
+    Assert-True (@($script:TestLog | Where-Object { $_ -eq '[toast] tên profile không hợp lệ' }).Count -eq 1) "toast: $($script:TestLog -join '|')"
+    Assert-Equal $script:chromeUi.Ops[0].Kind 'refresh'
+}
+Test-Case 'the refresh keeps chrome_profile_dir from an old/new backend untouched (field passes through the clients JSON)' {
+    $fake = Start-FakeBackend @{ 'GET /health' = @{ Status = 200; Body = $healthNew }; 'GET /api/ext/clients' = @{ Status = 200; Body = '[{"id":3,"chrome_profile_dir":null}]' }; 'GET /api/accounts' = @{ Status = 200; Body = '[]' } } 3
+    $r = Invoke-ExtAction $fake @{ op = 'refresh' }
+    $c = @(($r.Result[0].clients | ConvertFrom-Json) | Where-Object { $_ })[0]   # same unrolling as Complete-ChromeOp (PS 5.1 returns the array as one object)
+    Assert-True (@($c.PSObject.Properties.Name) -contains 'chrome_profile_dir') 'field present (null)'
+    Assert-True (-not (Get-ChromeProfileChoice $c (Read-ChromeProfiles (New-LocalState $localJson))).Hidden) 'combo shown'
+}
 Complete-Tests
