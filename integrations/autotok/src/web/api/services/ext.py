@@ -382,13 +382,19 @@ def finalize_child(job_id: str) -> bool:
             parent = s.get(ScheduledUpload, job.schedule_id)
             owned = bool(parent and schedule_key(parent) == job.schedule_key and parent.attempts == job.attempt)
             late = job.finalized_state == "uncertain"
+            # A later attempt of the SAME job (not a deleted/reused id) exists: a retry after "uncertain".
+            newer = bool(parent and schedule_key(parent) == job.schedule_key and parent.attempts > job.attempt)
             applied = True
             if owned and parent.status == "waiting_ext":
                 applied = _apply(s, parent, "waiting_ext", outcome)
             elif owned and late and parent.status == "failed" and job.state in ("posted", "rejected", "failed"):
                 applied = _apply(s, parent, "failed", outcome)  # the real outcome of an uncertain attempt
-            elif owned and late and parent.status == "pending" and outcome.ok:
-                applied = _apply(s, parent, "pending", outcome)  # the manual retry must not post again
+            elif owned and late and parent.status in ("pending", "pending_ext") and outcome.ok:
+                applied = _apply(s, parent, parent.status, outcome)  # the manual retry must not post again
+            elif newer and outcome.ok and _withdraw_newer(s, parent):
+                applied = _apply(s, parent, parent.status, outcome)  # known posted: the retry never runs
+                if applied:
+                    _note_history(s, job, outcome, f"retry attempt {parent.attempts} withdrawn before it was sent")
             elif not owned:
                 _note_history(s, job, outcome, "a newer attempt owns the job, or it was deleted")
             elif job.state != "revoked" and outcome.ok:
@@ -407,6 +413,26 @@ def finalize_child(job_id: str) -> bool:
             return True
     log.error("ext: job %s not finalized after repeated concurrent changes", job_id)
     return False
+
+
+WITHDRAWN_TEXT = "Đã dừng lần đăng lại: lần đăng trước đã lên TikTok"
+
+
+def _withdraw_newer(s: Session, parent: ScheduledUpload) -> bool:
+    """A late success of an older attempt proves the video is on TikTok. Stop the newer attempt if nothing of it
+    can have been sent yet: no child (pending/pending_ext) or a child not yet authorized (revoked by the same
+    conditional UPDATE that authorize races against). False if it may already be publishing (authorized+)."""
+    if parent.status in ("pending", "pending_ext"):
+        return True
+    if parent.status != "waiting_ext":
+        return False
+    won = s.exec(update(ExtensionJob).where(
+        ExtensionJob.schedule_id == parent.id, ExtensionJob.attempt == parent.attempts,
+        ExtensionJob.state.in_(PRE_AUTH)).values(state="revoked", note=WITHDRAWN_TEXT, updated_at=now_utc())).rowcount
+    if won:
+        log.info("ext-transition schedule=%s attempt=%s ->revoked: an older attempt was posted", parent.id,
+                 parent.attempts)
+    return won == 1
 
 
 # ---------- child transitions -----------------------------------------------

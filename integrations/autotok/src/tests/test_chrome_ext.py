@@ -286,7 +286,8 @@ def test_late_result_after_restart_reconciles_history_and_keeps_post_id(engine, 
     assert cookie_calls == []
 
 
-def test_late_success_for_superseded_attempt_is_kept_without_touching_the_newer_one(engine, app, clock, video_file):
+def test_late_success_of_attempt_1_withdraws_the_unauthorized_attempt_2(engine, app, clock, video_file):
+    """QA fix 1: the video is known to be on TikTok, so attempt 2 must never be authorized."""
     aid = chrome_account(engine)
     chrome = Chrome(app, "alice", UID_A)
     sid = schedule(engine, aid)
@@ -301,10 +302,32 @@ def test_late_success_for_superseded_attempt_is_kept_without_touching_the_newer_
     assert parent(engine, sid).attempts == 2 and parent(engine, sid).status == "waiting_ext"
     chrome.post("result", job, outcome="posted", status_code=0, item_id="7701245450858351893")
     row = parent(engine, sid)
-    assert row.status == "waiting_ext" and row.attempts == 2  # newer attempt untouched
+    assert row.status == "succeeded" and row.attempts == 2
+    assert [c.state for c in children(engine, sid)] == ["posted", "revoked"]
     entry = history(engine, sid)
     assert entry.post_id == "7701245450858351893" and entry.prior_uncertain is True
-    assert "late success of attempt 1" in entry.result_text
+    assert chrome.next().status_code == 204
+
+
+def test_late_success_keeps_an_already_authorized_newer_attempt_and_warns(engine, app, clock, video_file):
+    aid = chrome_account(engine)
+    chrome = Chrome(app, "alice", UID_A)
+    sid = schedule(engine, aid)
+    job = dispatched(engine, app, chrome, sid)
+    chrome.authorize(job)
+    clock["offset"] = timedelta(minutes=4)
+    ext.reconcile_ext()
+    clock["offset"] = timedelta(0)
+    app.patch(f"/api/schedules/{sid}", json={"status": "pending", "confirm_uncertain": True})
+    worker.tick()
+    job2 = chrome.next().json()
+    chrome.ready(job2)
+    assert chrome.authorize(job2).json() == {"ok": True}  # attempt 2 may already be publishing
+    chrome.post("result", job, outcome="posted", status_code=0, item_id="7701245450858351893")
+    row = parent(engine, sid)
+    assert row.status == "waiting_ext" and row.attempts == 2  # never overwritten
+    entry = history(engine, sid)
+    assert entry.post_id == "7701245450858351893" and "late success of attempt 1" in entry.result_text
 
 
 def test_late_success_while_manual_retry_waits_prevents_repost(engine, app, clock, video_file):
