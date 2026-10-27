@@ -244,16 +244,47 @@ def test_crash_after_result_stored_before_parent_finalized(engine, app, video_fi
     assert history(engine, sid).post_id == "7701245450858351893"
 
 
-def test_crash_between_claim_and_dispatch_never_reaches_cookies(engine, app, video_file, cookie_calls, monkeypatch):
+def test_chrome_job_starts_pending_ext_and_the_database_never_lets_it_run(engine, app, video_file, cookie_calls):
+    """QA fix 2: from creation on, a Chrome account's job is in a status v3.1.0 never claims, and the DB
+    trigger refuses 'running' for it whatever code tries."""
     aid = chrome_account(engine)
-    sid = schedule(engine, aid)
-    monkeypatch.setattr(worker, "dispatch_ext", lambda row: (_ for _ in ()).throw(PowerLoss("after claim")))
-    with pytest.raises(PowerLoss):
-        worker.tick()
-    monkeypatch.undo()
-    assert parent(engine, sid).status == "running" and children(engine) == []
-    worker.tick()  # a fresh tick does not re-run a running row (reclaim_stale handles it later)
-    assert cookie_calls == [] and children(engine) == []
+    when = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    r = app.post("/api/schedules", json={"username": "alice", "title": "t", "source_type": "local",
+                                          "source_ref": "clip.mp4", "scheduled_for": when})
+    assert r.status_code == 201, r.text
+    sid = r.json()["id"]
+    assert r.json()["status"] == "pending_ext"
+    con = sqlite3.connect(engine.url.database)
+    con.execute("UPDATE scheduled_uploads SET status='pending' WHERE id=?", (sid,))  # as an old version could
+    con.execute("UPDATE scheduled_uploads SET status='running', attempts=attempts+1 WHERE id=?", (sid,))
+    con.commit()
+    assert con.execute("SELECT status, attempts FROM scheduled_uploads WHERE id=?", (sid,)).fetchone() == ("pending", 0)
+    con.close()
+    worker.tick()  # the safety net adopts it, promotion creates the child
+    assert parent(engine, sid).status == "waiting_ext" and parent(engine, sid).attempts == 1
+    assert cookie_calls == []
+
+
+def test_pending_ext_waits_for_its_due_time(engine, app, video_file):
+    aid = chrome_account(engine)
+    sid = schedule(engine, aid, when_offset=3600)
+    worker.tick()
+    assert parent(engine, sid).status == "pending_ext" and children(engine) == []
+
+
+def test_publisher_switch_is_refused_while_the_account_has_open_jobs(engine, app, saved_account, video_file):
+    aid = app.post("/api/accounts", json={"username": "alice"}).json()["id"]
+    chrome = Chrome(app, "alice", UID_A)
+    sid = schedule(engine, aid, when_offset=3600)  # a cookie job, not yet due
+    r = app.patch(f"/api/accounts/{aid}", json={"publisher": "chrome", "client_id": chrome.client_id})
+    assert r.status_code == 409 and parent(engine, sid).status == "pending"
+    app.patch(f"/api/schedules/{sid}", json={"status": "cancelled"})
+    assert app.patch(f"/api/accounts/{aid}", json={"publisher": "chrome", "client_id": chrome.client_id}).status_code == 200
+    sid2 = app.post("/api/schedules", json={"username": "alice", "title": "t", "source_type": "local",
+                                             "source_ref": "clip.mp4",
+                                             "scheduled_for": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()}).json()["id"]
+    assert parent(engine, sid2).status == "pending_ext"
+    assert app.patch(f"/api/accounts/{aid}", json={"publisher": "cookies"}).status_code == 409
 
 
 # ---------- acceptance 2: late result after a restart ----------
@@ -286,7 +317,8 @@ def test_late_result_after_restart_reconciles_history_and_keeps_post_id(engine, 
     assert cookie_calls == []
 
 
-def test_late_success_for_superseded_attempt_is_kept_without_touching_the_newer_one(engine, app, clock, video_file):
+def test_late_success_of_attempt_1_withdraws_the_unauthorized_attempt_2(engine, app, clock, video_file):
+    """QA fix 1: the video is known to be on TikTok, so attempt 2 must never be authorized."""
     aid = chrome_account(engine)
     chrome = Chrome(app, "alice", UID_A)
     sid = schedule(engine, aid)
@@ -301,10 +333,32 @@ def test_late_success_for_superseded_attempt_is_kept_without_touching_the_newer_
     assert parent(engine, sid).attempts == 2 and parent(engine, sid).status == "waiting_ext"
     chrome.post("result", job, outcome="posted", status_code=0, item_id="7701245450858351893")
     row = parent(engine, sid)
-    assert row.status == "waiting_ext" and row.attempts == 2  # newer attempt untouched
+    assert row.status == "succeeded" and row.attempts == 2
+    assert [c.state for c in children(engine, sid)] == ["posted", "revoked"]
     entry = history(engine, sid)
     assert entry.post_id == "7701245450858351893" and entry.prior_uncertain is True
-    assert "late success of attempt 1" in entry.result_text
+    assert chrome.next().status_code == 204
+
+
+def test_late_success_keeps_an_already_authorized_newer_attempt_and_warns(engine, app, clock, video_file):
+    aid = chrome_account(engine)
+    chrome = Chrome(app, "alice", UID_A)
+    sid = schedule(engine, aid)
+    job = dispatched(engine, app, chrome, sid)
+    chrome.authorize(job)
+    clock["offset"] = timedelta(minutes=4)
+    ext.reconcile_ext()
+    clock["offset"] = timedelta(0)
+    app.patch(f"/api/schedules/{sid}", json={"status": "pending", "confirm_uncertain": True})
+    worker.tick()
+    job2 = chrome.next().json()
+    chrome.ready(job2)
+    assert chrome.authorize(job2).json() == {"ok": True}  # attempt 2 may already be publishing
+    chrome.post("result", job, outcome="posted", status_code=0, item_id="7701245450858351893")
+    row = parent(engine, sid)
+    assert row.status == "waiting_ext" and row.attempts == 2  # never overwritten
+    entry = history(engine, sid)
+    assert entry.post_id == "7701245450858351893" and "late success of attempt 1" in entry.result_text
 
 
 def test_late_success_while_manual_retry_waits_prevents_repost(engine, app, clock, video_file):
@@ -708,3 +762,58 @@ def test_release_claim_hands_an_undelivered_job_back_only_while_still_claimed(en
     with Session(engine) as s:
         job = s.get(ExtensionJob, wire["id"])
     assert ext.release_claim(job) is False  # past 'claimed': never handed back
+
+
+def test_health_counts_queued_children_for_the_installer_drain(engine, app, video_file):
+    aid = chrome_account(engine)
+    assert app.get("/health").json()["ext_active"] == 0
+    schedule(engine, aid)
+    worker.tick()
+    assert children(engine)[0].state == "queued"
+    assert app.get("/health").json()["ext_active"] == 1
+
+
+def test_health_stays_responsive_while_an_ext_handler_waits_on_the_database(engine, cookie_calls, monkeypatch):
+    """QA fix 3: /api/ext/* handlers are async; their SQLite work must run off the event loop. The handler's
+    database call is made slow (3 s, like a busy_timeout wait); /health must still answer at once."""
+    import socket
+    import time
+    import httpx
+    import uvicorn
+
+    real = ext.bound_account
+
+    def slow_bound_account(*a, **k):
+        time.sleep(3)
+        return real(*a, **k)
+
+    monkeypatch.setattr(ext, "bound_account", slow_bound_account)
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    server = uvicorn.Server(uvicorn.Config(create_app(), host="127.0.0.1", port=port, log_level="warning"))
+    t = threading.Thread(target=server.run, daemon=True)
+    t.start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            time.sleep(0.05)
+        hdr = {"X-Requested-With": "autotok"}
+        code = httpx.post(base + "/api/ext/pair-code", headers=hdr).json()["code"]
+        token = httpx.post(base + "/api/ext/pair", headers=hdr, json={"code": code, "protocol": 1}).json()["token"]
+        slow = threading.Thread(target=lambda: httpx.post(
+            base + "/api/ext/hello", timeout=30, headers={**hdr, "Authorization": "Bearer " + token,
+                                                           "X-Autotok-Protocol": "1"},
+            json={"protocol": 1, "identity": {"username": "alice", "user_id": UID_A}}))
+        slow.start()
+        time.sleep(0.7)  # hello is inside its slow database call
+        t0 = time.monotonic()
+        assert httpx.get(base + "/health", timeout=10).status_code == 200
+        assert time.monotonic() - t0 < 1.5, "event loop blocked by a database call"
+        slow.join(timeout=30)
+    finally:
+        server.should_exit = True
+        t.join(timeout=10)

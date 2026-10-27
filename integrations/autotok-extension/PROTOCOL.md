@@ -216,10 +216,12 @@ terminal side exits `revoked` (pre-authorization cancel or missed deadline) and 
 arrives. Terminal: `posted, rejected, uncertain, revoked, failed`.
 
 Parent (`scheduled_uploads.status`) for accounts with `publisher='chrome'`:
-`pending -> running` (claimed by the scheduler, attempt + 1) `-> pending_ext` (waiting for the
-account to be free) `-> waiting_ext` (child created in the same transaction for this attempt)
-`-> succeeded | failed`. Old backend versions only claim `pending`, so they never touch
-`pending_ext`/`waiting_ext` rows (rollback safety).
+created (schedule, desktop submit, retry) directly as `pending_ext` `-> waiting_ext` (when due and the
+account is free: attempt + 1 and the child created in the same transaction) `-> succeeded | failed`.
+A Chrome account's job is never `pending` or `running`: old backend versions claim only `pending`,
+a leftover `pending` row is moved to `pending_ext` by reconcile, and a database trigger
+(`tr_chrome_job_never_running`, schema v4) silently refuses any update of such a row to `running`,
+whatever version runs (rollback safety).
 
 Deadlines (checked by `reconcile_ext` on every scheduler tick, at startup, on `/next` and after
 each result):
@@ -230,9 +232,11 @@ each result):
   `publish_uncertain` (check TikTok before retrying). Never definite.
 - A late result for the same attempt fixes the parent (posted -> succeeded with post id; rejected /
   not-sent -> failed definite; the history keeps `prior_uncertain`). A late success for a
-  superseded or deleted parent is written to the history with its post id and a warning and never
-  changes the newer attempt; a late success while the parent waits for a manual retry (`pending`,
-  same attempt) marks it succeeded so the retry does not post again.
+  newer attempt that cannot have been sent yet (no child, or a child in queued..ready) withdraws it
+  (the child is revoked by the same conditional update authorize races against) and marks the
+  parent succeeded with the post id, so a confirmed retry never posts twice; if the newer attempt is
+  already authorized, it is left alone and the late success is written to the history with its
+  post id and a warning. A late success for a deleted parent goes to the history the same way.
 
 Per account: at most one non-terminal child (partial unique index). Further jobs wait in
 `pending_ext`, FIFO by `scheduled_for`, then id. Other accounts are independent.
@@ -275,6 +279,8 @@ Per account: at most one non-terminal child (partial unique index). Further jobs
 - C4 `cookie_path`: sentinel `""` for chrome-only accounts, no table rebuild.
 - C4 PATCH to chrome takes an explicit `client_id`, and a username mismatch needs
   `confirm_username_mismatch` (the account username may be a label, not the TikTok handle).
-- Publisher is decided when the scheduler claims the job; a job already in `pending_ext` whose
-  account was switched back to cookies fails definitely (nothing sent, owner retries); switching
-  back is refused while such jobs exist.
+- Publisher is fixed when the job is created (`pending` for cookies, `pending_ext` for Chrome).
+  Switching an account's publisher (either way) is refused with 409 while the account has jobs in
+  `pending`, `running`, `pending_ext`, `waiting_ext` or an unfinished child; rows are never moved
+  between publishers. A `pending_ext` job whose account is not Chrome anymore (only possible through
+  an older version) fails definitely, nothing sent.

@@ -35,6 +35,7 @@ from api.services import history
 from api.routers.uploads import _require_account
 from api.schemas import UploadOptions, check_native_schedule
 from api.services.tiktok_adapter import SCHEDULE_MODE_OPTION, SCHEDULE_OPTION
+from api.services import ext
 from api.services import videos as library
 
 router = APIRouter(prefix="/api/desktop/jobs", tags=["desktop"])
@@ -287,6 +288,7 @@ def create_job(
         job = ScheduledUpload(
             account_id=acct.id, source_type="local", source_ref=dest.name,
             title=title, options_json=json.dumps(stored), scheduled_for=now_utc(),
+            status=ext.queued_status(acct),  # Chrome jobs never sit in 'pending' (v3.1.0 would claim them)
         )
         session.add(job)
         session.flush()

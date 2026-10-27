@@ -382,13 +382,19 @@ def finalize_child(job_id: str) -> bool:
             parent = s.get(ScheduledUpload, job.schedule_id)
             owned = bool(parent and schedule_key(parent) == job.schedule_key and parent.attempts == job.attempt)
             late = job.finalized_state == "uncertain"
+            # A later attempt of the SAME job (not a deleted/reused id) exists: a retry after "uncertain".
+            newer = bool(parent and schedule_key(parent) == job.schedule_key and parent.attempts > job.attempt)
             applied = True
             if owned and parent.status == "waiting_ext":
                 applied = _apply(s, parent, "waiting_ext", outcome)
             elif owned and late and parent.status == "failed" and job.state in ("posted", "rejected", "failed"):
                 applied = _apply(s, parent, "failed", outcome)  # the real outcome of an uncertain attempt
-            elif owned and late and parent.status == "pending" and outcome.ok:
-                applied = _apply(s, parent, "pending", outcome)  # the manual retry must not post again
+            elif owned and late and parent.status in ("pending", "pending_ext") and outcome.ok:
+                applied = _apply(s, parent, parent.status, outcome)  # the manual retry must not post again
+            elif newer and outcome.ok and _withdraw_newer(s, parent):
+                applied = _apply(s, parent, parent.status, outcome)  # known posted: the retry never runs
+                if applied:
+                    _note_history(s, job, outcome, f"retry attempt {parent.attempts} withdrawn before it was sent")
             elif not owned:
                 _note_history(s, job, outcome, "a newer attempt owns the job, or it was deleted")
             elif job.state != "revoked" and outcome.ok:
@@ -407,6 +413,26 @@ def finalize_child(job_id: str) -> bool:
             return True
     log.error("ext: job %s not finalized after repeated concurrent changes", job_id)
     return False
+
+
+WITHDRAWN_TEXT = "Đã dừng lần đăng lại: lần đăng trước đã lên TikTok"
+
+
+def _withdraw_newer(s: Session, parent: ScheduledUpload) -> bool:
+    """A late success of an older attempt proves the video is on TikTok. Stop the newer attempt if nothing of it
+    can have been sent yet: no child (pending/pending_ext) or a child not yet authorized (revoked by the same
+    conditional UPDATE that authorize races against). False if it may already be publishing (authorized+)."""
+    if parent.status in ("pending", "pending_ext"):
+        return True
+    if parent.status != "waiting_ext":
+        return False
+    won = s.exec(update(ExtensionJob).where(
+        ExtensionJob.schedule_id == parent.id, ExtensionJob.attempt == parent.attempts,
+        ExtensionJob.state.in_(PRE_AUTH)).values(state="revoked", note=WITHDRAWN_TEXT, updated_at=now_utc())).rowcount
+    if won:
+        log.info("ext-transition schedule=%s attempt=%s ->revoked: an older attempt was posted", parent.id,
+                 parent.attempts)
+    return won == 1
 
 
 # ---------- child transitions -----------------------------------------------
@@ -516,10 +542,29 @@ def _expire(now: datetime) -> None:
             _log_transition(job, "authorized", "uncertain")
 
 
+def queued_status(acct: Account) -> str:
+    """Status a new or retried job starts in. Chrome jobs never sit in 'pending': v3.1.0 would claim it."""
+    return "pending_ext" if acct.publisher == "chrome" else "pending"
+
+
+def _adopt_pending(now: datetime) -> None:
+    """Safety net: a Chrome account's job in 'pending' (inserted by an older version, or the account was
+    switched by one) goes to pending_ext. Conditional, so a concurrent change wins."""
+    chrome_ids = sa_select(Account.id).where(Account.publisher == "chrome")
+    with Session(_api_db.engine) as s:
+        moved = s.exec(update(ScheduledUpload).where(ScheduledUpload.status == "pending",
+                                                     ScheduledUpload.account_id.in_(chrome_ids))
+                       .values(status="pending_ext", updated_at=now_utc())).rowcount
+        s.commit()
+    if moved:
+        log.info("ext: %d Chrome job(s) moved pending -> pending_ext", moved)
+
+
 def _promote(now: datetime) -> None:
     with Session(_api_db.engine) as s:
         busy = set(s.exec(select(ExtensionJob.account_id).where(ExtensionJob.state.not_in(EXT_TERMINAL))).all())
-        waiting = s.exec(select(ScheduledUpload).where(ScheduledUpload.status == "pending_ext")
+        waiting = s.exec(select(ScheduledUpload).where(ScheduledUpload.status == "pending_ext",
+                                                       ScheduledUpload.scheduled_for <= now)
                          .order_by(ScheduledUpload.scheduled_for, ScheduledUpload.id)).all()
     seen: set[int] = set()
     for row in waiting:
@@ -546,10 +591,10 @@ def _promote(now: datetime) -> None:
 
 
 def _create_child(row: ScheduledUpload, acct: Account, name: str, options: dict) -> Optional[str]:
-    """Child + parent pending_ext -> waiting_ext in ONE transaction, fenced on the attempt."""
+    """Child + parent pending_ext -> waiting_ext with attempt + 1, in ONE transaction, fenced on the attempt."""
     with Session(_api_db.engine) as s:
         entry = s.get(UploadHistory, schedule_key(row))
-        job = ExtensionJob(id="ej_" + secrets.token_hex(12), schedule_id=row.id, attempt=row.attempts,
+        job = ExtensionJob(id="ej_" + secrets.token_hex(12), schedule_id=row.id, attempt=row.attempts + 1,
                            schedule_key=schedule_key(row), request_id=entry.request_id if entry else None,
                            account_id=acct.id, expect_user_id=acct.chrome_user_id, video_name=name,
                            caption=row.title, options_json=json.dumps(options), nonce=secrets.token_hex(16))
@@ -558,7 +603,8 @@ def _create_child(row: ScheduledUpload, acct: Account, name: str, options: dict)
             s.flush()
             won = s.exec(update(ScheduledUpload).where(
                 ScheduledUpload.id == row.id, ScheduledUpload.attempts == row.attempts,
-                ScheduledUpload.status == "pending_ext").values(status="waiting_ext", updated_at=now_utc())).rowcount
+                ScheduledUpload.status == "pending_ext").values(
+                status="waiting_ext", attempts=row.attempts + 1, heartbeat_at=None, updated_at=now_utc())).rowcount
             if won != 1:
                 s.rollback()
                 return None
@@ -576,7 +622,7 @@ def _create_child(row: ScheduledUpload, acct: Account, name: str, options: dict)
 def reconcile_ext() -> None:
     """Idempotent; safe from several threads and processes. Deadlines, results, promotion."""
     now = now_utc()
-    for step in (_expire, _finalize_all, _promote):
+    for step in (_expire, _finalize_all, _adopt_pending, _promote):
         try:
             step(now)
         except OperationalError:
@@ -593,9 +639,9 @@ def _finalize_all(_now: datetime) -> None:
 
 
 def active_children(session: Session) -> int:
-    """Children Chrome may be working on right now (claimed..authorized): the installer drains these."""
+    """Unfinished children (queued..authorized): Chrome may claim or be posting them, so the installer drains these."""
     return session.exec(select(func.count()).select_from(ExtensionJob)
-                        .where(ExtensionJob.state.in_(RUNNING + ("authorized",)))).one()
+                        .where(ExtensionJob.state.in_(PRE_AUTH + ("authorized",)))).one()
 
 
 # ---------- extension calls -------------------------------------------------
