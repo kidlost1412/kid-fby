@@ -104,6 +104,11 @@ async function closeJobWindow(a) {
 
 // ---------- job lifecycle ----------
 async function startJob(job, local) {
+  if (!['selftest', 'intercept', 'selfcheck'].includes(job.mode)) { // post mode is disabled in this step
+    await log(`từ chối job ${job.id}: chế độ "${job.mode}" bị tắt`, 'WARN');
+    if (!local) await api('/api/result', { method: 'POST', body: { id: job.id, nonce: job.nonce, outcome: 'failed', definite: true, reason: 'mode-disabled' } }).catch((e) => log('gửi từ chối lỗi: ' + e.message, 'WARN'));
+    return;
+  }
   const claimed = await locked(async () => {
     const { activeJob, lastDoneId } = await chrome.storage.local.get(['activeJob', 'lastDoneId']);
     if (activeJob) return { ok: false, resume: activeJob.id === job.id };
@@ -321,26 +326,7 @@ const handlers = {
   },
 
   // One-time permission to click Post. Persist FIRST (conservative: a crash after this point = uncertain).
-  async authorize(msg, sender) {
-    const a = await jobFor(sender, msg);
-    if (!a) return { ok: false, reason: 'no-job' };
-    if (a.mode !== 'intercept' && a.mode !== 'post') return { ok: false, reason: 'mode-' + a.mode };
-    const won = await locked(async () => {
-      const cur = await getActive();
-      if (!cur || cur.id !== a.id || cur.authorized || cur.finished) return false;
-      await chrome.storage.local.set({ activeJob: Object.assign({}, cur, { authorized: true, authorizedAt: Date.now() }) });
-      return true;
-    });
-    if (!won) return { ok: false, reason: 'already-authorized' };
-    if (!a.local) {
-      try {
-        const r = await api('/api/authorize', { method: 'POST', body: { id: a.id, nonce: a.nonce } });
-        if (!r || !r.ok) return { ok: false, reason: 'server-denied:' + (r && r.reason) };
-      } catch (e) { return { ok: false, reason: 'server-unreachable:' + e.message }; }
-    }
-    await log('ĐÃ CẤP QUYỀN bấm Đăng (một lần)');
-    return { ok: true };
-  },
+  async authorize() { return { ok: false, reason: 'post-disabled' }; }, // no publish path exists in this step
 
   async result(msg, sender) {
     const a = await jobFor(sender, msg);

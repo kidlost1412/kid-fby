@@ -19,15 +19,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-MODES = ("selftest", "intercept", "post")
+# Post mode is disabled in the upload-only spike: no code path can authorize or send a post.
+MODES = ("selftest", "intercept")
 VISIBILITY = ("public", "friends", "private")
 
 
 class State:
-    def __init__(self, token: str, video: Path, log_path: Path | None, allow_post: bool):
+    def __init__(self, token: str, video: Path, log_path: Path | None):
         self.token = token
         self.video = video
-        self.allow_post = allow_post
         self.stale_s = 120.0
         self.log_path = log_path
         self.lock = threading.Lock()
@@ -45,19 +45,20 @@ class State:
                 f.write(line + "\n")
 
     def add_job(self, caption: str, mode: str = "selftest", visibility: str = "private",
-                schedule_time: str | None = None, expect_account: str | None = None) -> dict:
+                schedule_time: str | None = None, expect_account: str | None = None,
+                chunk_credentials: str = "omit") -> dict:
         if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}")
         if visibility not in VISIBILITY:
             raise ValueError(f"visibility must be one of {VISIBILITY}")
-        if mode == "post" and not self.allow_post:
-            raise ValueError("mode 'post' needs the server to be started with --allow-post")
+        if chunk_credentials not in ("omit", "include"):
+            raise ValueError("chunk_credentials must be 'omit' or 'include'")
         if not self.video.is_file():
             raise ValueError(f"video not found: {self.video}")
         job = {
             "id": "job-" + secrets.token_hex(4), "nonce": secrets.token_hex(8), "caption": caption,
             "visibility": visibility, "schedule_time": schedule_time, "mode": mode,
-            "expect_account": expect_account,
+            "expect_account": expect_account, "chunk_credentials": chunk_credentials,
             "video": {"name": self.video.name, "size": self.video.stat().st_size,
                       "type": mimetypes.guess_type(self.video.name)[0] or "video/mp4"},
         }
@@ -149,7 +150,8 @@ def make_server(state: State, port: int = 8799) -> ThreadingHTTPServer:
             if path == "/api/jobs":
                 try:
                     job = state.add_job(body.get("caption", ""), body.get("mode", "selftest"), body.get("visibility", "private"),
-                                        body.get("schedule_time"), body.get("expect_account"))
+                                        body.get("schedule_time"), body.get("expect_account"),
+                                        body.get("chunk_credentials", "omit"))
                 except ValueError as exc:
                     return self._json(400, {"error": str(exc)})
                 return self._json(200, job)
@@ -167,19 +169,9 @@ def make_server(state: State, port: int = 8799) -> ThreadingHTTPServer:
                 state.log("progress", id=e["job"]["id"], phase=body.get("phase"), msg=body.get("msg"), pct=body.get("pct"), extra=body.get("extra"))
                 return self._json(200, {"ok": True})
             if path == "/api/authorize":
-                with state.lock:
-                    mode = e["job"]["mode"]
-                    if mode == "selftest":
-                        ok, reason = False, "selftest-never-authorizes"
-                    elif e["authorized"]:
-                        ok, reason = False, "already-authorized"
-                    elif e["state"] == "done":
-                        ok, reason = False, "job-done"
-                    else:
-                        e["authorized"] = True
-                        ok, reason = True, None
-                state.log("authorize", id=e["job"]["id"], ok=ok, reason=reason)
-                return self._json(200, {"ok": ok, "reason": reason})
+                # Post mode is disabled: nothing is ever authorized (also true for cancelled/done jobs).
+                state.log("authorize", id=e["job"]["id"], ok=False, reason="post-disabled")
+                return self._json(200, {"ok": False, "reason": "post-disabled"})
             if path == "/api/cancel":
                 with state.lock:
                     if e["state"] != "done":
@@ -273,13 +265,13 @@ def main(argv=None) -> int:
     ap.add_argument("--expect-account", default=None, help="TikTok unique id the page must be logged in as")
     ap.add_argument("--port", type=int, default=8799)
     ap.add_argument("--log", type=Path, default=Path(__file__).with_name("logs") / "autotok-dev.jsonl")
-    ap.add_argument("--allow-post", action="store_true", help="REQUIRED for --mode post (really posts to TikTok)")
+    ap.add_argument("--chunk-credentials", choices=("omit", "include"), default="omit", help="fetch credentials mode for the storage host")
     a = ap.parse_args(argv)
     if a.log:
         a.log.parent.mkdir(parents=True, exist_ok=True)
-    state = State(a.token, a.video.resolve(), a.log, a.allow_post)
+    state = State(a.token, a.video.resolve(), a.log)
     try:
-        state.add_job(a.caption, a.mode, a.visibility, a.schedule, a.expect_account)
+        state.add_job(a.caption, a.mode, a.visibility, a.schedule, a.expect_account, a.chunk_credentials)
     except ValueError as exc:
         print("error:", exc, file=sys.stderr)
         return 2

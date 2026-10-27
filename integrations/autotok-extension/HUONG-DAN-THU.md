@@ -58,3 +58,12 @@ Dùng video ~70 MB cho các mục 1–3.
 - Selector của Studio **chưa kiểm trên trang thật** (danh sách ở `selectors.js`, nhiều ứng viên/mục). Bước nào không tìm thấy sẽ báo `selector-missing` kèm bản tóm tắt DOM để chỉnh.
 - Bộ chọn ngày/giờ hẹn giờ là phần đoán nhiều nhất.
 - `tabs.discard`/Chrome đóng giữa chừng: SW kết thúc job là `failed` (trước khi cấp quyền đăng) hoặc `uncertain` (sau đó).
+
+---
+## CẬP NHẬT P0b (bản hiện tại thay cho mục 3 và 5 ở trên)
+Tiện ích **không còn thao tác giao diện Studio** và **không có đường đăng bài** (chế độ `post` bị tắt cả ở server, tiện ích, trang).
+- `--mode selftest`: chỉ TẢI VIDEO LÊN máy chủ TikTok (tạo project → xin quyền → apply → gửi từng phần 5 MB → finish → commit) rồi dừng; báo `ids.video_id`, `ids.creation_id`. Đây là **upload thật** (có thể để lại bản nháp/video mồ côi trong tài khoản; hãy xem Drafts/Posts sau lần chạy đầu).
+- `--mode intercept`: như selftest + dựng đầy đủ body đăng (caption, text_extra, quyền riêng tư, lịch) và báo trong `body`, `sent:false`. Không gửi.
+- `--chunk-credentials omit|include`: chế độ cookie khi gửi phần video tới máy chủ lưu trữ (mặc định `omit`).
+Log mỗi bước (progress `step`): host+path, HTTP status, `readable`, `credentials`, ms, bộ nhớ JS. Lỗi CORS hiện là `network/CORS error ... Failed to fetch` kèm tên bước.
+Kiểm offline: `node --test tests\parity.test.js` (đối chiếu với Python), `python -m unittest test_devserver` trong `devserver`.

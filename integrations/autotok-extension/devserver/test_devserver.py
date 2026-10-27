@@ -24,8 +24,8 @@ class DevServerTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def start(self, allow_post=False):
-        self.state = devserver.State(TOKEN, self.video, self.log, allow_post)
+    def start(self):
+        self.state = devserver.State(TOKEN, self.video, self.log)
         self.srv = devserver.make_server(self.state, 0)
         self.base = f"http://127.0.0.1:{self.srv.server_address[1]}"
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
@@ -82,13 +82,15 @@ class DevServerTest(unittest.TestCase):
         code, data, _ = self.call(f"/api/video?id={job['id']}")
         self.assertEqual((code, data), (200, VIDEO_BYTES))
 
-    def test_authorize_is_one_time_and_selftest_never(self):
+    def test_authorize_is_always_denied_even_for_intercept_and_cancelled(self):
         self.start()
         a = self.state.add_job("c", "intercept")
         b = self.state.add_job("c", "selftest")
-        self.assertEqual(self.call("/api/authorize", {"id": a["id"], "nonce": a["nonce"]})[1], {"ok": True, "reason": None})
-        self.assertEqual(self.call("/api/authorize", {"id": a["id"], "nonce": a["nonce"]})[1], {"ok": False, "reason": "already-authorized"})
-        self.assertEqual(self.call("/api/authorize", {"id": b["id"], "nonce": b["nonce"]})[1]["ok"], False)
+        denied = {"ok": False, "reason": "post-disabled"}
+        self.assertEqual(self.call("/api/authorize", {"id": a["id"], "nonce": a["nonce"]})[1], denied)
+        self.assertEqual(self.call("/api/authorize", {"id": b["id"], "nonce": b["nonce"]})[1], denied)
+        self.call("/api/cancel", {"id": a["id"], "nonce": a["nonce"]})
+        self.assertEqual(self.call("/api/authorize", {"id": a["id"], "nonce": a["nonce"]})[1], denied)
 
     def test_nonce_checked(self):
         self.start()
@@ -131,14 +133,19 @@ class DevServerTest(unittest.TestCase):
         self.assertEqual(self.call(f"/api/job_state?id={a['id']}")[1]["state"], "cancelled")
         self.assertEqual(self.call("/api/result", {"id": a["id"], "nonce": a["nonce"], "outcome": "x"})[1].get("cancelled"), True)
 
-    def test_post_mode_needs_allow_flag(self):
-        self.start(allow_post=False)
+    def test_post_mode_is_refused_everywhere(self):
+        self.start()
         with self.assertRaises(ValueError):
             self.state.add_job("c", "post")
         self.assertEqual(self.call("/api/jobs", {"caption": "c", "mode": "post"})[0], 400)
-        self.state.allow_post = True
-        self.assertEqual(self.call("/api/jobs", {"caption": "c", "mode": "post"})[0], 200)
+        self.assertEqual(self.call("/api/jobs", {"caption": "c", "mode": "intercept"})[0], 200)
 
+    def test_chunk_credentials_validated_and_passed(self):
+        self.start()
+        self.assertEqual(self.state.add_job("c", "selftest")["chunk_credentials"], "omit")
+        self.assertEqual(self.state.add_job("c", "selftest", chunk_credentials="include")["chunk_credentials"], "include")
+        with self.assertRaises(ValueError):
+            self.state.add_job("c", "selftest", chunk_credentials="same-origin")
 
 if __name__ == "__main__":
     unittest.main()

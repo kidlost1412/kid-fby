@@ -3,8 +3,8 @@
 // and the UI updates through storage.onChanged.
 const $ = (id) => document.getElementById(id);
 const nudge = (popup) => { try { chrome.runtime.sendMessage({ popup }).catch(() => {}); } catch (_) { /* SW asleep: it wakes on its own */ } };
-const STEPS = ['start', 'identity', 'transfer', 'attach', 'processing', 'processed', 'caption', 'visibility', 'schedule', 'post'];
-const STEP_VI = { start: 'bắt đầu', identity: 'kiểm tra tài khoản', transfer: 'chuyển video', attach: 'gán file', processing: 'TikTok xử lý video', processed: 'xử lý xong', caption: 'điền caption', visibility: 'quyền riêng tư', schedule: 'hẹn giờ', post: 'bấm Đăng', hello: 'bắt đầu', opened: 'mở cửa sổ', opening: 'mở cửa sổ', 'content-ready': 'trang đã sẵn sàng' };
+const STEPS = ['start', 'identity', 'transfer-in', 'step', 'transfer'];
+const STEP_VI = { 'transfer-in': 'nhận video từ máy chủ', step: 'gọi TikTok (tải lên)',  start: 'bắt đầu', identity: 'kiểm tra tài khoản', transfer: 'chuyển video', attach: 'gán file', processing: 'TikTok xử lý video', processed: 'xử lý xong', caption: 'điền caption', visibility: 'quyền riêng tư', schedule: 'hẹn giờ', post: 'bấm Đăng', hello: 'bắt đầu', opened: 'mở cửa sổ', opening: 'mở cửa sổ', 'content-ready': 'trang đã sẵn sàng' };
 let last = {};
 let formFilled = false;
 
