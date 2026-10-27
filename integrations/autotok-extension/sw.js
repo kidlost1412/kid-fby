@@ -59,7 +59,7 @@ async function api(path, { method = 'GET', body, timeoutMs = 15000, raw = false,
     });
     if (raw) return r;
     if (r.status === 204) return null;
-    if (!r.ok) throw new Error(`${method} ${path} -> HTTP ${r.status}`);
+    if (!r.ok) { const err = new Error(`${method} ${path} -> HTTP ${r.status}`); err.status = r.status; throw err; }
     return await r.json();
   } finally { clearTimeout(timer); }
 }
@@ -135,16 +135,34 @@ async function finishJob(id, result) {
   await chrome.storage.local.set({ lastResult: full });
   if (full.identity && full.identity.value) await chrome.storage.local.set({ account: full.identity.value });
   await closeJobWindow(a);
-  if (!a.local) {
-    try {
-      await api('/api/result', { method: 'POST', body: full, timeoutMs: 20000 });
-    } catch (e) {
-      await log('gửi kết quả lỗi, sẽ thử lại: ' + e.message, 'WARN');
-      return { ok: true, pending: true };
-    }
-  }
+  if (!a.local && !(await deliverResult(a, full))) return { ok: true, pending: true };
   await locked(async () => { await chrome.storage.local.set({ lastDoneId: id }); await chrome.storage.local.remove('activeJob'); });
   return { ok: true };
+}
+
+const isGone = (e) => e && (e.status === 404 || e.status === 403);
+
+// Drop a job the server no longer knows (404/403): keep the result for diagnosis, never retry it.
+async function dropOrphan(a, result, why) {
+  await log(`máy chủ không còn việc này, bỏ kết quả (${why})`, 'WARN');
+  if (result) await chrome.storage.local.set({ lastOrphanResult: { id: a.id, result, at: Date.now() } });
+  await closeJobWindow(a);
+  await locked(async () => { await chrome.storage.local.set({ lastDoneId: a.id }); await chrome.storage.local.remove('activeJob'); });
+}
+
+// true = delivered or dropped (job cleared); false = transient failure, retry later with capped backoff.
+async function deliverResult(a, full) {
+  try {
+    await api('/api/result', { method: 'POST', body: full, timeoutMs: 20000 });
+    return true;
+  } catch (e) {
+    if (isGone(e)) { await dropOrphan(a, full, e.message); return false; }
+    const tries = (a.resultTries || 0) + 1;
+    const delay = Math.min(2000 * 2 ** tries, 30000);
+    await patchActive({ resultTries: tries, nextResultTry: Date.now() + delay }, a.id);
+    await log(`gửi kết quả lỗi (${e.message}), thử lại sau ${delay / 1000}s`, 'WARN');
+    return false;
+  }
 }
 
 async function findJobTab(a) {
@@ -157,10 +175,11 @@ async function recover() {
   const a = await getActive();
   if (!a) return false;
   if (a.finished) { // result not delivered yet
-    if (!a.local) {
-      try { await api('/api/result', { method: 'POST', body: Object.assign({ id: a.id, nonce: a.nonce, authorized: a.authorized }, a.result) });
-        await locked(async () => { await chrome.storage.local.set({ lastDoneId: a.id }); await chrome.storage.local.remove('activeJob'); });
-      } catch (e) { await log('thử lại gửi kết quả: ' + e.message, 'WARN'); }
+    if (!a.local && Date.now() >= (a.nextResultTry || 0)) {
+      const full = Object.assign({ id: a.id, nonce: a.nonce, authorized: a.authorized }, a.result);
+      if (await deliverResult(a, full)) await locked(async () => { await chrome.storage.local.set({ lastDoneId: a.id }); await chrome.storage.local.remove('activeJob'); });
+    } else if (a.local) {
+      await locked(async () => { await chrome.storage.local.set({ lastDoneId: a.id }); await chrome.storage.local.remove('activeJob'); });
     }
     return true;
   }
@@ -266,7 +285,7 @@ const handlers = {
     const mine = !!(a && !a.finished && sender.tab && (a.tabId === sender.tab.id || (sender.tab.url || '').includes('#autotok=' + encodeURIComponent(a.id))));
     await log(`content script ${msg.stage} tab=${sender.tab && sender.tab.id} ${msg.where} job=${mine ? a.id : '-'}`);
     if (mine && !a.local) api('/api/progress', { method: 'POST', body: { id: a.id, nonce: a.nonce, phase: 'content-ready', msg: msg.stage + ' ' + msg.where, extra: { tabId: sender.tab.id, state: msg.state } } })
-      .catch((e) => log('gửi ready lỗi: ' + e.message, 'WARN'));
+      .catch((e) => (isGone(e) ? dropOrphan(a, null, 'ready ' + e.message) : log('gửi ready lỗi: ' + e.message, 'WARN')));
     return { ok: true };
   },
 
@@ -277,7 +296,7 @@ const handlers = {
     if (msg.phase === 'identity' && msg.extra && msg.extra.account) await chrome.storage.local.set({ account: msg.extra.account });
     await log(`[${msg.phase}] ${msg.msg || ''}${msg.pct != null ? ' ' + msg.pct + '%' : ''}`);
     if (!a.local) api('/api/progress', { method: 'POST', body: { id: a.id, nonce: a.nonce, phase: msg.phase, msg: msg.msg, pct: msg.pct, extra: msg.extra } })
-      .catch((e) => log('gửi tiến độ lỗi: ' + e.message, 'WARN'));
+      .catch((e) => (isGone(e) ? dropOrphan(a, null, 'progress ' + e.message) : log('gửi tiến độ lỗi: ' + e.message, 'WARN')));
     return { ok: true };
   },
 
@@ -356,7 +375,7 @@ const popup = {
   async clear() { // abandon the active job (e.g. after a test); does not post anything
     const a = await getActive();
     if (a) {
-      if (!a.local) await api('/api/cancel', { method: 'POST', body: { id: a.id, nonce: a.nonce }, timeoutMs: 5000 }).catch((e) => log('cancel lỗi: ' + e.message, 'WARN'));
+      if (!a.local && !a.finished) await api('/api/cancel', { method: 'POST', body: { id: a.id, nonce: a.nonce }, timeoutMs: 5000 }).catch((e) => log('cancel lỗi (xoá local tiếp): ' + e.message, 'WARN'));
       try { if (a.strategy === 'tab' && a.tabId != null) await chrome.tabs.remove(a.tabId); else if (a.windowId != null) await chrome.windows.remove(a.windowId); } catch (e) { await log('đóng cửa sổ: ' + e.message, 'WARN'); }
       await chrome.storage.local.set({ lastDoneId: a.id });
     }
