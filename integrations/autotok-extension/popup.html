@@ -1,31 +1,40 @@
 <!doctype html>
-<html lang="vi"><head><meta charset="utf-8"><title>AutoTok P0</title>
+<html lang="vi"><head><meta charset="utf-8"><title>AutoTok</title>
 <style>
-body{font:12px/1.4 Segoe UI,sans-serif;width:420px;margin:8px}
-input,select,button{font:inherit;margin:2px 0}
-input[type=text],input[type=password]{width:100%;box-sizing:border-box}
-pre{background:#111;color:#ddd;padding:6px;max-height:220px;overflow:auto;white-space:pre-wrap;margin:4px 0}
-.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-#state{font-weight:bold}
-</style></head><body>
-<div id="state">...</div>
-<div id="poll"></div>
-<div class="row">
-  <button id="selfcheck">Tự kiểm (không đăng)</button>
-  <button id="pollnow">Hỏi job ngay</button>
-  <button id="clear">Xoá job/log</button>
-  <button id="copy">Chép kết quả cuối</button>
-</div>
-<details><summary>Cài đặt</summary>
-  Địa chỉ dev server <input type="text" id="server">
-  Token <input type="password" id="token">
-  Kiểu cửa sổ
-  <select id="strategy"><option value="minimized">Thu nhỏ (minimized)</option><option value="unfocused">Cửa sổ thường, không focus</option><option value="tab">Tab nền</option></select>
-  <label><input type="checkbox" id="keepOpen"> Giữ cửa sổ sau khi xong (để xem)</label>
-  <label><input type="checkbox" id="polling"> Bật nhận job</label>
-  <button id="save">Lưu</button>
-</details>
-<b>Log</b><pre id="log"></pre>
-<b>Kết quả cuối</b><pre id="last"></pre>
-<script src="popup.js"></script>
-</body></html>
+:root{--cream:#FFFAF0;--card:#fff;--pink:#FED7E2;--pinkline:#F59ABD;--mint:#C6F6D5;--mintline:#7ED39C;--coral:#FFE4E4;--coralline:#FF6B6B;--ink:#4A3428;--muted:#7F6452;--peach:#FEEBC8}
+*{box-sizing:border-box}
+body{margin:0;width:340px;background:var(--cream);color:var(--ink);font:13px/1.4 Nunito,"Segoe UI Variable","Segoe UI",system-ui,sans-serif}
+.wrap{padding:10px;display:flex;flex-direction:column;gap:8px}
+.card{background:var(--card);border:2px solid var(--ink);border-radius:16px;padding:10px 12px;box-shadow:2px 3px 0 rgba(91,58,41,.18)}
+.title{font-weight:800;font-size:15px}
+.big{font-weight:800;font-size:15px}
+.sub{color:var(--muted);font-size:12px;margin-top:2px;word-break:break-word}
+.bar{height:10px;border-radius:99px;background:var(--peach);margin-top:8px;overflow:hidden;border:1.5px solid var(--ink)}
+.bar>i{display:block;height:100%;width:0;background:var(--pinkline);transition:width .3s}
+.st-idle{background:var(--mint)}.st-run{background:var(--pink)}.st-err{background:var(--coral)}
+.row{display:flex;align-items:center;gap:8px}
+.dot{width:12px;height:12px;border-radius:50%;border:2px solid var(--ink);background:#ccc;flex:none}
+.dot.ok{background:var(--mintline)}.dot.bad{background:var(--coralline)}
+button{font:inherit;font-weight:800;color:var(--ink);background:var(--pink);border:2px solid var(--ink);border-radius:99px;padding:8px 12px;cursor:pointer;min-height:36px;flex:1}
+button:hover{background:var(--peach)}
+button.small{flex:none;padding:4px 10px;min-height:28px;font-size:12px}
+details{background:var(--card);border:2px solid var(--ink);border-radius:16px;padding:8px 12px}
+summary{font-weight:800;cursor:pointer}
+label{display:block;margin-top:6px;font-size:12px;color:var(--muted)}
+input[type=text],input[type=password],select{width:100%;font:inherit;padding:6px 8px;border:2px solid var(--ink);border-radius:10px;background:var(--cream);color:var(--ink)}
+.chk{display:flex;gap:6px;align-items:center;color:var(--ink)}
+pre{margin:6px 0;background:var(--cream);border:1.5px solid var(--ink);border-radius:10px;padding:6px;max-height:160px;overflow:auto;white-space:pre-wrap;font:11px/1.4 Consolas,monospace}
+</style></head><body><div class="wrap">
+<div class="card st-idle" id="status"><div class="big" id="sTitle">Đang rảnh</div><div class="sub" id="sSub"></div><div class="bar" id="bar" hidden><i id="barFill"></i></div></div>
+<div class="card"><div class="row"><span class="dot" id="srvDot"></span><div><div class="big" id="srvText">Máy chủ: chưa rõ</div><div class="sub" id="srvSub"></div></div></div>
+<div class="sub" id="acct" style="margin-top:6px">Tài khoản TikTok: chưa biết</div></div>
+<div class="row"><button id="selfcheck">Tự kiểm</button><button id="pollnow">Hỏi việc ngay</button></div>
+<details id="dSet"><summary>Cài đặt</summary>
+<label>Token</label><input type="password" id="token">
+<label>Địa chỉ máy chủ</label><input type="text" id="server">
+<label>Kiểu cửa sổ</label><select id="strategy"><option value="minimized">Thu nhỏ</option><option value="unfocused">Cửa sổ thường, không focus</option><option value="tab">Tab nền</option></select>
+<label class="chk"><input type="checkbox" id="polling"> Bật nhận việc</label>
+<label class="chk"><input type="checkbox" id="keepOpen"> Giữ cửa sổ sau khi xong</label>
+<div class="row" style="margin-top:8px"><button id="save" class="small">Lưu</button><span class="sub" id="saved"></span></div></details>
+<details id="dLog"><summary>Nhật ký</summary><pre id="log"></pre><div class="row"><button id="copy" class="small">Chép kết quả</button><button id="clear" class="small">Xoá việc/nhật ký</button></div></details>
+</div><script src="popup.js"></script></body></html>

@@ -347,7 +347,7 @@
     if (/\/login/.test(location.pathname)) throw new StepError('not-logged-in', location.href);
     await report('start', `bắt đầu ${job.mode}, caption ${job.caption.length} ký tự`);
     R.identity = await checkIdentity(job);
-    await report('identity', 'tài khoản: ' + R.identity.value + ' (' + R.identity.source + ')');
+    await report('identity', 'tài khoản: ' + R.identity.value + ' (' + R.identity.source + ')', null, { account: R.identity.value });
 
     await waitFor(() => S.find('fileInput').el, { timeout: CFG.fileInputMs, what: 'ô chọn file' });
     const { file, stats } = await buildFile();

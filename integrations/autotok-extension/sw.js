@@ -131,6 +131,7 @@ async function finishJob(id, result) {
   const full = Object.assign({ id, nonce: a.nonce, elapsed_ms: Date.now() - a.startedAt, authorized: a.authorized }, result);
   await log(`kết quả job ${id}: ${full.outcome}${full.reason ? ' (' + full.reason + ')' : ''}`);
   await chrome.storage.local.set({ lastResult: full });
+  if (full.identity && full.identity.value) await chrome.storage.local.set({ account: full.identity.value });
   await closeJobWindow(a);
   if (!a.local) {
     try {
@@ -261,7 +262,8 @@ const handlers = {
   async progress(msg, sender) {
     const a = await jobFor(sender, msg);
     if (!a) return { ok: false };
-    await patchActive({ phase: msg.phase, lastBeat: Date.now() }, a.id);
+    await patchActive({ phase: msg.phase, pct: msg.pct == null ? null : msg.pct, lastBeat: Date.now() }, a.id);
+    if (msg.phase === 'identity' && msg.extra && msg.extra.account) await chrome.storage.local.set({ account: msg.extra.account });
     await log(`[${msg.phase}] ${msg.msg || ''}${msg.pct != null ? ' ' + msg.pct + '%' : ''}`);
     if (!a.local) api('/api/progress', { method: 'POST', body: { id: a.id, nonce: a.nonce, phase: msg.phase, msg: msg.msg, pct: msg.pct, extra: msg.extra } })
       .catch((e) => log('gửi tiến độ lỗi: ' + e.message, 'WARN'));
