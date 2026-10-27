@@ -771,3 +771,49 @@ def test_health_counts_queued_children_for_the_installer_drain(engine, app, vide
     worker.tick()
     assert children(engine)[0].state == "queued"
     assert app.get("/health").json()["ext_active"] == 1
+
+
+def test_health_stays_responsive_while_an_ext_handler_waits_on_the_database(engine, cookie_calls, monkeypatch):
+    """QA fix 3: /api/ext/* handlers are async; their SQLite work must run off the event loop. The handler's
+    database call is made slow (3 s, like a busy_timeout wait); /health must still answer at once."""
+    import socket
+    import time
+    import httpx
+    import uvicorn
+
+    real = ext.bound_account
+
+    def slow_bound_account(*a, **k):
+        time.sleep(3)
+        return real(*a, **k)
+
+    monkeypatch.setattr(ext, "bound_account", slow_bound_account)
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    server = uvicorn.Server(uvicorn.Config(create_app(), host="127.0.0.1", port=port, log_level="warning"))
+    t = threading.Thread(target=server.run, daemon=True)
+    t.start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            time.sleep(0.05)
+        hdr = {"X-Requested-With": "autotok"}
+        code = httpx.post(base + "/api/ext/pair-code", headers=hdr).json()["code"]
+        token = httpx.post(base + "/api/ext/pair", headers=hdr, json={"code": code, "protocol": 1}).json()["token"]
+        slow = threading.Thread(target=lambda: httpx.post(
+            base + "/api/ext/hello", timeout=30, headers={**hdr, "Authorization": "Bearer " + token,
+                                                           "X-Autotok-Protocol": "1"},
+            json={"protocol": 1, "identity": {"username": "alice", "user_id": UID_A}}))
+        slow.start()
+        time.sleep(0.7)  # hello is inside its slow database call
+        t0 = time.monotonic()
+        assert httpx.get(base + "/health", timeout=10).status_code == 200
+        assert time.monotonic() - t0 < 1.5, "event loop blocked by a database call"
+        slow.join(timeout=30)
+    finally:
+        server.should_exit = True
+        t.join(timeout=10)

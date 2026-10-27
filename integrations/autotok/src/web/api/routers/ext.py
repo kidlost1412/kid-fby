@@ -93,6 +93,10 @@ def _owned(session: Session, body: dict) -> ExtensionJob:
 @router.post("/pair")
 async def pair(request: Request, session: Session = Depends(get_session)):
     body = await _json(request)
+    return await run_in_threadpool(_pair, body, request, session)  # SQLite work off the event loop
+
+
+def _pair(body: dict, request, session):
     try:
         protocol = int(body.get("protocol", 0))
     except (TypeError, ValueError):
@@ -113,6 +117,10 @@ async def pair(request: Request, session: Session = Depends(get_session)):
 async def hello(request: Request, client: ExtensionClient = Depends(current_client),
                 session: Session = Depends(get_session)):
     body = await _json(request)
+    return await run_in_threadpool(_hello, body, request, client, session)  # SQLite work off the event loop
+
+
+def _hello(body: dict, request, client, session):
     identity = body.get("identity")
     username = user_id = None
     if isinstance(identity, dict) and identity.get("user_id") and identity.get("username"):
@@ -224,6 +232,10 @@ def video(id: str, request: Request, client: ExtensionClient = Depends(current_c
 async def progress(request: Request, client: ExtensionClient = Depends(current_client),
                    session: Session = Depends(get_session)):
     body = await _json(request)
+    return await run_in_threadpool(_progress, body, request, client, session)  # SQLite work off the event loop
+
+
+def _progress(body: dict, request, client, session):
     job = _owned(session, body)
     state = ext.heartbeat(job, ready=body.get("phase") == "ready")
     if state == "revoked":
@@ -235,6 +247,10 @@ async def progress(request: Request, client: ExtensionClient = Depends(current_c
 async def authorize(request: Request, client: ExtensionClient = Depends(current_client),
                     session: Session = Depends(get_session)):
     body = await _json(request)
+    return await run_in_threadpool(_authorize, body, request, client, session)  # SQLite work off the event loop
+
+
+def _authorize(body: dict, request, client, session):
     job = _owned(session, body)
     reason = ext.authorize_refusal(session, job, client, body, _protocol(request))
     if reason is None:
@@ -255,6 +271,10 @@ async def authorize(request: Request, client: ExtensionClient = Depends(current_
 async def result(request: Request, client: ExtensionClient = Depends(current_client),
                  session: Session = Depends(get_session)):
     body = await _json(request)
+    return await run_in_threadpool(_result, body, request, client, session)  # SQLite work off the event loop
+
+
+def _result(body: dict, request, client, session):
     job = _owned(session, body)
     duplicate, state = ext.ingest_result(job.id, body)
     ext.log.info("ext: result job=%s client=%s outcome=%s duplicate=%s", job.id, client.id, body.get("outcome"), duplicate)
@@ -266,6 +286,10 @@ async def result(request: Request, client: ExtensionClient = Depends(current_cli
 async def cancel(request: Request, client: ExtensionClient = Depends(current_client),
                  session: Session = Depends(get_session)):
     body = await _json(request)
+    return await run_in_threadpool(_cancel, body, request, client, session)  # SQLite work off the event loop
+
+
+def _cancel(body: dict, request, client, session):
     job = _owned(session, body)
     if ext.revoke(job.id, ext.CANCEL_TEXT + (f" ({str(body.get('reason'))[:120]})" if body.get("reason") else "")):
         ext.reconcile_ext()
