@@ -46,20 +46,20 @@ const SHA = 'c'.repeat(64);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 test('SW authorize: overlapping requests (content retry) reach the server once; exactly one grant', async () => {
-  const sw = loadSw({ server: async (p) => { if (p === '/api/authorize') { await sleep(50); return json({ ok: true, reason: null }); } return json({ ok: true }); } });
+  const sw = loadSw({ server: async (p) => { if (p === '/api/ext/authorize') { await sleep(50); return json({ ok: true, reason: null }); } return json({ ok: true }); } });
   sw.store.activeJob = active();
   const msg = { type: 'authorize', nonce: 'N', sha: SHA, creation_id: 'C1' };
   const rs = await Promise.all([sw.send(msg), sw.send(msg), sw.send(msg)]);
   assert.equal(rs.filter((r) => r && r.ok).length, 1);
-  assert.equal(sw.calls.filter((c) => c.path === '/api/authorize').length, 1);
+  assert.equal(sw.calls.filter((c) => c.path === '/api/ext/authorize').length, 1);
   assert.equal(sw.store.activeJob.authorized, true);
 });
 
 test('SW authorize: reply lost (server unreachable) -> no grant now, and a reload later finishes as uncertain, never re-runs', async () => {
   let authCalls = 0;
   const sw = loadSw({ server: async (p) => {
-    if (p === '/api/authorize') { authCalls++; throw new TypeError('Failed to fetch'); }
-    if (p === '/api/job_state') return json({ state: 'running', authorized: false });   // server lost track; must not matter
+    if (p === '/api/ext/authorize') { authCalls++; throw new TypeError('Failed to fetch'); }
+    if (p === '/api/ext/job_state') return json({ state: 'running', authorized: false });   // server lost track; must not matter
     return json({ ok: true });
   } });
   sw.store.activeJob = active();
@@ -72,13 +72,13 @@ test('SW authorize: reply lost (server unreachable) -> no grant now, and a reloa
   const h = await sw.send({ type: 'hello', nonce: null });                            // tab reloaded
   assert.equal(h.role, 'none');
   await sleep(20);
-  const res = sw.calls.filter((c) => c.path === '/api/result');
+  const res = sw.calls.filter((c) => c.path === '/api/ext/result');
   assert.equal(res.length, 1);
   assert.equal(res[0].body.outcome, 'uncertain');
 });
 
 test('SW authorize: explicit server denial clears the local flag (nothing was sent); other tab cannot authorize', async () => {
-  const sw = loadSw({ server: async (p) => (p === '/api/authorize' ? json({ ok: false, reason: 'cancelled' }) : json({ ok: true })) });
+  const sw = loadSw({ server: async (p) => (p === '/api/ext/authorize' ? json({ ok: false, reason: 'cancelled' }) : json({ ok: true })) });
   sw.store.activeJob = active();
   const r = await sw.send({ type: 'authorize', nonce: 'N', sha: SHA, creation_id: 'C1' });
   assert.deepEqual([r.ok, r.reason, sw.store.activeJob.authorized], [false, 'cancelled', false]);
@@ -86,7 +86,7 @@ test('SW authorize: explicit server denial clears the local flag (nothing was se
   assert.equal(other.ok, false);
   const wrongNonce = await sw.send({ type: 'authorize', nonce: 'X', sha: SHA, creation_id: 'C1' });
   assert.equal(wrongNonce.ok, false);
-  assert.equal(sw.calls.filter((c) => c.path === '/api/authorize').length, 1);      // foreign tab / wrong nonce never reach the server
+  assert.equal(sw.calls.filter((c) => c.path === '/api/ext/authorize').length, 1);      // foreign tab / wrong nonce never reach the server
 });
 
 test('SW authorize: refused for non-post and finished jobs without contacting the server', async () => {
@@ -95,5 +95,5 @@ test('SW authorize: refused for non-post and finished jobs without contacting th
   assert.equal((await sw.send({ type: 'authorize', nonce: 'N', sha: SHA, creation_id: 'C1' })).ok, false);
   sw.store.activeJob = active({ finished: true });
   assert.equal((await sw.send({ type: 'authorize', nonce: 'N', sha: SHA, creation_id: 'C1' })).ok, false);
-  assert.equal(sw.calls.filter((c) => c.path === '/api/authorize').length, 0);
+  assert.equal(sw.calls.filter((c) => c.path === '/api/ext/authorize').length, 0);
 });

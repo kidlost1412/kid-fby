@@ -1,4 +1,5 @@
-// MAIN-world job runner (needs lib.js loaded first). P0b spike: upload-only selftest + intercept (body built, never sent).
+// MAIN-world job runner (needs lib.js loaded first). Production job = mode 'post' (protocol v1); selftest/intercept exist for
+// the dev-server test double only (upload-only / body built, never sent).
 // Publishing (post mode only) goes through ONE gated path: publishOnce(). Everything else never sends /project/post/.
 // Talks to content.js (isolated world) via window.postMessage {__autotok:1, nonce, ...}.
 (function () {
@@ -114,15 +115,11 @@
   }
 
   // Everything except `text`/`markup_text` content is kept; ids are not secrets. Nothing here is sent anywhere.
-  async function buildBody(job, ids, blob) {
-    const err = L.validateCaption(job.caption);
-    if (err) throw new StepFail('validate', err);
-    const vis = (() => { try { return L.visibilityCode(job.visibility); } catch (e) { throw new StepFail('validate', e.message); } })();
+  async function buildBody(job, ids, blob, v) {
     let sched = null;
-    if (job.schedule_time) {
-      const ts = Math.floor(new Date(job.schedule_time).getTime() / 1000);
-      if (!Number.isFinite(ts)) throw new StepFail('validate', 'bad schedule_time');
-      try { L.resolveSchedule(ts, Math.floor(Date.now() / 1000), vis); sched = L.finalizeSchedule(ts, Math.floor(Date.now() / 1000)); } catch (e) { throw new StepFail('validate', e.message); }
+    if (v.scheduleUnix != null) {
+      const now = Math.floor(Date.now() / 1000);
+      try { sched = L.finalizeSchedule(v.scheduleUnix, now); } catch (e) { throw new StepFail('schedule-expired', e.message, { notSent: true }); }
     }
     const userIds = {};
     for (const name of new Set(L.mentionsIn(job.caption))) {
@@ -130,14 +127,14 @@
     }
     const { markup, textExtra } = L.buildCaption(job.caption, userIds);
     const probe = await probeVideo(blob);
-    const payload = L.buildPayload({ creationId: ids.creation_id, videoId: ids.video_id, caption: job.caption, markup, textExtra, visibility: vis, probe, scheduleTime: sched });
+    const payload = L.buildPayload({ creationId: ids.creation_id, videoId: ids.video_id, caption: job.caption, markup, textExtra, visibility: v.vis, probe, scheduleTime: sched, ...v.options });
     return { payload, probe, resolvedMentions: Object.keys(userIds), tz: Intl.DateTimeFormat().resolvedOptions().timeZone };
   }
 
 
   // Strict identity: only the passport self endpoint decides (data.username + data.user_id_str).
   async function strictIdentity(job, when) {
-    if (job.mode === 'post' && !job.expect_account) throw new StepFail('identity', 'post needs expect_account');
+    if (job.mode === 'post' && (!job.expect_account || !job.expect_user_id)) throw new StepFail('identity', 'post needs expect_account and expect_user_id', { notSent: true });
     let j = null;
     try { j = await (await fetch('/passport/web/account/info/?aid=' + AID, { credentials: 'include' })).json(); } catch (e) { throw new StepFail('identity', 'passport lookup failed: ' + e.message); }
     const r = L.checkIdentity(j, { username: job.expect_account, userId: job.expect_user_id });
@@ -160,10 +157,10 @@
   }
 
   let authResolve = null;
-  function requestAuthorization(sha, creationId) {
+  function requestAuthorization(sha, creationId, binding) {
     return new Promise((resolve) => {
       authResolve = resolve;
-      post('auth-req', { sha, creation_id: creationId });
+      post('auth-req', Object.assign({ sha, creation_id: creationId }, binding));
       setTimeout(() => resolve({ ok: false, reason: 'authorize-timeout' }), 30000);
     });
   }
@@ -193,12 +190,15 @@
     return settled;                                   // correlated to this exact XHR object; never retried
   }
 
-  async function doPost(job, up, body, id) {
+  async function doPost(job, up, body, id) {   // id is replaced by the fresh pre-publish identity
     const bodyStr = JSON.stringify(body.payload);
     const sha = await L.sha256Hex(bodyStr);
     await waitSdk();
-    await strictIdentity(job, 'before-publish');
-    const auth = await requestAuthorization(sha, up.ids.creation_id);
+    id = await strictIdentity(job, 'before-publish');
+    const f0 = body.payload.feature_common_info_list[0];
+    const schedule = f0.schedule_time == null ? null : f0.schedule_time;
+    const auth = await requestAuthorization(sha, up.ids.creation_id, { visibility_type: f0.privacy_setting_info.visibility_type, schedule_time: schedule,
+      identity: { username: id.value, user_id: id.user_id } });
     if (!auth.ok) throw new StepFail('authorize', 'denied: ' + auth.reason);   // nothing sent
     gate.arm({ sha, creationId: up.ids.creation_id, nonce: NONCE });
     progress('post', 'ĐÃ cấp quyền, gửi 1 lần', null, { sha: sha.slice(0, 12) });
@@ -208,7 +208,8 @@
     if (res.error) return { outcome: 'uncertain', reason: 'xhr-' + res.error, detail: res.message, note: 'đã gửi, không có phản hồi' };
     const m = L.mapPublishResult(res.status, res.text);
     if (m.outcome === 'uncertain') m.text = res.text.slice(0, 300);
-    return Object.assign(m, { creation_id: up.ids.creation_id, video_id: up.ids.video_id, body_sha256: sha, identity: id });
+    m.response = L.sanitizeResponse(res.text);
+    return Object.assign(m, { schedule_time: schedule, creation_id: up.ids.creation_id, video_id: up.ids.video_id, body_sha256: sha, identity: id });
   }
 
   async function run(msg) {
@@ -216,8 +217,8 @@
     if (!MODES.includes(job.mode)) return post('done', { result: { outcome: 'failed', definite: true, reason: 'mode-disabled', detail: job.mode } });
     const t0 = Date.now();
     try {
-      const schedPublic = job.allow_public_schedule === true && job.visibility === 'public' && !!job.schedule_time;
-      if (job.mode === 'post' && !schedPublic && (job.visibility !== 'private' || job.schedule_time)) throw new StepFail('validate', 'post is limited to private, unscheduled in this prototype');
+      let v;
+      try { v = L.validateJob(job, Math.floor(Date.now() / 1000)); } catch (e) { throw new StepFail('validate', e.message, { notSent: true }); }   // before any upload
       const resp = await fetch(msg.blobUrl);
       const blob = await resp.blob();
       post('blob-ready', {});                      // content.js may revoke the Blob URL now
@@ -227,7 +228,7 @@
       const up = await upload(job, blob);
       let result = { outcome: job.mode === 'selftest' ? 'selftest_ok' : 'intercepted', note: 'đã tải video lên TikTok, CHƯA đăng', ids: up.ids, parts: up.parts, chunkCredentials: up.chunkCredentials, identity: id0, elapsed_ms: Date.now() - t0, mem: mem() };
       if (job.mode !== 'selftest') {
-        const b = await buildBody(job, up.ids, blob);
+        const b = await buildBody(job, up.ids, blob, v);
         if (job.mode === 'intercept') Object.assign(result, { sent: false, body: b.payload, probe: b.probe, resolvedMentions: b.resolvedMentions, tz: b.tz });
         else result = Object.assign({ ids: up.ids, parts: up.parts, elapsed_ms: Date.now() - t0 }, await doPost(job, up, b, id0));
       }

@@ -11,7 +11,12 @@
 'use strict';
 
 const STUDIO_URL = 'https://www.tiktok.com/tiktokstudio/upload';
-const DEFAULTS = { server: 'http://127.0.0.1:8799', token: '', windowStrategy: 'minimized', keepOpen: false, polling: true };
+const PROTOCOL = 1;
+const EXT_VERSION = (typeof chrome.runtime.getManifest === 'function' && chrome.runtime.getManifest().version) || '0.0.0';
+const DEFAULTS = { server: 'http://127.0.0.1:8765', token: '', clientId: null, windowStrategy: 'minimized', keepOpen: false, polling: true };
+const HELLO_EVERY_MS = 55 * 1000;
+const HEARTBEAT_EVERY_MS = 40 * 1000;
+const NEED_RELOAD_TEXT = 'Cần tải lại tiện ích (chrome://extensions → ⟳)';
 const JOB_DEADLINE_MS = 40 * 60 * 1000;   // whole job
 const STALL_MS = 5 * 60 * 1000;           // no progress message from the tab (minimized tabs are throttled)
 const CHUNK = 1024 * 1024;
@@ -45,23 +50,73 @@ function log(msg, level) {
   });
 }
 
-// ---------- dev server API ----------
-async function api(path, { method = 'GET', body, timeoutMs = 15000, raw = false, headers = {} } = {}) {
+// ---------- backend API (PROTOCOL.md v1) ----------
+const getConn = async () => (await chrome.storage.local.get('conn')).conn || { state: 'unpaired' };
+const setConn = (patch) => locked(async () => { const c = Object.assign({}, await getConn(), patch, { at: Date.now() }); await chrome.storage.local.set({ conn: c }); return c; });
+
+// Errors carry .status (HTTP), .code (protocol `error`) and .body. 401 / 409 states are recorded for the popup + poll loop.
+async function api(path, { method = 'GET', body, timeoutMs = 15000, raw = false, headers = {}, auth = true } = {}) {
   const s = await getSettings();
-  if (!s.token) throw new Error('chưa nhập token');
+  if (auth && !s.token) throw new Error('chưa ghép nối');
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const r = await fetch(s.server + path, {
-      method, signal: ctl.signal,
-      headers: Object.assign({ Authorization: 'Bearer ' + s.token }, body ? { 'Content-Type': 'application/json' } : {}, headers),
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    const h = Object.assign({ 'X-Autotok-Protocol': String(PROTOCOL) }, auth ? { Authorization: 'Bearer ' + s.token } : {},
+      method === 'POST' ? { 'X-Requested-With': 'autotok' } : {}, body ? { 'Content-Type': 'application/json; charset=utf-8' } : {}, headers);
+    const r = await fetch(s.server + path, { method, signal: ctl.signal, headers: h, body: body ? JSON.stringify(body) : undefined });
     if (raw) return r;
     if (r.status === 204) return null;
-    if (!r.ok) { const err = new Error(`${method} ${path} -> HTTP ${r.status}`); err.status = r.status; throw err; }
+    if (!r.ok) {
+      let b = null; try { b = await r.json(); } catch (_) { /* non-JSON error body */ }
+      const err = new Error((b && b.message) || `${method} ${path} -> HTTP ${r.status}`);
+      err.status = r.status; err.code = b && b.error; err.body = b;
+      await noteApiError(err);
+      throw err;
+    }
     return await r.json();
   } finally { clearTimeout(timer); }
+}
+
+async function noteApiError(e) {
+  if (e.status === 401) await setConn({ state: 'unauthorized', message: 'Cần ghép nối lại' });
+  else if (e.status === 409 && e.code === 'need_reload') await setConn({ state: 'need_reload', needReload: true, message: NEED_RELOAD_TEXT });
+  else if (e.status === 409 && (e.code === 'identity_conflict' || e.code === 'no_identity')) await setConn({ state: e.code === 'identity_conflict' ? 'conflict' : 'no_identity', message: e.message });
+}
+
+// What the backend wants for a result: snake_case, not_sent, submitted schedule, sanitized response.
+function toWire(a, r) {
+  const w = { id: a.id, nonce: a.nonce, claim_token: a.claim_token, outcome: r.outcome, definite: r.definite === true, not_sent: r.notSent === true,
+    reason: r.reason, detail: r.detail, http: r.http, status_code: r.status_code, status_msg: r.status_msg, item_id: r.item_id,
+    creation_id: r.creation_id, video_id: r.video_id, schedule_time: r.schedule_time == null ? null : r.schedule_time, response: r.response, elapsed_ms: r.elapsed_ms };
+  for (const k of Object.keys(w)) if (w[k] === undefined) delete w[k];
+  return w;
+}
+
+// Logged-in TikTok account of this Chrome profile: the passport self endpoint only (data.username + data.user_id_str).
+async function passportIdentity() {
+  try {
+    const r = await fetch('https://www.tiktok.com/passport/web/account/info/?aid=1988', { credentials: 'include' });
+    const d = ((await r.json()) || {}).data || {};
+    const username = typeof d.username === 'string' ? d.username.replace(/^@/, '').trim().toLowerCase() : '';
+    const userId = typeof d.user_id_str === 'string' ? d.user_id_str.trim() : '';
+    return username && userId ? { username, user_id: userId } : null;
+  } catch (e) { console.warn('[autotok] passport', e); return null; }
+}
+
+// hello: protocol + version + identity. Answers need_reload / conflict / bound account.
+async function sendHello() {
+  const identity = await passportIdentity();
+  const r = await api('/api/ext/hello', { method: 'POST', body: { protocol: PROTOCOL, ext_version: EXT_VERSION, identity } });
+  const state = r.need_reload ? 'need_reload' : r.conflict ? 'conflict' : !identity ? 'no_identity' : 'ok';
+  await setConn({ state, needReload: !!r.need_reload, message: r.need_reload ? (r.message || NEED_RELOAD_TEXT) : (r.message || ''),
+    identity, bound: r.account || null, helloAt: Date.now(), error: '' });
+  if (identity) await chrome.storage.local.set({ account: identity.username });
+  return r;
+}
+async function helloIfDue(force) {
+  const c = await getConn();
+  if (!force && c.helloAt && Date.now() - c.helloAt < HELLO_EVERY_MS) return;
+  try { await sendHello(); } catch (e) { console.warn('[autotok] hello', e); await setConn({ helloAt: Date.now() - HELLO_EVERY_MS + 10000, error: e.message }); }
 }
 
 function b64(buf) {
@@ -105,8 +160,8 @@ async function closeJobWindow(a) {
 // ---------- job lifecycle ----------
 async function startJob(job, local) {
   if (!['selftest', 'intercept', 'post', 'selfcheck'].includes(job.mode)) {
-    await log(`từ chối job ${job.id}: chế độ "${job.mode}" bị tắt`, 'WARN');
-    if (!local) await api('/api/result', { method: 'POST', body: { id: job.id, nonce: job.nonce, outcome: 'failed', definite: true, reason: 'mode-disabled' } }).catch((e) => log('gửi từ chối lỗi: ' + e.message, 'WARN'));
+    await log(`từ chối job ${job.id}: chế độ "${job.mode}" không hỗ trợ`, 'WARN');
+    if (!local) await api('/api/ext/result', { method: 'POST', body: { id: job.id, nonce: job.nonce, claim_token: job.claim_token, outcome: 'failed', definite: true, not_sent: true, reason: 'mode-unsupported' } }).catch((e) => log('gửi từ chối lỗi: ' + e.message, 'WARN'));
     return;
   }
   const claimed = await locked(async () => {
@@ -115,7 +170,7 @@ async function startJob(job, local) {
     if (lastDoneId === job.id) return { ok: false, resume: false };
     await chrome.storage.local.set({
       activeJob: {
-        id: job.id, nonce: job.nonce, mode: job.mode, job, local: !!local, phase: 'opening', openingAt: Date.now(),
+        id: job.id, nonce: job.nonce, claim_token: job.claim_token, mode: job.mode, job, local: !!local, phase: 'opening', openingAt: Date.now(),
         startedAt: Date.now(), lastBeat: Date.now(), tabId: null, windowId: null, authorized: false, finished: false,
       },
     });
@@ -149,7 +204,7 @@ async function finishJob(id, result) {
   const full = Object.assign({ id, nonce: a.nonce, elapsed_ms: Date.now() - a.startedAt, authorized: a.authorized }, final);
   await log(`kết quả job ${id}: ${full.outcome}${full.reason ? ' (' + full.reason + ')' : ''}`);
   await chrome.storage.local.set({ lastResult: full });
-  if (full.identity && full.identity.value) await chrome.storage.local.set({ account: full.identity.value });
+  if (full.identity && (full.identity.value || full.identity.username)) await chrome.storage.local.set({ account: full.identity.value || full.identity.username });
   await closeJobWindow(a);
   if (!a.local && !(await deliverResult(a, full))) return { ok: true, pending: true };
   await locked(async () => { await chrome.storage.local.set({ lastDoneId: id }); await chrome.storage.local.remove('activeJob'); });
@@ -169,7 +224,7 @@ async function dropOrphan(a, result, why) {
 // true = delivered or dropped (job cleared); false = transient failure, retry later with capped backoff.
 async function deliverResult(a, full) {
   try {
-    await api('/api/result', { method: 'POST', body: full, timeoutMs: 20000 });
+    await api('/api/ext/result', { method: 'POST', body: toWire(a, full), timeoutMs: 20000 });
     return true;
   } catch (e) {
     if (isGone(e)) { await dropOrphan(a, full, e.message); return false; }
@@ -184,6 +239,26 @@ async function deliverResult(a, full) {
 async function findJobTab(a) {
   const tabs = await chrome.tabs.query({ url: 'https://www.tiktok.com/*' });
   return tabs.find((x) => (x.url || '').includes('#autotok=' + encodeURIComponent(a.id))) || tabs.find((x) => x.windowId === a.windowId && a.strategy !== 'tab') || null;
+}
+
+// Revoked by the backend (deadline missed / cancelled in the app): never authorize, close the tab, forget the job.
+async function revokeLocal(a, why) {
+  await log(`backend đã thu hồi việc ${a.id} (${why})`, 'WARN');
+  await closeJobWindow(a);
+  await locked(async () => { await chrome.storage.local.set({ lastDoneId: a.id }); await chrome.storage.local.remove('activeJob'); });
+}
+
+// POST /api/ext/progress. -> {ok, revoked?}. Network errors are logged and reported as ok:true (a later heartbeat retries).
+async function sendProgress(a, p) {
+  try {
+    const r = await api('/api/ext/progress', { method: 'POST', timeoutMs: 10000, body: Object.assign({ id: a.id, nonce: a.nonce, claim_token: a.claim_token }, p) });
+    if (r && r.ok === false && (r.cancelled || r.state === 'revoked')) { await revokeLocal(a, 'progress'); return { ok: false, revoked: true }; }
+    return { ok: true };
+  } catch (e) {
+    if (isGone(e)) { await dropOrphan(a, null, 'progress ' + e.message); return { ok: false, revoked: true }; }
+    await log('gửi tiến độ lỗi: ' + e.message, 'WARN');
+    return { ok: true, unsent: true };
+  }
 }
 
 // Called on every tick and every wake-up: reconcile durable state with reality.
@@ -221,6 +296,11 @@ async function recover() {
       : { outcome: 'failed', definite: true, reason: 'tab-closed-before-authorization', detail: 'missing for ' + (now - a.missingSince) + ' ms, no tab with the job hash in window ' + a.windowId });
     return true;
   }
+  if (!a.local && !a.authorized && now - (a.hbAt || 0) > HEARTBEAT_EVERY_MS) { // backend deadline: a heartbeat at least every 60 s
+    await patchActive({ hbAt: now }, a.id);
+    const r = await sendProgress(a, { phase: a.phase, msg: 'heartbeat' });
+    if (r && r.revoked) return true;
+  }
   if (now - a.startedAt > JOB_DEADLINE_MS || now - a.lastBeat > STALL_MS) {
     const why = now - a.startedAt > JOB_DEADLINE_MS ? 'job-deadline' : 'tab-stalled';
     await finishJob(a.id, a.authorized ? { outcome: 'uncertain', reason: why + '-after-authorization' }
@@ -242,10 +322,15 @@ async function pollLoop() {
     for (;;) {
       try {
         const s = await getSettings();
-        if (!s.polling || !s.token) { await setPoll(s.token ? 'tắt' : 'chưa có token'); return; }
-        if (await recover()) { await wait(4000); continue; }
+        if (!s.polling || !s.token) { await setPoll(s.token ? 'tắt' : 'chưa ghép nối'); return; }
+        await helloIfDue();
+        if (await recover()) { await wait(4000); continue; }   // an active / undelivered job: no new claims
+        const c = await getConn();
+        if (c.state === 'unauthorized') { await setPoll('cần ghép nối lại'); return; }
+        if (c.needReload) { await setPoll('cần tải lại tiện ích'); await wait(10000); continue; }   // never claim while out of protocol range
+        if (c.state === 'conflict' || c.state === 'no_identity') { await setPoll(c.state === 'conflict' ? 'trùng tài khoản' : 'chưa đăng nhập TikTok'); await wait(10000); continue; }
         await setPoll('đang chờ job');
-        const job = await api('/api/next?wait=20', { timeoutMs: 30000 });
+        const job = await api('/api/ext/next?wait=20', { timeoutMs: 30000 });
         if (job) await startJob(job, false);
       } catch (e) {
         // includes "No SW" when Chrome tears the worker down mid-await: log, back off, alarm restarts us
@@ -285,8 +370,8 @@ const handlers = {
     }
     if (!a.local) { // resume only while the server still considers the job active
       let st = null;
-      try { st = await api('/api/job_state?id=' + encodeURIComponent(a.id), { timeoutMs: 5000 }); } catch (e) { await log('job_state: ' + e.message, 'WARN'); }
-      if (!st || st.state === 'cancelled' || st.state === 'done' || st.authorized) {
+      try { st = await api('/api/ext/job_state?id=' + encodeURIComponent(a.id), { timeoutMs: 5000 }); } catch (e) { await log('job_state: ' + e.message, 'WARN'); }
+      if (!st || !['claimed', 'uploading', 'ready'].includes(st.state) || st.authorized) {
         await log(`không tiếp tục job ${a.id}: server=${st && st.state}${st && st.authorized ? ' đã cấp quyền' : ''}`, 'WARN');
         await chrome.storage.local.set({ lastDoneId: a.id }); await chrome.storage.local.remove('activeJob');
         return { role: 'none' };
@@ -300,8 +385,7 @@ const handlers = {
     const a = await getActive();
     const mine = !!(a && !a.finished && sender.tab && (a.tabId === sender.tab.id || (sender.tab.url || '').includes('#autotok=' + encodeURIComponent(a.id))));
     await log(`content script ${msg.stage} tab=${sender.tab && sender.tab.id} ${msg.where} job=${mine ? a.id : '-'}`);
-    if (mine && !a.local) api('/api/progress', { method: 'POST', body: { id: a.id, nonce: a.nonce, phase: 'content-ready', msg: msg.stage + ' ' + msg.where, extra: { tabId: sender.tab.id, state: msg.state } } })
-      .catch((e) => (isGone(e) ? dropOrphan(a, null, 'ready ' + e.message) : log('gửi ready lỗi: ' + e.message, 'WARN')));
+    if (mine && !a.local) await sendProgress(a, { phase: 'content-ready', msg: msg.stage + ' ' + msg.where, extra: { tabId: sender.tab.id, state: msg.state } });
     return { ok: true };
   },
 
@@ -309,17 +393,19 @@ const handlers = {
     const a = await jobFor(sender, msg);
     if (!a) return { ok: false };
     await patchActive({ phase: msg.phase, pct: msg.pct == null ? null : msg.pct, lastBeat: Date.now() }, a.id);
-    if (msg.phase === 'identity' && msg.extra && msg.extra.ok && msg.extra.username) await chrome.storage.local.set({ account: msg.extra.username });
     await log(`[${msg.phase}] ${msg.msg || ''}${msg.pct != null ? ' ' + msg.pct + '%' : ''}`);
-    if (!a.local) api('/api/progress', { method: 'POST', body: { id: a.id, nonce: a.nonce, phase: msg.phase, msg: msg.msg, pct: msg.pct, extra: msg.extra } })
-      .catch((e) => (isGone(e) ? dropOrphan(a, null, 'progress ' + e.message) : log('gửi tiến độ lỗi: ' + e.message, 'WARN')));
+    if (!a.local) {
+      await patchActive({ hbAt: Date.now() }, a.id);
+      const r = await sendProgress(a, { phase: msg.phase, msg: msg.msg, pct: msg.pct, extra: msg.extra });
+      if (r.revoked) return { ok: false, revoked: true };
+    }
     return { ok: true };
   },
 
   async videoMeta(msg, sender) {
     const a = await jobFor(sender, msg);
     if (!a || a.local) return { ok: false, error: 'no job' };
-    const m = await api('/api/video/meta?id=' + encodeURIComponent(a.id));
+    const m = await api('/api/ext/video/meta?id=' + encodeURIComponent(a.id));
     return { ok: true, meta: Object.assign({}, m, { chunk: CHUNK }) };
   },
 
@@ -328,7 +414,7 @@ const handlers = {
     if (!a || a.local) return { ok: false, error: 'no job' };
     const start = msg.index * CHUNK;
     const end = Math.min(start + CHUNK, msg.size) - 1;
-    const r = await api('/api/video?id=' + encodeURIComponent(a.id), { raw: true, timeoutMs: 120000, headers: { Range: `bytes=${start}-${end}` } });
+    const r = await api('/api/ext/video?id=' + encodeURIComponent(a.id), { raw: true, timeoutMs: 120000, headers: { Range: `bytes=${start}-${end}` } });
     if (r.status !== 206) return { ok: false, error: 'HTTP ' + r.status + ' (cần 206 Partial Content)' };
     const buf = await r.arrayBuffer();
     if (buf.byteLength !== end - start + 1) return { ok: false, error: `độ dài sai ${buf.byteLength}` };
@@ -349,8 +435,22 @@ const handlers = {
       return true;
     });
     if (!won) return { ok: false, reason: 'already-authorized' };
+    // The backend needs state=ready before it grants: tell it first (awaited, so the order is guaranteed). Nothing is
+    // authorized yet, so any failure here is a plain denial.
+    const ready = await sendProgress(a, { phase: 'ready', msg: 'sẵn sàng đăng' });
+    if (!ready.ok || ready.unsent) {
+      await patchActive({ authorized: false }, a.id);
+      return { ok: false, reason: 'ready-not-confirmed' };
+    }
     let r = null;
-    try { r = await api('/api/authorize', { method: 'POST', body: { id: a.id, nonce: a.nonce, body_sha256: msg.sha, creation_id: msg.creation_id } }); } catch (e) { r = { ok: false, reason: 'server-unreachable:' + e.message, unknown: true }; }
+    try {
+      r = await api('/api/ext/authorize', { method: 'POST', body: { id: a.id, nonce: a.nonce, claim_token: a.claim_token, body_sha256: msg.sha, creation_id: msg.creation_id,
+        visibility_type: msg.visibility_type, schedule_time: msg.schedule_time == null ? null : msg.schedule_time, identity: msg.identity } });
+    } catch (e) {
+      // An HTTP answer (4xx, or 500 persist_failed) means NOT granted. No answer / other 5xx: it may have been granted.
+      const denied = !!e.status && (e.status < 500 || e.code === 'persist_failed');
+      r = { ok: false, reason: denied ? (e.code || 'http-' + e.status) : 'server-unreachable:' + e.message, unknown: !denied };
+    }
     if (!r || !r.ok) {
       // unreachable = the server may have committed the grant: stay authorized (=> uncertain) and refuse the click
       if (!(r && r.unknown)) await patchActive({ authorized: false }, a.id);
@@ -376,9 +476,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // ---------- popup messages ----------
 const popup = {
-  async status() {
-    const d = await chrome.storage.local.get(['activeJob', 'log', 'lastResult', 'poll']);
-    return { settings: await getSettings(), active: d.activeJob || null, log: d.log || [], lastResult: d.lastResult || null, poll: d.poll || null };
+  async pair(msg) {
+    const code = String(msg.code || '').trim();
+    if (!/^[0-9]{6}$/.test(code)) { await chrome.storage.local.set({ pairError: 'Mã gồm đúng 6 chữ số' }); return { ok: false }; }
+    await chrome.storage.local.set({ pairError: '', pairing: true });
+    try {
+      const r = await api('/api/ext/pair', { method: 'POST', auth: false, body: { code, label: 'Chrome', ext_version: EXT_VERSION, protocol: PROTOCOL } });
+      await chrome.storage.local.set({ settings: Object.assign(await getSettings(), { token: r.token, clientId: r.client_id }), pairError: '', pairing: false });
+      await setConn({ state: 'ok', needReload: false, message: '' });
+      await helloIfDue(true);
+      pollLoop().catch((e) => console.warn('[autotok] pollLoop', e));
+      return { ok: true };
+    } catch (e) {
+      await chrome.storage.local.set({ pairError: e.message || 'Ghép nối lỗi', pairing: false });
+      return { ok: false };
+    }
+  },
+  async unpair() {
+    await chrome.storage.local.set({ settings: Object.assign(await getSettings(), { token: '', clientId: null }), conn: { state: 'unpaired', at: Date.now() } });
+    return { ok: true };
   },
   async saveSettings(msg) {
     await chrome.storage.local.set({ settings: Object.assign(await getSettings(), msg.settings) });
@@ -393,7 +509,7 @@ const popup = {
   async clear() { // abandon the active job (e.g. after a test); does not post anything
     const a = await getActive();
     if (a) {
-      if (!a.local && !a.finished) await api('/api/cancel', { method: 'POST', body: { id: a.id, nonce: a.nonce }, timeoutMs: 5000 }).catch((e) => log('cancel lỗi (xoá local tiếp): ' + e.message, 'WARN'));
+      if (!a.local && !a.finished) await api('/api/ext/cancel', { method: 'POST', body: { id: a.id, nonce: a.nonce, claim_token: a.claim_token, reason: 'owner-cleared' }, timeoutMs: 5000 }).catch((e) => log('cancel lỗi (xoá local tiếp): ' + e.message, 'WARN'));
       try { if (a.strategy === 'tab' && a.tabId != null) await chrome.tabs.remove(a.tabId); else if (a.windowId != null) await chrome.windows.remove(a.windowId); } catch (e) { await log('đóng cửa sổ: ' + e.message, 'WARN'); }
       await chrome.storage.local.set({ lastDoneId: a.id });
     }

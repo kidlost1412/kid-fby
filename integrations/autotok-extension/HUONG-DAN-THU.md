@@ -75,3 +75,10 @@ Server ghi quyền đăng vào `devserver\logs\state.json` TRƯỚC khi trả l�
 Chỉ có đúng 1 lần gửi, gắn với hash nội dung; kết quả: `posted` (`item_id`), `rejected` (`status_code`), hoặc `uncertain` (không phản hồi — phải kiểm tra tài khoản bằng tay).
 Nếu SDK của TikTok chưa bọc XHR sau 30 giây → `sdk-not-ready`, chưa gửi gì.
 Kiểm offline: `node --test tests\parity.test.js tests\gate.test.js`.
+
+---
+## P1 (bản chính thức): nói chuyện với backend Kid FB.Y
+Tiện ích giờ nói giao thức v1 (`PROTOCOL.md`) với backend `http://127.0.0.1:8765` (đổi ở Cài đặt → Địa chỉ máy chủ). Ghép nối: ứng dụng hiện mã 6 số (Cài đặt → Kết nối Chrome), nhập vào popup tiện ích. Không còn ô token.
+Việc `post` chính thức: đăng công khai hoặc riêng tư ngay, hoặc công khai có hẹn giờ (15 phút–30 ngày). Riêng tư + hẹn giờ và chế độ "bạn bè" bị từ chối (định mức, chưa tải gì lên). Mọi tuỳ chọn (bình luận / duet / stitch / nhãn AI) đi theo việc.
+`devserver.py` giờ là bản giả lập backend (cùng đường `/api/ext/*`, mã ghép nối in ra khi chạy hoặc `--pair-code`); các mục ở trên chỉ dùng cho giả lập.
+Nút "Tự kiểm" chỉ kiểm tại chỗ: mở Studio, xác nhận hook đã cài và cho biết tài khoản đang đăng nhập (không tải video, không đăng).

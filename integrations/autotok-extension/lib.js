@@ -219,7 +219,44 @@
     return { ok: true, username, userId };
   }
 
-  const api = { mapPublishResult, extractPostId, parseKeepNumbers, createPublishGate, checkIdentity, CHUNK_SIZE, MAX_CAPTION_LENGTH, crc32Hex, splitParts, sigv4, sha256Hex, pyStrip, codePointLength, validateCaption, TOKEN_RE, mentionsIn,
+  // ---- production job validation (before ANY upload): uploader.py:379-396 + schedule rules ----
+  // Returns {vis, scheduleUnix, options}; throws Error with .code === 'validate' (definite, nothing sent).
+  const bad = (m) => { const e = new Error(m); e.code = 'validate'; return e; };
+  const flag = (o, k, d) => { const v = o && o[k] !== undefined && o[k] !== null ? o[k] : d; const n = Number(v); if (!Number.isInteger(n)) throw bad('option ' + k + ' must be 0/1'); return n !== 0; };
+  function validateJob(job, nowSec) {
+    const cerr = validateCaption(job.caption);
+    if (cerr) throw bad(cerr);
+    let vis;
+    try { vis = visibilityCode(job.visibility); } catch (e) { throw bad(e.message); }
+    let unix = null;
+    if (job.schedule_unix != null) unix = Number(job.schedule_unix);
+    else if (job.schedule_time) unix = Math.floor(new Date(job.schedule_time).getTime() / 1000);
+    if (unix != null && !Number.isFinite(unix)) throw bad('bad schedule time');
+    try { resolveSchedule(unix, nowSec, vis); } catch (e) { throw bad(e.message); }
+    const o = job.options || {};
+    const options = { allowComment: flag(o, 'allow_comment', 1), allowDuet: flag(o, 'allow_duet', 0), allowStitch: flag(o, 'allow_stitch', 0), aiLabel: flag(o, 'ai_label', 0) };
+    return { vis, scheduleUnix: unix, options };
+  }
+
+  // ---- sanitized response (uploader.py:196-217): drop secret-looking keys/values, cap the size ----
+  const SECRET_MARKERS = ['token', 'cookie', 'session', 'sign', 'ticket', 'auth', 'passport', 'password', 'secret', 'csrf', 'sid', 'ttwid', 'odin', 'uid_tt', 'key'];
+  const KEEP_KEYS = new Set(['item_id', 'aweme_id', 'itemid', 'status_code', 'status_msg', 'creation_id', 'video_id', 'single_post_resp_list', 'data', 'log_id', 'extra', 'message', 'description']);
+  const secretKey = (k) => { const l = String(k).toLowerCase(); return !KEEP_KEYS.has(l) && SECRET_MARKERS.some((m) => l.includes(m)); };
+  const SECRET_VALUE = /sessionid=|sid_tt=|passport|Bearer /i;
+  function sanitizeResponse(text, limit) {
+    limit = limit || 8192;
+    let j; try { j = parseKeepNumbers(text); } catch (_) { return { unparsed: String(text).slice(0, 300) }; }
+    const clean = (o) => {
+      if (Array.isArray(o)) return o.map(clean);
+      if (o && typeof o === 'object') { const r = {}; for (const k of Object.keys(o)) if (!secretKey(k)) r[k] = clean(o[k]); return r; }
+      if (typeof o === 'string' && (SECRET_VALUE.test(o) || (o.includes('=') && o.includes(';')))) return '[removed]';
+      return o;
+    };
+    const c = clean(j);
+    return JSON.stringify(c).length <= limit ? c : { truncated: true, text: JSON.stringify(c).slice(0, limit - 40) };
+  }
+
+  const api = { validateJob, sanitizeResponse, mapPublishResult, extractPostId, parseKeepNumbers, createPublishGate, checkIdentity, CHUNK_SIZE, MAX_CAPTION_LENGTH, crc32Hex, splitParts, sigv4, sha256Hex, pyStrip, codePointLength, validateCaption, TOKEN_RE, mentionsIn,
     buildCaption, visibilityCode, resolveSchedule, finalizeSchedule, buildPayload };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.AutotokLib = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -1,4 +1,6 @@
-"""Tiny dev server for the AutoTok P0 extension prototype (stdlib only).
+"""Test double of the Kid FB.Y backend for the AutoTok extension (stdlib only). Speaks protocol v1 (PROTOCOL.md) under
+/api/ext/* (pair, hello, next, video, progress, authorize, result, cancel, job_state); the legacy /api/* paths still work.
+It is NOT the production backend.
 
 Serves ONE job (more via POST /api/jobs) and its video to the extension, and records what the
 extension reports. Bearer token = static, from the command line. Binds 127.0.0.1 only.
@@ -8,6 +10,7 @@ extension reports. Bearer token = static, from the command line. Binds 127.0.0.1
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 import mimetypes
 import os
@@ -33,6 +36,8 @@ class State:
         self.state_path = state_path
         self.video = video
         self.stale_s = 120.0
+        self.pair_code = None            # 6 digits accepted by POST /api/ext/pair (None = pairing disabled)
+        self.clients: list[dict] = []    # recorded hello identities
         self.log_path = log_path
         self.lock = threading.Lock()
         self.log_lock = threading.Lock()
@@ -117,6 +122,9 @@ class State:
             "id": "job-" + secrets.token_hex(4), "nonce": secrets.token_hex(8), "caption": caption,
             "visibility": visibility, "schedule_time": schedule_time, "mode": mode,
             "expect_account": expect_account, "chunk_credentials": chunk_credentials, "expect_user_id": expect_user_id,
+            "claim_token": secrets.token_hex(16), "attempt": 1, "visibility_type": 1 if visibility == "private" else 0,
+            "schedule_unix": int(datetime.fromisoformat(schedule_time.replace("Z", "+00:00")).timestamp()) if schedule_time else None,
+            "options": {"allow_comment": 1, "allow_duet": 0, "allow_stitch": 0, "ai_label": 0},
             "allow_public_schedule": bool(mode == "post" and self.allow_public_schedule and visibility == "public" and schedule_time),
             "video": {"name": self.video.name, "size": self.video.stat().st_size,
                       "type": mimetypes.guess_type(self.video.name)[0] or "video/mp4"},
@@ -165,27 +173,49 @@ def make_server(state: State, port: int = 8799) -> ThreadingHTTPServer:
             if self.headers.get("Authorization", "") == "Bearer " + state.token:
                 return True
             state.log("auth-denied", path=self.path)
-            self._json(401, {"error": "bad token"})
+            self._json(401, {"ok": False, "error": "unauthorized", "message": "bad token"})
             return False
 
         def _body(self) -> dict:
             n = int(self.headers.get("Content-Length") or 0)
             return json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
 
-        def _entry(self, job_id: str, nonce: str | None = None):
+        def _entry(self, job_id: str, nonce: str | None = None, claim_token: str | None = None):
             e = state.jobs.get(job_id)
             if e is None:
-                self._json(404, {"error": "unknown job"})
+                self._json(404, {"ok": False, "error": "unknown_job", "message": "unknown job"})
                 return None
             if nonce is not None and nonce != e["job"]["nonce"]:
                 state.log("nonce-mismatch", id=job_id)
-                self._json(403, {"error": "bad nonce"})
+                self._json(403, {"ok": False, "error": "bad_nonce", "message": "bad nonce"})
+                return None
+            if claim_token is not None and claim_token != e["job"]["claim_token"]:
+                state.log("claim-token-mismatch", id=job_id)
+                self._json(403, {"ok": False, "error": "bad_nonce", "message": "bad claim_token"})
                 return None
             return e
 
+        def _ext_prefix(self) -> None:
+            """/api/ext/x -> /api/x (the legacy routes below); remember that the protocol v1 headers apply."""
+            self._ext = self.path.startswith("/api/ext/")
+            if self._ext:
+                self.path = "/api/" + self.path[len("/api/ext/"):]
+
+        def _protocol_ok(self) -> bool:
+            if not getattr(self, "_ext", False):
+                return True
+            if self.headers.get("X-Autotok-Protocol") != "1":
+                self._json(409, {"ok": False, "error": "need_reload", "need_reload": True, "message": "Cần tải lại tiện ích (chrome://extensions → ⟳)"})
+                return False
+            if self.command == "POST" and self.headers.get("X-Requested-With") != "autotok":
+                self._json(403, {"detail": "csrf"})
+                return False
+            return True
+
         # ---- routes ----
         def do_GET(self):
-            if not self._auth():
+            self._ext_prefix()
+            if not self._auth() or not self._protocol_ok():
                 return
             u = urlparse(self.path)
             q = parse_qs(u.query)
@@ -208,13 +238,18 @@ def make_server(state: State, port: int = 8799) -> ThreadingHTTPServer:
             self._json(404, {"error": "no route"})
 
         def do_POST(self):
-            if not self._auth():
+            self._ext_prefix()
+            path = urlparse(self.path).path
+            if path == "/api/pair":                       # the only call without a bearer token
+                return self._pair()
+            if not self._auth() or not self._protocol_ok():
                 return
             try:
                 body = self._body()
             except (ValueError, UnicodeDecodeError) as exc:
-                return self._json(400, {"error": f"bad json: {exc}"})
-            path = urlparse(self.path).path
+                return self._json(400, {"ok": False, "error": "bad_request", "message": f"bad json: {exc}"})
+            if path == "/api/hello":
+                return self._hello(body)
             if path == "/api/jobs":
                 try:
                     job = state.add_job(body.get("caption", ""), body.get("mode", "selftest"), body.get("visibility", "private"),
@@ -223,7 +258,7 @@ def make_server(state: State, port: int = 8799) -> ThreadingHTTPServer:
                 except ValueError as exc:
                     return self._json(400, {"error": str(exc)})
                 return self._json(200, job)
-            e = self._entry(str(body.get("id", "")), str(body.get("nonce") or ""))   # a missing nonce never matches
+            e = self._entry(str(body.get("id", "")), str(body.get("nonce") or ""), body.get("claim_token"))   # a missing nonce never matches
             if e is None:
                 return
             if path == "/api/progress":
@@ -263,6 +298,30 @@ def make_server(state: State, port: int = 8799) -> ThreadingHTTPServer:
                 state.log("result-duplicate" if dup else "result", id=e["job"]["id"], result=body)
                 return self._json(200, {"ok": True, "duplicate": dup})
             self._json(404, {"error": "no route"})
+
+        def _pair(self) -> None:
+            state.log("request", method="POST", path=self.path, range=None, auth=False)
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
+            except (ValueError, UnicodeDecodeError):
+                return self._json(400, {"ok": False, "error": "bad_request", "message": "bad json"})
+            if not state.pair_code:
+                return self._json(410, {"ok": False, "error": "no_code", "message": "Chưa có mã ghép nối"})
+            if str(body.get("code")) != state.pair_code:
+                return self._json(403, {"ok": False, "error": "bad_code", "message": "Mã không đúng", "tries_left": 4})
+            state.log("paired", label=body.get("label"), ext_version=body.get("ext_version"))
+            return self._json(200, {"ok": True, "client_id": 1, "token": state.token})
+
+        def _hello(self, body) -> None:
+            ident = body.get("identity")
+            need = body.get("protocol") != 1
+            with state.lock:
+                state.clients.append({"identity": ident, "ext_version": body.get("ext_version"), "protocol": body.get("protocol"), "at": time.time()})
+            state.log("hello", identity=ident, ext_version=body.get("ext_version"), protocol=body.get("protocol"))
+            return self._json(200, {"ok": True, "client_id": 1, "protocol_min": 1, "protocol_max": 1, "need_reload": need,
+                                    "message": "Cần tải lại tiện ích (chrome://extensions → ⟳)" if need else "",
+                                    "server_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "account": None, "conflict": False})
 
         def _authorize(self, e, body) -> None:
             """ready -> AUTHORIZED: conditional, one-time, persisted BEFORE the reply."""
@@ -372,12 +431,14 @@ def main(argv=None) -> int:
     ap.add_argument("--expect-user-id", default=None, help="numeric TikTok user_id_str the page must be logged in as")
     ap.add_argument("--state", type=Path, default=Path(__file__).with_name("logs") / "state.json", help="durable job/authorization state")
     ap.add_argument("--i-know-this-reposts", action="store_true", help="allow queuing a post job for a video that already has an authorized/uncertain/posted post job in state.json")
+    ap.add_argument("--pair-code", default=None, help="6 digits the extension may pair with (printed if omitted)")
     ap.add_argument("--chunk-credentials", choices=("omit", "include"), default="omit", help="fetch credentials mode for the storage host")
     a = ap.parse_args(argv)
     if a.log:
         a.log.parent.mkdir(parents=True, exist_ok=True)
     a.state.parent.mkdir(parents=True, exist_ok=True)
     state = State(a.token, a.video.resolve(), a.log, a.allow_post, a.state)
+    state.pair_code = a.pair_code or "%06d" % secrets.randbelow(1000000)
     state.allow_public_schedule = a.allow_public_schedule
     if a.mode == "post" and not a.i_know_this_reposts:
         prior = state.prior_post_for_video()
@@ -391,7 +452,7 @@ def main(argv=None) -> int:
         print("error:", exc, file=sys.stderr)
         return 2
     srv = make_server(state, a.port)
-    state.log("listening", port=a.port, log=str(a.log))
+    state.log("listening", port=a.port, log=str(a.log), pair_code=state.pair_code)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

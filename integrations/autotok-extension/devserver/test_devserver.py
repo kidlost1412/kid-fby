@@ -246,6 +246,38 @@ class DevServerTest(unittest.TestCase):
         e["result"]["outcome"] = "posted"
         self.assertEqual(self.state.prior_post_for_video()[1], "done")
 
+    def _ext(self, path, body=None, token=TOKEN, proto="1"):
+        h = {"X-Autotok-Protocol": proto, "X-Requested-With": "autotok"}
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode() if body is not None else None,
+                                     method="POST" if body is not None else "GET",
+                                     headers={**({"Authorization": "Bearer " + token} if token else {}), **h})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                raw = r.read()
+                return r.status, (json.loads(raw) if raw else None)
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            return e.code, (json.loads(raw) if raw else None)
+
+    def test_protocol_v1_pair_hello_next_headers(self):
+        self.start()
+        self.state.pair_code = "123456"
+        self.assertEqual(self._ext("/api/ext/pair", {"code": "000000"}, token=None)[0], 403)
+        code, r = self._ext("/api/ext/pair", {"code": "123456", "label": "x", "protocol": 1}, token=None)
+        self.assertEqual((code, r["ok"], r["token"]), (200, True, TOKEN))
+        code, r = self._ext("/api/ext/hello", {"protocol": 1, "ext_version": "1", "identity": {"username": "me", "user_id": "7"}})
+        self.assertEqual((code, r["need_reload"], r["protocol_max"]), (200, False, 1))
+        self.assertEqual(self.state.clients[-1]["identity"]["user_id"], "7")
+        self.assertTrue(self._ext("/api/ext/hello", {"protocol": 2})[1]["need_reload"])
+        self.assertEqual(self._ext("/api/ext/hello", {"protocol": 1}, token="bad")[0], 401)
+        self.assertEqual(self._ext("/api/ext/next?wait=0", proto="0")[0], 409)     # missing/old protocol header
+        self.assertEqual(self._ext("/api/ext/next?wait=0")[0], 204)
+        j = self.state.add_job("c", "selftest", "private")
+        code, got = self._ext("/api/ext/next?wait=0")
+        self.assertEqual((code, got["id"], got["visibility_type"], len(got["claim_token"])), (200, j["id"], 1, 32))
+        self.assertEqual(self._ext("/api/ext/progress", {"id": j["id"], "nonce": j["nonce"], "claim_token": "wrong", "phase": "x"})[0], 403)
+        self.assertEqual(self._ext("/api/ext/progress", {"id": j["id"], "nonce": j["nonce"], "claim_token": j["claim_token"], "phase": "x"})[1]["ok"], True)
+
     def test_chunk_credentials_validated_and_passed(self):
         self.start()
         self.assertEqual(self.state.add_job("c", "selftest")["chunk_credentials"], "omit")

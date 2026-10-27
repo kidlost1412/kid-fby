@@ -1,7 +1,7 @@
-// Content script (isolated world) for TikTok Studio. Runs the whole job in the tab, so a stopped
-// service worker does not interrupt it (every SW call is a stateless request/response).
-// Only acts when the tab was opened by the extension (URL hash '#autotok=<job id>') AND the SW confirms
-// it owns this tab; a normal manual visit to Studio is left alone.
+// Content script (isolated world) for TikTok Studio. Bridges the service worker and the MAIN-world runner
+// (api-main.js): pulls the video bytes through the SW, hands the Blob URL to MAIN, relays progress and the
+// authorization request, and returns the result. No Studio UI is driven.
+// Only acts when the SW confirms it owns this tab (hello); a normal manual visit to Studio is left alone.
 (function () {
   'use strict';
   if (window.top !== window || window.__autotokContent) return;
@@ -12,15 +12,11 @@
   chrome.runtime.sendMessage({ type: 'ready', stage: 'document_start', where: where(), state: document.readyState }).catch(() => {});
   window.addEventListener('load', () => chrome.runtime.sendMessage({ type: 'ready', stage: 'load', where: where(), state: document.readyState }).catch(() => {}));
 
-  const S = self.AutotokSel;
-  const CFG = {
-    identityMs: 30000, fileInputMs: 90000, acceptMs: 60000, processMs: 25 * 60000,
-    editorMs: 60000, uiStepMs: 15000, interceptWaitMs: 45000, postWaitMs: 180000,
-  };
+  const PROCESS_MS = 25 * 60000;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   let JOB = null, NONCE = null;
-  const seen = { identity: [], req: [], res: [], armed: false };
+  const seen = { armed: false };
   let lagMax = 0;
   const api = { done: null };   // messages from api-main.js (MAIN world)
 
@@ -53,7 +49,7 @@
     return send('progress', { phase, msg, pct, extra: x }).catch((e) => console.warn('[autotok] progress', e));
   }
 
-  // ---- hook messages (MAIN world) ----
+  // ---- MAIN-world messages ----
   window.addEventListener('message', (e) => {
     const d = e.data;
     if (e.source !== window || !d || d.__autotok !== 1) return;
@@ -62,20 +58,16 @@
       if (d.kind === 'p') report(d.phase, d.msg, d.pct, d.extra);
       else if (d.kind === 'done') api.done = d;
       else if (d.kind === 'auth-req') {
-        send('authorize', { sha: d.sha, creation_id: d.creation_id }).catch((err) => ({ ok: false, reason: 'sw-error:' + err.message }))
+        send('authorize', { sha: d.sha, creation_id: d.creation_id, visibility_type: d.visibility_type, schedule_time: d.schedule_time, identity: d.identity })
+          .catch((err) => ({ ok: false, reason: 'sw-error:' + err.message }))
           .then((r) => window.postMessage({ __autotok: 1, from: 'content', kind: 'auth-res', nonce: NONCE, ok: !!(r && r.ok), reason: r && r.reason }, location.origin));
       }
       return;
     }
     if (d.from === 'content') return;
     if (d.kind === 'armed' && d.nonce === NONCE) seen.armed = true;
-    else if (d.nonce !== NONCE) return;
-    else if (d.kind === 'identity') seen.identity.push(d);
-    else if (d.kind === 'req') seen.req.push(d);
-    else if (d.kind === 'res') seen.res.push(d);
   });
 
-  // ---- generic helpers ----
   async function waitFor(fn, { timeout, interval = 500, what }) {
     const t0 = Date.now();
     for (;;) {
@@ -84,51 +76,6 @@
       if (Date.now() - t0 > timeout) throw new StepError('timeout', what + ' (' + Math.round(timeout / 1000) + 's)');
       await sleep(interval);
     }
-  }
-  const norm = (s) => String(s).replace(/ /g, ' ').replace(/\r\n?/g, '\n').split('\n').map((l) => l.replace(/\s+$/, '')).join('\n').replace(/\s+$/, '');
-  const loose = (s) => norm(s).split('\n').filter((l) => l.length).join('\n');
-  const isDisabled = (el) => el.disabled === true || el.getAttribute('aria-disabled') === 'true';
-  const need = (key, what) => { const r = S.find(key); if (!r.el) throw new StepError('selector-missing', key + (what ? ' (' + what + ')' : '')); return r.el; };
-
-  function deepFind(o, names, depth, out) {
-    out = out || []; if (!o || typeof o !== 'object' || depth < 0) return out;
-    for (const k of Object.keys(o)) {
-      if (names.includes(k) && o[k] != null && typeof o[k] !== 'object') out.push(String(o[k]));
-      else if (typeof o[k] === 'object') deepFind(o[k], names, depth - 1, out);
-    }
-    return out;
-  }
-
-  // ---- identity: which TikTok account is logged in on this page ----
-  async function getIdentity() {
-    const c = [];
-    const add = (source, value) => { if (typeof value === 'string' && value.trim()) c.push({ source, value: value.replace(/^@/, '').trim() }); };
-    try {
-      const el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__');
-      if (el) {
-        const j = JSON.parse(el.textContent);
-        const ctx = (j.__DEFAULT_SCOPE__ || {})['webapp.app-context'] || {};
-        deepFind(ctx, ['uniqueId', 'unique_id', 'username'], 4).forEach((v) => add('rehydration', v));
-      } else c.push({ source: 'rehydration', error: 'no __UNIVERSAL_DATA_FOR_REHYDRATION__ script' });
-    } catch (e) { c.push({ source: 'rehydration', error: e.message }); }
-    try {
-      const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 8000);
-      const r = await fetch('/passport/web/account/info/?aid=1988', { credentials: 'include', signal: ctl.signal });
-      clearTimeout(t);
-      const j = await r.json();
-      const d = (j && j.data) || {};
-      add('passport.username', d.username); add('passport.screen_name', d.screen_name);
-      c.push({ source: 'passport.keys', value: Object.keys(d).slice(0, 20).join(',') });
-    } catch (e) { c.push({ source: 'passport', error: e.message }); }
-    for (const a of S.findAll('accountLink').els.slice(0, 5)) {
-      const m = /\/@([^/?#]+)/.exec(a.getAttribute('href') || '');
-      if (m) add('dom', decodeURIComponent(m[1]));
-    }
-    for (const m of seen.identity) for (const [k, v] of m.found || []) add('network:' + m.src + ':' + k, v);
-    const rank = ['passport.username', 'rehydration', 'dom', 'network'];
-    const good = c.filter((x) => x.value && !x.source.endsWith('keys') && !x.source.endsWith('screen_name'));
-    good.sort((a, b) => rank.findIndex((r) => a.source.startsWith(r)) - rank.findIndex((r) => b.source.startsWith(r)));
-    return { value: good.length && good[0].value ? good[0].value.toLowerCase() : null, source: good.length ? good[0].source : null, all: c };
   }
 
   // ---- video bytes: pulled chunk by chunk through the SW (stateless range fetches) ----
@@ -154,18 +101,25 @@
     return { blob, meta, stats: { bytes: meta.size, chunks: n, ms: Date.now() - t0, memBefore: mem0, memAfter: mem() } };
   }
 
-  // ---- main ----
   async function arm(mode) {
     window.postMessage({ __autotok: 1, kind: 'arm', nonce: NONCE, mode }, location.origin);
     await waitFor(() => seen.armed, { timeout: 5000, interval: 100, what: 'hook MAIN-world chưa cài (hook-main.js)' });
   }
 
+  // Local self-check ("Tự kiểm"): no job on the backend, no video. Proves the content script + hook are installed
+  // and shows which TikTok account this profile is logged in as (passport self endpoint only). Uploads and posts nothing.
   async function runSelfcheck() {
     await arm('block');
     await waitFor(() => document.readyState !== 'loading', { timeout: 20000, what: 'trang tải xong' });
-    await sleep(4000);
-    const id = await getIdentity();
-    return { outcome: 'selfcheck_ok', url: location.pathname, identity: id, dom: S.report(), title: document.title };
+    let id = null, err = null;
+    try {
+      const j = await (await fetch('/passport/web/account/info/?aid=1988', { credentials: 'include' })).json();
+      const d = (j && j.data) || {};
+      if (d.username && d.user_id_str) id = { username: String(d.username).toLowerCase(), user_id: String(d.user_id_str) };
+      else err = 'no username/user_id_str in passport response';
+    } catch (e) { err = e.message; }
+    return id ? { outcome: 'selfcheck_ok', url: location.pathname, identity: { value: id.username, user_id: id.user_id } }
+      : { outcome: 'failed', definite: true, notSent: true, reason: 'identity-unknown', detail: err };
   }
 
   // selftest (upload only) | intercept (body built, never sent) | post (gated, see api-main.js publishOnce).
@@ -176,8 +130,6 @@
     await arm('block');                       // safety net: any /project/post/ request is blocked, whatever the mode
     if (/\/login/.test(location.pathname)) throw new StepError('not-logged-in', location.href);
     await report('start', `bắt đầu ${job.mode}, caption ${job.caption.length} ký tự`);
-    // Fallback identity sources are diagnostics only; the decision is made by api-main.js (passport user_id_str + username).
-    R.identityDiag = await getIdentity().catch((e) => ({ error: e.message }));
 
     const { blob, meta, stats } = await buildBlob();
     R.steps.transfer = stats;
@@ -186,7 +138,7 @@
     try {
       window.postMessage({ __autotok: 1, from: 'content', kind: 'run', nonce: NONCE, job, blobUrl: url, size: meta.size, name: meta.name }, location.origin);
       const t0 = Date.now();
-      const done = await waitFor(() => api.done, { timeout: CFG.processMs, interval: 500, what: 'MAIN-world runner (api-main.js)' });
+      const done = await waitFor(() => api.done, { timeout: PROCESS_MS, interval: 500, what: 'MAIN-world runner (api-main.js)' });
       R.steps.api = { ms: Date.now() - t0 };
       return Object.assign(R, done.result);
     } finally { revoke(); }
@@ -205,11 +157,10 @@
     try {
       result = hello.role === 'selfcheck' ? await runSelfcheck() : await runJob(JOB);
     } catch (e) {
-      let dom = null; try { dom = S.report(); } catch (_) { /* ignore */ }
       const code = e instanceof StepError ? e.code : 'exception';
       // Reported as 'failed' (not notSent): if a post was already authorized the SW downgrades this to 'uncertain'
       // (e.g. a timeout while waiting for the runner). Only api-main.js can say notSent:true.
-      result = { outcome: 'failed', definite: true, reason: code, detail: e.message, dom };
+      result = { outcome: 'failed', definite: true, reason: code, detail: e.message };
       console.error('[autotok]', e);
     }
     await send('result', { result });

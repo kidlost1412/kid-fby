@@ -122,16 +122,25 @@ def main():
     fx["spaceRanges"] = ranges(lambda c: c.isspace())
     # ---- payloads
     payload_cases = []
-    for text, vis, ai, probe, sched in [
-        ("Xin chào 🌸 #việtnam", 0, False, None, None),
-        ("hello #tag @alice", 1, True, {"width": 720, "height": 1280, "duration_ms": 15032, "has_audio": True}, None),
-        ("lịch #hẹn\ndòng", 0, False, {"width": 1080, "height": 1920, "duration_ms": 9000, "has_audio": False}, 1793000000),
+    # (text, visibility, comment, duet, stitch, ai, probe, schedule)
+    P1 = {"width": 720, "height": 1280, "duration_ms": 15032, "has_audio": True}
+    P2 = {"width": 1080, "height": 1920, "duration_ms": 9000, "has_audio": False}
+    for text, vis, com, duet, stitch, ai, probe, sched in [
+        ("Xin chào 🌸 #việtnam", 0, True, False, True, False, None, None),
+        ("hello #tag @alice", 1, True, False, True, True, P1, None),
+        ("lịch #hẹn\ndòng", 0, True, False, True, False, P2, 1793000000),
+        ("public now, defaults", 0, True, False, False, False, P1, None),
+        ("public now, all non-default", 0, False, True, True, True, P2, None),
+        ("private, comments off", 1, False, False, False, False, None, None),
+        ("public scheduled, duet+stitch on, ai", 0, True, True, True, True, P1, 1793367000),
+        ("public scheduled, comments off #lịch", 0, False, False, False, False, P2, 1793999999),
     ]:
         markup, extra = build_caption(text, resolver)
-        p = uploader.Client._payload("CrEaTiOnId_0123456789", "v0123456789abcdef", text, markup, extra, vis, True, False, True, ai, probe=probe)
+        p = uploader.Client._payload("CrEaTiOnId_0123456789", "v0123456789abcdef", text, markup, extra, vis, com, duet, stitch, ai, probe=probe)
         if sched is not None:
             p["feature_common_info_list"][0]["schedule_time"] = sched
-        payload_cases.append({"text": text, "visibility": vis, "aiLabel": ai, "probe": probe, "schedule": sched, "payload": p})
+        payload_cases.append({"text": text, "visibility": vis, "allowComment": com, "allowDuet": duet, "allowStitch": stitch,
+                              "aiLabel": ai, "probe": probe, "schedule": sched, "payload": p})
     fx["payloads"] = payload_cases
     out = HERE / "fixtures.json"
     out.write_text(json.dumps(fx, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
