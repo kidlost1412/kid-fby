@@ -77,7 +77,7 @@ def delete_video(name: str, session: Session = Depends(get_session)):
     in_use = session.exec(select(ScheduledUpload).where(
         ScheduledUpload.source_type == "local",
         ScheduledUpload.source_ref == path.name,
-        ScheduledUpload.status.in_(("pending", "running")),
+        ScheduledUpload.status.in_(("pending", "running", "pending_ext", "waiting_ext")),
     )).first()
     if in_use:
         raise HTTPException(409, "Video đang được dùng trong lịch đăng. Hãy hủy lịch trước khi xóa.")

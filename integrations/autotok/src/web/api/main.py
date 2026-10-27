@@ -16,8 +16,9 @@ from fastapi.responses import JSONResponse
 import autotok
 import api.db as _api_db
 from api.db import init_db
-from api.routers import accounts, desktop, history, login, proxy, schedules, uploads, videos
+from api.routers import accounts, desktop, ext, history, login, proxy, schedules, uploads, videos
 from api.security import allowed_hosts, hostname
+from api.services import ext as ext_service
 from api.services import history as history_service
 from autotok import settings
 from sqlmodel import Session
@@ -77,6 +78,10 @@ def create_app() -> FastAPI:
             )
         return await call_next(request)
 
+    # Outermost: CORS headers for the Chrome extension origin on /api/ext/* only.
+    ext.install_cors(app)
+    app.add_exception_handler(ext.ExtError, ext.ext_error_response)
+
     @app.on_event("startup")
     def _startup() -> None:
         # Ensure the account store and video library exist on the shared volume.
@@ -90,11 +95,24 @@ def create_app() -> FastAPI:
                     step(session)
             except Exception:
                 log.exception("startup recovery step %s failed", step.__name__)
+        try:
+            ext_service.reconcile_ext()  # results stored before a restart reach their jobs
+        except Exception:
+            log.exception("startup recovery step reconcile_ext failed")
+
+    def _ext_active() -> int:
+        try:
+            with Session(_api_db.engine) as session:
+                return ext_service.active_children(session)
+        except Exception:
+            return -1  # unknown: callers must treat it as busy
 
     @app.get("/health", tags=["meta"])
     def health():
         return {"status": "ok", "desktop_bridge": 1, "history_version": 2, "video_streaming": True,
-                "native_schedule": 1, "post_links": 1}
+                "native_schedule": 1, "post_links": 1, "chrome_ext": 1,
+                "ext_protocol_min": ext_service.PROTOCOL_MIN, "ext_protocol_max": ext_service.PROTOCOL_MAX,
+                "ext_active": _ext_active()}
 
     app.include_router(accounts.router)
     app.include_router(desktop.router)
@@ -104,6 +122,7 @@ def create_app() -> FastAPI:
     app.include_router(schedules.router)
     app.include_router(login.router)
     app.include_router(proxy.router)
+    app.include_router(ext.router)
     return app
 
 

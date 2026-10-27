@@ -148,7 +148,7 @@ def update_schedule(
         raise HTTPException(status_code=404, detail="schedule not found")
     if payload.scheduled_for is not None and _native_time(row) is not None:
         raise HTTPException(status_code=409, detail=NATIVE_LOCKED)
-    if row.status not in ("pending", "failed"):
+    if row.status not in ("pending", "failed", "pending_ext"):
         # Running, succeeded, cancelled rows are terminal from a CRUD perspective.
         raise HTTPException(status_code=409, detail=f"cannot modify row in status '{row.status}'")
 
@@ -159,7 +159,7 @@ def update_schedule(
         changes["title"] = payload.title
     if payload.status is not None:
         # Only two safe transitions: pending→cancelled, failed→pending (retry)
-        if payload.status == "cancelled" and row.status in ("pending", "failed"):
+        if payload.status == "cancelled" and row.status in ("pending", "failed", "pending_ext"):
             changes["status"] = "cancelled"
         elif payload.status == "pending" and row.status == "failed":
             if row.publish_uncertain and not payload.confirm_uncertain:
@@ -213,10 +213,10 @@ def delete_schedule(schedule_id: int, session: Session = Depends(get_session)):
     row = session.get(ScheduledUpload, schedule_id)
     if not row:
         raise HTTPException(status_code=404, detail="schedule not found")
-    if row.status == "running":
+    if row.status in ("running", "waiting_ext"):  # waiting_ext: Chrome may be posting it right now
         raise HTTPException(status_code=409, detail="cannot delete a running job; wait for it to finish")
     entry = track_schedule(session, row, legacy=True)
-    if row.status == "pending":
+    if row.status in ("pending", "pending_ext"):
         entry.status = "cancelled"
         entry.finished_at = now_utc()
         session.add(entry)
@@ -224,7 +224,7 @@ def delete_schedule(schedule_id: int, session: Session = Depends(get_session)):
     result = session.exec(
         delete(ScheduledUpload)
         .where(ScheduledUpload.id == schedule_id)
-        .where(ScheduledUpload.status != "running")
+        .where(ScheduledUpload.status.not_in(("running", "waiting_ext")))
     )
     if result.rowcount != 1:
         session.rollback()

@@ -40,6 +40,12 @@ class AccountRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     last_used_at: Optional[datetime]
+    # v4. has_valid_session stays the cookie session only; `ready` says whether this account can post
+    # now with its publisher (cookies: valid session; chrome: its paired Chrome is online, no conflict).
+    publisher: str = "cookies"
+    chrome_user_id: Optional[str] = None
+    ready: bool = False
+    ready_reason: str = ""
 
     model_config = {"from_attributes": True}
 
@@ -60,11 +66,19 @@ class AccountUpdate(BaseModel):
     display_name: Optional[str] = Field(default=None, max_length=128)
     # Full proxy URL to set, "" to clear, omitted to leave unchanged.
     proxy: Optional[str] = None
+    # Switch publisher. "chrome" needs client_id (a paired Chrome reporting its TikTok user now).
+    publisher: Optional[Literal["cookies", "chrome"]] = None
+    client_id: Optional[int] = None
+    confirm_username_mismatch: bool = False
 
     @field_validator("proxy")
     @classmethod
     def _check_proxy(cls, v: Optional[str]) -> Optional[str]:
         return _validate_proxy(v)
+
+
+class AccountFromChrome(BaseModel):
+    client_id: int
 
 
 class SessionCheckResponse(BaseModel):

@@ -246,7 +246,7 @@ def create_job(
         if expire_stale(session, key):
             session.refresh(existing)
         return _read(existing, session)
-    acct = _require_account(session, username)
+    acct = _require_account(session, username, allow_chrome=True)
     token = uuid4().hex
     try:
         options = UploadOptions.model_validate_json(options_json)

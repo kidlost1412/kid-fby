@@ -29,10 +29,19 @@ from api.services.videos import ALLOWED_SUFFIXES
 router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 
 
-def _require_account(session: Session, username: str) -> Account:
+CHROME_DIRECT_TEXT = "Tài khoản đăng qua Chrome — dùng lịch/hẹn"
+
+
+def _require_account(session: Session, username: str, *, allow_chrome: bool = False) -> Account:
+    """Direct uploads post here and now with cookies: refused (409) for Chrome accounts. Queued jobs
+    (allow_chrome) accept them without a session file; the extension posts them."""
     acct = session.exec(select(Account).where(Account.username == username)).first()
     if not acct:
         raise HTTPException(status_code=404, detail=f"account '{username}' not found")
+    if acct.publisher == "chrome":
+        if allow_chrome:
+            return acct
+        raise HTTPException(status_code=409, detail=CHROME_DIRECT_TEXT)
     if not acct.has_valid_session:
         raise HTTPException(status_code=409, detail=f"account '{username}' has no valid session; re-login required")
     return acct

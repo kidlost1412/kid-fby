@@ -28,7 +28,7 @@ from sqlmodel import Session, select
 import api.db as _api_db
 from api.db import now_utc
 from api.models import Account, ScheduledUpload, UploadHistory
-from api.services import tiktok_adapter, youtube
+from api.services import ext, tiktok_adapter, youtube
 from autotok.browser_publish import redact_url
 from api.services import videos as library
 from api.services import links
@@ -302,13 +302,53 @@ def finalize(schedule_id: int, outcome: UploadOutcome, *, attempts: int, key: Op
               schedule_id, attempts, "succeeded" if outcome.ok else outcome.message)
 
 
+def dispatch_ext(row: ScheduledUpload) -> None:
+    """Chrome account: never wait here. A claimed row (running) becomes pending_ext; reconcile_ext then
+    creates its child when the account is free. Invalid jobs fail definitely, nothing sent, no retry."""
+    _, error = ext.wire_options(row)
+    if error is None and row.source_type == "local":
+        try:
+            library.resolve(row.source_ref)
+        except ValueError as exc:
+            error = str(exc)
+    if error:
+        finalize(row.id, UploadOutcome(ok=False, message=error), attempts=row.attempts, key=schedule_key(row))
+        return
+    with Session(_api_db.engine) as s:
+        won = s.exec(update(ScheduledUpload).where(
+            ScheduledUpload.id == row.id, ScheduledUpload.attempts == row.attempts,
+            ScheduledUpload.status == "running").values(status="pending_ext", updated_at=now_utc())).rowcount
+        if won == 1:
+            fresh = s.get(ScheduledUpload, row.id)
+            s.refresh(fresh)
+            track_schedule(s, fresh)
+        s.commit()
+    log.info("job %s attempt %s: %s", row.id, row.attempts, "handed to Chrome (pending_ext)" if won else
+             "changed before it could be handed to Chrome")
+
+
+def _is_chrome(row: ScheduledUpload) -> bool:
+    with Session(_api_db.engine) as s:
+        acct = s.get(Account, row.account_id)
+        return bool(acct and acct.publisher == "chrome")
+
+
 def tick() -> bool:
     """One poll cycle. Returns True if a job was processed, False if idle.
     Visible in tests so they can drive the worker deterministically."""
     with Session(_api_db.engine) as s:
         reclaim_stale(s)
         expire_late_legacy(s)
+    try:
+        ext.reconcile_ext()
+    except Exception:
+        log.exception("reconcile_ext failed")
+    with Session(_api_db.engine) as s:
         claimed = claim_next_due(s)
+    if claimed and _is_chrome(claimed):
+        dispatch_ext(claimed)
+        ext.reconcile_ext()
+        return True
     if not claimed:
         try:
             links.tick()  # idle: look up one missing post link (read-only, never posts)
