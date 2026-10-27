@@ -34,6 +34,42 @@ CSRF_VALUE = "autotok"
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
+def _require_known_host(request: Request):
+    if hostname(request.headers.get("host", "")) not in allowed_hosts():
+        return JSONResponse(
+            {"detail": "unknown Host header; add it to AUTOTOK_ALLOWED_HOSTS if you use this name"},
+            status_code=403,
+        )
+    return None
+
+
+def _require_csrf_header(request: Request):
+    if (
+        request.method not in _SAFE_METHODS
+        and request.url.path.startswith("/api/")
+        and request.headers.get(CSRF_HEADER) != CSRF_VALUE
+    ):
+        return JSONResponse(
+            {"detail": f"missing header {CSRF_HEADER}: {CSRF_VALUE}"}, status_code=403
+        )
+    return None
+
+
+class _Guard:
+    """Answers with ``check(request)``'s response when it returns one; otherwise passes the request on untouched."""
+
+    def __init__(self, app, check):
+        self.app, self.check = app, check
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            refused = self.check(Request(scope))
+            if refused is not None:
+                await refused(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="autotok API",
@@ -57,26 +93,10 @@ def create_app() -> FastAPI:
             allow_credentials=False,
         )
 
-    @app.middleware("http")
-    async def _require_known_host(request: Request, call_next):
-        if hostname(request.headers.get("host", "")) not in allowed_hosts():
-            return JSONResponse(
-                {"detail": "unknown Host header; add it to AUTOTOK_ALLOWED_HOSTS if you use this name"},
-                status_code=403,
-            )
-        return await call_next(request)
-
-    @app.middleware("http")
-    async def _require_csrf_header(request: Request, call_next):
-        if (
-            request.method not in _SAFE_METHODS
-            and request.url.path.startswith("/api/")
-            and request.headers.get(CSRF_HEADER) != CSRF_VALUE
-        ):
-            return JSONResponse(
-                {"detail": f"missing header {CSRF_HEADER}: {CSRF_VALUE}"}, status_code=403
-            )
-        return await call_next(request)
+    # Plain ASGI middleware, not @app.middleware("http"): BaseHTTPMiddleware hides the client's
+    # disconnect from handlers, and /api/ext/next must see it (never claim a job for a dead long poll).
+    app.add_middleware(_Guard, check=_require_known_host)
+    app.add_middleware(_Guard, check=_require_csrf_header)
 
     # Outermost: CORS headers for the Chrome extension origin on /api/ext/* only.
     ext.install_cors(app)

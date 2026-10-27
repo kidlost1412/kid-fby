@@ -623,6 +623,20 @@ def claim_next(client: ExtensionClient) -> Optional[ExtensionJob]:
         return job
 
 
+def release_claim(job: ExtensionJob) -> bool:
+    """Undo a claim whose reply could not be delivered. Only while still 'claimed' by that very claim
+    (no progress, nothing uploaded, never authorized); the claim deadline keeps counting from creation."""
+    with Session(_api_db.engine) as s:
+        won = s.exec(update(ExtensionJob).where(
+            ExtensionJob.id == job.id, ExtensionJob.state == "claimed", ExtensionJob.claim_token == job.claim_token)
+            .values(state="queued", claim_client=None, claim_token=None, claimed_at=None, heartbeat_at=None,
+                    updated_at=now_utc())).rowcount
+        s.commit()
+    if won:
+        _log_transition(job, "claimed", "queued")
+    return won == 1
+
+
 def heartbeat(job: ExtensionJob, ready: bool = False) -> str:
     with Session(_api_db.engine) as s:
         now = now_utc()
