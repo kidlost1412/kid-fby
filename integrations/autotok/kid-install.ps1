@@ -741,10 +741,10 @@ function Remove-OldReleases([string[]]$Keep) {
 
 # ------------------------------------------------------- Chrome extension: stage, verify, swap ----
 function Get-ExtActive {
-    # /health ext_active: number of Chrome jobs in flight, -1 = unknown (busy). Missing field (backend without Chrome) or
-    # no backend answering = nothing can be in flight = 0.
+    # /health ext_active: number of Chrome jobs in flight, -1 = unknown (busy). A missing field (backend without Chrome) = 0;
+    # a backend that does not answer is unknown, hence busy (-1): the swap waits / is postponed, never guessed.
     if ($Fake) { $s = Get-FakeState; if ($null -ne $s.PSObject.Properties['ext_active']) { return [int]$s.ext_active } return 0 }
-    try { $h = Get-LocalJson $HealthUrl } catch { Write-Log "ext_active: /health not answering ($($_.Exception.Message)): treated as idle"; return 0 }
+    try { $h = Get-LocalJson $HealthUrl } catch { Write-Log "ext_active: /health not answering ($($_.Exception.Message)): treated as busy"; return -1 }
     if ($null -eq $h.PSObject.Properties['ext_active']) { return 0 }
     return [int]$h.ext_active
 }
