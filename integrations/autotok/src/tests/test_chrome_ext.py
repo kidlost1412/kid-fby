@@ -244,16 +244,47 @@ def test_crash_after_result_stored_before_parent_finalized(engine, app, video_fi
     assert history(engine, sid).post_id == "7701245450858351893"
 
 
-def test_crash_between_claim_and_dispatch_never_reaches_cookies(engine, app, video_file, cookie_calls, monkeypatch):
+def test_chrome_job_starts_pending_ext_and_the_database_never_lets_it_run(engine, app, video_file, cookie_calls):
+    """QA fix 2: from creation on, a Chrome account's job is in a status v3.1.0 never claims, and the DB
+    trigger refuses 'running' for it whatever code tries."""
     aid = chrome_account(engine)
-    sid = schedule(engine, aid)
-    monkeypatch.setattr(worker, "dispatch_ext", lambda row: (_ for _ in ()).throw(PowerLoss("after claim")))
-    with pytest.raises(PowerLoss):
-        worker.tick()
-    monkeypatch.undo()
-    assert parent(engine, sid).status == "running" and children(engine) == []
-    worker.tick()  # a fresh tick does not re-run a running row (reclaim_stale handles it later)
-    assert cookie_calls == [] and children(engine) == []
+    when = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    r = app.post("/api/schedules", json={"username": "alice", "title": "t", "source_type": "local",
+                                          "source_ref": "clip.mp4", "scheduled_for": when})
+    assert r.status_code == 201, r.text
+    sid = r.json()["id"]
+    assert r.json()["status"] == "pending_ext"
+    con = sqlite3.connect(engine.url.database)
+    con.execute("UPDATE scheduled_uploads SET status='pending' WHERE id=?", (sid,))  # as an old version could
+    con.execute("UPDATE scheduled_uploads SET status='running', attempts=attempts+1 WHERE id=?", (sid,))
+    con.commit()
+    assert con.execute("SELECT status, attempts FROM scheduled_uploads WHERE id=?", (sid,)).fetchone() == ("pending", 0)
+    con.close()
+    worker.tick()  # the safety net adopts it, promotion creates the child
+    assert parent(engine, sid).status == "waiting_ext" and parent(engine, sid).attempts == 1
+    assert cookie_calls == []
+
+
+def test_pending_ext_waits_for_its_due_time(engine, app, video_file):
+    aid = chrome_account(engine)
+    sid = schedule(engine, aid, when_offset=3600)
+    worker.tick()
+    assert parent(engine, sid).status == "pending_ext" and children(engine) == []
+
+
+def test_publisher_switch_is_refused_while_the_account_has_open_jobs(engine, app, saved_account, video_file):
+    aid = app.post("/api/accounts", json={"username": "alice"}).json()["id"]
+    chrome = Chrome(app, "alice", UID_A)
+    sid = schedule(engine, aid, when_offset=3600)  # a cookie job, not yet due
+    r = app.patch(f"/api/accounts/{aid}", json={"publisher": "chrome", "client_id": chrome.client_id})
+    assert r.status_code == 409 and parent(engine, sid).status == "pending"
+    app.patch(f"/api/schedules/{sid}", json={"status": "cancelled"})
+    assert app.patch(f"/api/accounts/{aid}", json={"publisher": "chrome", "client_id": chrome.client_id}).status_code == 200
+    sid2 = app.post("/api/schedules", json={"username": "alice", "title": "t", "source_type": "local",
+                                             "source_ref": "clip.mp4",
+                                             "scheduled_for": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()}).json()["id"]
+    assert parent(engine, sid2).status == "pending_ext"
+    assert app.patch(f"/api/accounts/{aid}", json={"publisher": "cookies"}).status_code == 409
 
 
 # ---------- acceptance 2: late result after a restart ----------

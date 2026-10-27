@@ -22,6 +22,7 @@ from api.schemas import (
     ScheduledUploadRead,
     ScheduledUploadUpdate,
 )
+from api.services import ext
 from api.services import videos as library
 from api.services.history import chunks, local_identity, post_url_of, schedule_key, track_schedule
 from api.services.tiktok_adapter import SCHEDULE_MODE_OPTION, SCHEDULE_OPTION, native_schedule
@@ -126,7 +127,7 @@ def create_schedule(
         title=payload.title,
         options_json=json.dumps(options),
         scheduled_for=now_utc(),
-        status="pending",
+        status=ext.queued_status(acct),
     )
     session.add(row)
     session.flush()
@@ -178,7 +179,9 @@ def update_schedule(
                            "clear result. Check the account first, then retry with confirm_uncertain=true "
                            "if it isn't there.",
                 )
-            changes.update(status="pending", result_text=None, publish_uncertain=False)
+            acct = session.get(Account, row.account_id)
+            changes.update(status=ext.queued_status(acct) if acct else "pending", result_text=None,
+                           publish_uncertain=False)
             legacy_options = _legacy_options(row)
             if legacy_options is not None:
                 # Old PC-side job: the owner asked for it now, so it must not be re-expired as late.

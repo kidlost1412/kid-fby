@@ -52,6 +52,16 @@ def _check_user_id_free(session: Session, user_id: str, except_id: int | None = 
         raise HTTPException(status_code=409, detail=f"tài khoản TikTok này đã gắn với '{other.username}'")
 
 
+SWITCH_BUSY_TEXT = "Tài khoản còn video đang chờ hoặc đang đăng — đợi xong hoặc hủy trước khi đổi cách đăng"
+
+
+def _has_open_jobs(session: Session, acct: Account) -> bool:
+    if session.exec(select(ScheduledUpload).where(ScheduledUpload.account_id == acct.id,
+                                                  ScheduledUpload.status.in_(("pending", "running")))).first():
+        return True
+    return _has_ext_work(session, acct)
+
+
 def _has_ext_work(session: Session, acct: Account) -> bool:
     if session.exec(select(ScheduledUpload).where(ScheduledUpload.account_id == acct.id,
                                                   ScheduledUpload.status.in_(QUEUED_EXT))).first():
@@ -114,6 +124,10 @@ def update_account(
     acct = _get(session, account_id)
     if payload.display_name is not None:
         acct.display_name = payload.display_name
+    if payload.publisher is not None and payload.publisher != acct.publisher and _has_open_jobs(session, acct):
+        # Refused rather than moving rows: a job is decided by its publisher from creation on (v3.1.0 must
+        # never find a Chrome job in 'pending', and a cookie job must not silently go to Chrome).
+        raise HTTPException(status_code=409, detail=SWITCH_BUSY_TEXT)
     if payload.publisher == "chrome":
         if payload.client_id is None:
             raise HTTPException(status_code=422, detail="client_id is required to post through Chrome")
@@ -127,8 +141,6 @@ def update_account(
     elif payload.publisher == "cookies" and acct.publisher != "cookies":
         if not acct.cookie_path or not account_store.exists(acct.username):
             raise HTTPException(status_code=409, detail="tài khoản này chưa có phiên cookie — đăng nhập trước")
-        if _has_ext_work(session, acct):
-            raise HTTPException(status_code=409, detail="tài khoản còn việc đang chờ Chrome — đợi xong hoặc hủy trước")
         acct.publisher = "cookies"
     if payload.proxy is not None:
         try:

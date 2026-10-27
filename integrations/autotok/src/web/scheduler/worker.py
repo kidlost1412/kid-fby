@@ -135,6 +135,8 @@ def claim_next_due(session: Session) -> Optional[ScheduledUpload]:
         select(ScheduledUpload)
         .where(ScheduledUpload.status == "pending")
         .where(ScheduledUpload.scheduled_for <= now)
+        # Chrome accounts' jobs go through reconcile_ext (pending_ext), never through here.
+        .where(ScheduledUpload.account_id.not_in(select(Account.id).where(Account.publisher == "chrome")))
         .order_by(ScheduledUpload.scheduled_for)
         .limit(1)
     ).first()
@@ -302,37 +304,6 @@ def finalize(schedule_id: int, outcome: UploadOutcome, *, attempts: int, key: Op
               schedule_id, attempts, "succeeded" if outcome.ok else outcome.message)
 
 
-def dispatch_ext(row: ScheduledUpload) -> None:
-    """Chrome account: never wait here. A claimed row (running) becomes pending_ext; reconcile_ext then
-    creates its child when the account is free. Invalid jobs fail definitely, nothing sent, no retry."""
-    _, error = ext.wire_options(row)
-    if error is None and row.source_type == "local":
-        try:
-            library.resolve(row.source_ref)
-        except ValueError as exc:
-            error = str(exc)
-    if error:
-        finalize(row.id, UploadOutcome(ok=False, message=error), attempts=row.attempts, key=schedule_key(row))
-        return
-    with Session(_api_db.engine) as s:
-        won = s.exec(update(ScheduledUpload).where(
-            ScheduledUpload.id == row.id, ScheduledUpload.attempts == row.attempts,
-            ScheduledUpload.status == "running").values(status="pending_ext", updated_at=now_utc())).rowcount
-        if won == 1:
-            fresh = s.get(ScheduledUpload, row.id)
-            s.refresh(fresh)
-            track_schedule(s, fresh)
-        s.commit()
-    log.info("job %s attempt %s: %s", row.id, row.attempts, "handed to Chrome (pending_ext)" if won else
-             "changed before it could be handed to Chrome")
-
-
-def _is_chrome(row: ScheduledUpload) -> bool:
-    with Session(_api_db.engine) as s:
-        acct = s.get(Account, row.account_id)
-        return bool(acct and acct.publisher == "chrome")
-
-
 def tick() -> bool:
     """One poll cycle. Returns True if a job was processed, False if idle.
     Visible in tests so they can drive the worker deterministically."""
@@ -340,15 +311,11 @@ def tick() -> bool:
         reclaim_stale(s)
         expire_late_legacy(s)
     try:
-        ext.reconcile_ext()
+        ext.reconcile_ext()  # Chrome accounts: deadlines, results, promotion of due pending_ext jobs
     except Exception:
         log.exception("reconcile_ext failed")
     with Session(_api_db.engine) as s:
         claimed = claim_next_due(s)
-    if claimed and _is_chrome(claimed):
-        dispatch_ext(claimed)
-        ext.reconcile_ext()
-        return True
     if not claimed:
         try:
             links.tick()  # idle: look up one missing post link (read-only, never posts)
