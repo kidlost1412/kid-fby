@@ -1082,7 +1082,7 @@ def test_fresh_database_has_new_columns_and_version(client, db_path):
     assert {"attempt_token", "heartbeat_at"} <= _columns(db_path, "desktop_receipts")
     assert "prior_uncertain" in _columns(db_path, "upload_history")
     con = sqlite3.connect(db_path)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION == 3
+    assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION == 4
     con.close()
 
 

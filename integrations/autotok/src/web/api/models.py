@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
+from sqlalchemy import Index, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 from api.db import now_utc
@@ -19,11 +20,16 @@ class Account(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(index=True, unique=True, max_length=128)
     display_name: Optional[str] = Field(default=None, max_length=128)
-    cookie_path: str  # absolute path to tiktok_session-{username}.cookie
+    # absolute path to tiktok_session-{username}.cookie; "" for an account that only posts through Chrome
+    cookie_path: str
     has_valid_session: bool = Field(default=True)
     created_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)
     last_used_at: Optional[datetime] = Field(default=None)
+    # v4: 'cookies' (this backend posts with the saved session) or 'chrome' (the paired Chrome
+    # extension posts). The SQL default keeps inserts from older versions valid.
+    publisher: str = Field(default="cookies", max_length=16, sa_column_kwargs={"server_default": "cookies"})
+    chrome_user_id: Optional[str] = Field(default=None, max_length=32)  # TikTok user_id_str the Chrome must report
 
 
 # ---------- scheduled uploads -----------------------------------------------
@@ -108,6 +114,65 @@ class UploadHistory(SQLModel, table=True):
     tiktok_schedule_time: Optional[datetime] = None  # UTC; set only when TikTok holds the post
     publish_response_json: Optional[str] = None  # sanitized, at most ~8 KB
     caption: Optional[str] = None  # what was posted; the late link lookup matches on it
+
+
+# ---------- Chrome extension publisher (v4) -----------------------------------
+
+EXT_TERMINAL = ("posted", "rejected", "uncertain", "revoked", "failed")
+
+
+class ExtensionClient(SQLModel, table=True):
+    """A paired Chrome profile. Only the SHA-256 of its bearer token is stored."""
+    __tablename__ = "extension_clients"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    token_hash: str = Field(index=True, unique=True, max_length=64)
+    label: str = Field(default="", max_length=128)
+    tiktok_username: Optional[str] = Field(default=None, max_length=128)
+    tiktok_user_id: Optional[str] = Field(default=None, index=True, max_length=32)
+    ext_version: str = Field(default="", max_length=32)
+    protocol: int = Field(default=0)
+    created_at: datetime = Field(default_factory=now_utc)
+    last_seen_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None  # removed in the GUI: the token no longer works
+
+
+class ExtensionJob(SQLModel, table=True):
+    """One publish attempt handed to the Chrome extension: the child of (schedule_id, attempt).
+    See integrations/autotok-extension/PROTOCOL.md for the state machine."""
+    __tablename__ = "extension_jobs"
+    __table_args__ = (
+        UniqueConstraint("schedule_id", "attempt", name="ux_extension_jobs_attempt"),
+        # At most one unfinished child per account: per-account serialization in the database.
+        Index("ux_extension_jobs_active_account", "account_id", unique=True,
+              sqlite_where=text("state NOT IN ('posted','rejected','uncertain','revoked','failed')")),
+    )
+    id: str = Field(primary_key=True, max_length=40)
+    schedule_id: int = Field(index=True)
+    attempt: int
+    schedule_key: str  # history key of the parent: a late result is recorded even if the parent is gone
+    request_id: Optional[str] = None  # desktop receipt, for logs
+    account_id: int
+    expect_user_id: str
+    video_name: str
+    caption: str
+    options_json: str = "{}"  # wire options: visibility_type, allow_*, ai_label, schedule_time (UTC ISO or null)
+    state: str = Field(default="queued", index=True, max_length=16)
+    nonce: str
+    claim_client: Optional[int] = None
+    claim_token: Optional[str] = None
+    claimed_at: Optional[datetime] = None
+    heartbeat_at: Optional[datetime] = None
+    authorized_at: Optional[datetime] = None
+    auth_sha: Optional[str] = None
+    auth_creation_id: Optional[str] = None
+    cancel_requested: bool = False
+    note: Optional[str] = None  # why it was revoked / timed out
+    result_json: Optional[str] = None  # first result the extension reported
+    result_at: Optional[datetime] = None
+    duplicate_results: int = 0
+    finalized_state: Optional[str] = None  # child state last applied to the parent / history
+    created_at: datetime = Field(default_factory=now_utc)
+    updated_at: datetime = Field(default_factory=now_utc)
 
 
 class LoginSession(SQLModel, table=True):

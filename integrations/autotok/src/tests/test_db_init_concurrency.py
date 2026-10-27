@@ -40,7 +40,7 @@ def test_concurrent_init_on_fresh_db_all_succeed(tmp_path, round_):
     assert [code for code, _ in results] == [0, 0, 0, 0], "\n".join(err for _, err in results)
     con = sqlite3.connect(db)
     try:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 4
         cols = {r[1] for r in con.execute("PRAGMA table_info(upload_history)")}
         assert {"prior_uncertain", "tiktok_schedule_time", "post_id"} <= cols
     finally:
@@ -51,7 +51,7 @@ def _schema_ok(db):
     con = sqlite3.connect(db)
     try:
         cols = {r[1] for r in con.execute("PRAGMA table_info(upload_history)")}
-        return con.execute("PRAGMA user_version").fetchone()[0] == 3 and "prior_uncertain" in cols
+        return con.execute("PRAGMA user_version").fetchone()[0] == 4 and "prior_uncertain" in cols
     finally:
         con.close()
 

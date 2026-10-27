@@ -126,7 +126,7 @@ def init_db(eng: Engine | None = None) -> None:
 
 
 # Stored in SQLite's PRAGMA user_version once every step of _migrate has finished.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _add_column(conn, table: str, column: str, ddl: str) -> bool:
@@ -179,6 +179,16 @@ def _migrate(eng: Engine) -> None:
             if exists:
                 conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_upload_history_link_state "
                                      "ON upload_history (link_state)")
+        if version < 4:
+            # Chrome extension publisher. Additive only: older versions keep working on this file
+            # (their inserts get publisher='cookies' from the SQL default) and never claim the new
+            # pending_ext/waiting_ext statuses. extension_clients/extension_jobs come from create_all.
+            _add_column(conn, "accounts", "publisher", "VARCHAR(16) NOT NULL DEFAULT 'cookies'")
+            _add_column(conn, "accounts", "chrome_user_id", "VARCHAR(32)")
+            if list(conn.exec_driver_sql("PRAGMA table_info(extension_jobs)")):
+                conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ux_extension_jobs_active_account "
+                                     "ON extension_jobs (account_id) WHERE state NOT IN "
+                                     "('posted','rejected','uncertain','revoked','failed')")
         conn.exec_driver_sql(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
