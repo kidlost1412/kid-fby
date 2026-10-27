@@ -30,6 +30,12 @@ def autotok_home(tmp_path, monkeypatch):
     from tests.test_uploader import FakeBrowser
 
     monkeypatch.setattr(uploader_mod, "publish_in_browser", FakeBrowser())
+    # Never open the owner's real Chrome from a test: record launches instead.
+    import api.services.ext as ext_mod
+
+    launches = []
+    monkeypatch.setattr(ext_mod, "launcher", lambda exe, profile: launches.append((exe, profile)) or True)
+    monkeypatch.setattr(ext_mod, "_test_launches", launches, raising=False)
     return home
 
 

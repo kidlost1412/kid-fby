@@ -188,6 +188,13 @@ Response `{"ok": true, "state": "...", "authorized": bool}`. 404 `unknown_job`.
   "created_at"}]` (`online` = seen in the last 90 s; removed clients are not listed). `status` is one
   of `ok | need_reload | offline | no_identity | conflict`. A client with `no_identity` never gets
   work (`/next` answers 409 `no_identity`) and the backend logs a warning on each such `hello`.
+- `PATCH /api/ext/clients/{id} {"chrome_profile_dir": "Profile 1"}` -> 200
+  `{"ok": true, "id", "chrome_profile_dir"}`. The Chrome profile folder name (as in
+  `%LOCALAPPDATA%\Google\Chrome\User Data\<dir>`), matching
+  `^(Default|Profile \d+|[A-Za-z0-9 _.-]{1,64})$`, no path separators, no leading/trailing space or
+  dot; `""`/null clears it. 400 `bad_request` if invalid, 404 `unknown_client`. `GET /api/ext/clients`
+  also returns `chrome_profile_dir` and `last_launch_at`. An extension cannot read its own profile
+  folder, so only the GUI sets it (there is no `hello` field for it).
 - `DELETE /api/ext/clients/{id}` -> 204. The token stops working at once (401). A job the client
   already claimed keeps its deadlines (and its result is still accepted from any paired client
   that holds the nonce and claim token).
@@ -237,6 +244,15 @@ each result):
   parent succeeded with the post id, so a confirmed retry never posts twice; if the newer attempt is
   already authorized, it is left alone and the late success is written to the history with its
   post id and a warning. A late success for a deleted parent goes to the history the same way.
+
+Opening Chrome: when a child is `queued` and no client of its TikTok user is online, the backend
+starts `chrome.exe --profile-directory="<dir>" --no-first-run` minimized without focus
+(SW_SHOWMINNOACTIVE) and detached, at most once per child and once per 3 min per profile. chrome.exe
+comes from `AUTOTOK_BROWSER_PATH` or the standard locations; `AUTOTOK_CHROME_LAUNCH=off` disables it.
+After a launch the claim deadline is 180 s from the launch. Without a known profile the job fails at
+the claim deadline with "Chrome chưa mở và chưa biết profile Chrome — mở Chrome hoặc chọn profile
+trong Kết nối Chrome" (without chrome.exe: "Chrome chưa mở và không tìm thấy chrome.exe trên máy —
+hãy mở Chrome"). All of this happens before any claim, so the publish gate is unchanged.
 
 Per account: at most one non-terminal child (partial unique index). Further jobs wait in
 `pending_ext`, FIFO by `scheduled_for`, then id. Other accounts are independent.

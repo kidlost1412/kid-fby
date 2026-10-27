@@ -13,9 +13,12 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import secrets
+import subprocess
 import threading
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -518,15 +521,115 @@ def ingest_result(job_id: str, body: dict) -> tuple[bool, str]:
 
 # ---------- reconciliation --------------------------------------------------
 
+# ---------- opening Chrome for a due job ------------------------------------
+
+LAUNCH_CLAIM_WITHIN = timedelta(seconds=180)  # claim deadline counted from a launch
+LAUNCH_EVERY = timedelta(minutes=3)  # at most one launch per profile in this window
+NO_PROFILE_TEXT = ("Chrome chưa mở và chưa biết profile Chrome — mở Chrome hoặc chọn profile trong Kết nối Chrome")
+NO_CHROME_TEXT = "Chrome chưa mở và không tìm thấy chrome.exe trên máy — hãy mở Chrome"
+PROFILE_DIR_RE = re.compile(r"^(Default|Profile \d+|[A-Za-z0-9 _.\-]{1,64})$")
+
+
+def valid_profile_dir(value: str) -> bool:
+    return bool(PROFILE_DIR_RE.fullmatch(value)) and value.strip(" .") == value and value not in (".", "..")
+
+
+def chrome_exe() -> Optional[str]:
+    """chrome.exe: AUTOTOK_BROWSER_PATH (set by run_autotok_web.find_chrome), else the standard locations."""
+    env = os.environ.get("AUTOTOK_BROWSER_PATH", "")
+    if env and Path(env).is_file() and Path(env).name.lower() == "chrome.exe":
+        return env
+    for root in (os.environ.get(k) for k in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA")):
+        if root:
+            candidate = Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe"
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def spawn_chrome(exe: str, profile_dir: str) -> bool:
+    """Start Chrome minimized without focus, fully detached: this process never owns Chrome's lifetime."""
+    args = [exe, f"--profile-directory={profile_dir}", "--no-first-run"]
+    try:
+        if os.name == "nt":
+            info = subprocess.STARTUPINFO()
+            info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            info.wShowWindow = 7  # SW_SHOWMINNOACTIVE
+            subprocess.Popen(args, startupinfo=info, close_fds=True, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+        else:
+            subprocess.Popen(args, close_fds=True, start_new_session=True, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except OSError:
+        log.exception("ext: could not start Chrome (%s, profile %s)", exe, profile_dir)
+        return False
+
+
+# Tests and the e2e harness replace this (or set AUTOTOK_CHROME_LAUNCH=off): never a real Chrome there.
+launcher = spawn_chrome
+
+
+def _launch_for(job_id: str, user_id: str, now: datetime) -> None:
+    """Queued child whose Chrome is offline: open that Chrome profile once (per child, per 3 min per profile).
+    Before any claim, so it cannot affect the publish gate. Without a profile/chrome.exe, the reason is kept."""
+    with Session(_api_db.engine) as s:
+        clients = s.exec(select(ExtensionClient).where(ExtensionClient.tiktok_user_id == user_id,
+                                                       ExtensionClient.revoked_at.is_(None))).all()
+        if any(online(c, now) for c in clients):
+            return
+        known = sorted((c for c in clients if c.chrome_profile_dir),
+                       key=lambda c: _utc(c.last_seen_at) or _utc(c.created_at), reverse=True)
+        exe = chrome_exe() if known else None
+        if not known or not exe or os.environ.get("AUTOTOK_CHROME_LAUNCH", "").lower() == "off":
+            note = NO_PROFILE_TEXT if not known else NO_CHROME_TEXT if not exe else NOT_READY_TEXT
+            s.exec(update(ExtensionJob).where(ExtensionJob.id == job_id, ExtensionJob.state == "queued",
+                                              ExtensionJob.note.is_(None)).values(note=note))
+            s.commit()
+            return
+        client = known[0]
+        profile, client_id = client.chrome_profile_dir, client.id
+        # Atomic across the API and scheduler processes: only one of them starts Chrome.
+        won = s.exec(update(ExtensionClient).where(
+            ExtensionClient.id == client.id,
+            (ExtensionClient.last_launch_at.is_(None)) | (ExtensionClient.last_launch_at < now - LAUNCH_EVERY))
+            .values(last_launch_at=now)).rowcount
+        s.commit()
+        s.refresh(client)
+        launched_at = now if won else _utc(client.last_launch_at)
+        s.exec(update(ExtensionJob).where(ExtensionJob.id == job_id, ExtensionJob.state == "queued",
+                                          ExtensionJob.launched_at.is_(None)).values(launched_at=launched_at))
+        s.commit()
+    if won:
+        ok = launcher(exe, profile)
+        log.info("ext: started Chrome profile %r for job %s (client %s): %s", profile, job_id, client_id,
+                 "ok" if ok else "failed")
+
+
+def _launch_due(now: datetime) -> None:
+    """After promotion, so a new child's Chrome is opened in the same tick."""
+    with Session(_api_db.engine) as s:
+        fresh = s.exec(select(ExtensionJob).where(ExtensionJob.state == "queued",
+                                                  ExtensionJob.launched_at.is_(None))).all()
+    for job in fresh:
+        try:
+            _launch_for(job.id, job.expect_user_id, now)
+        except OperationalError:
+            log.warning("ext: launch check for job %s skipped (database busy)", job.id)
+
+
 def _expire(now: datetime) -> None:
     with Session(_api_db.engine) as s:
-        queued = s.exec(select(ExtensionJob.id).where(ExtensionJob.state == "queued",
-                                                      ExtensionJob.created_at < now - CLAIM_WITHIN)).all()
+        queued = s.exec(select(ExtensionJob).where(ExtensionJob.state == "queued")).all()
+        queued = [j for j in queued
+                  if (_utc(j.launched_at) and now - _utc(j.launched_at) > LAUNCH_CLAIM_WITHIN)
+                  or (not j.launched_at and now - _utc(j.created_at) > CLAIM_WITHIN)]
         running = s.exec(select(ExtensionJob).where(ExtensionJob.state.in_(RUNNING))).all()
         authorized = s.exec(select(ExtensionJob).where(ExtensionJob.state == "authorized",
                                                        ExtensionJob.authorized_at < now - RESULT_WITHIN)).all()
-    for jid in queued:
-        revoke(jid, NOT_READY_TEXT)
+    for job in queued:
+        revoke(job.id, job.note or NOT_READY_TEXT)
     for job in running:
         if _utc(job.claimed_at) and now - _utc(job.claimed_at) > UPLOAD_WITHIN:
             revoke(job.id, TOO_LONG_TEXT)
@@ -622,7 +725,7 @@ def _create_child(row: ScheduledUpload, acct: Account, name: str, options: dict)
 def reconcile_ext() -> None:
     """Idempotent; safe from several threads and processes. Deadlines, results, promotion."""
     now = now_utc()
-    for step in (_expire, _finalize_all, _adopt_pending, _promote):
+    for step in (_expire, _finalize_all, _adopt_pending, _promote, _launch_due):
         try:
             step(now)
         except OperationalError:

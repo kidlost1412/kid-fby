@@ -522,7 +522,8 @@ def test_chrome_not_polling_fails_definitely_after_claim_window(engine, app, clo
     clock["offset"] = timedelta(seconds=121)
     ext.reconcile_ext()
     row = parent(engine, sid)
-    assert row.status == "failed" and not row.publish_uncertain and "Chrome chưa sẵn sàng" in row.result_text
+    # No paired Chrome profile is known: nothing can be opened, so the reason says how to fix it.
+    assert row.status == "failed" and not row.publish_uncertain and row.result_text == ext.NO_PROFILE_TEXT
     assert cookie_calls == []  # never falls back to cookies
 
 
@@ -817,3 +818,140 @@ def test_health_stays_responsive_while_an_ext_handler_waits_on_the_database(engi
     finally:
         server.should_exit = True
         t.join(timeout=10)
+
+
+# ---------- opening Chrome for a due job (fix2) ----------
+
+@pytest.fixture
+def fake_chrome(tmp_path, monkeypatch):
+    exe = tmp_path / "Chrome Có Dấu" / "chrome.exe"
+    exe.parent.mkdir()
+    exe.write_bytes(b"")
+    monkeypatch.setenv("AUTOTOK_BROWSER_PATH", str(exe))
+    monkeypatch.delenv("AUTOTOK_CHROME_LAUNCH", raising=False)
+    return str(exe)
+
+
+def _offline(engine, client_id, profile_dir="Profile 1"):
+    with Session(engine) as s:
+        c = s.get(ExtensionClient, client_id)
+        c.last_seen_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+        c.chrome_profile_dir = profile_dir
+        s.add(c)
+        s.commit()
+
+
+def test_offline_chrome_is_started_once_with_its_profile(engine, app, clock, video_file, fake_chrome):
+    aid = chrome_account(engine)
+    chrome = Chrome(app, "alice", UID_A)
+    _offline(engine, chrome.client_id)
+    sid = schedule(engine, aid)
+    worker.tick()
+    ext.reconcile_ext()
+    assert ext._test_launches == [(fake_chrome, "Profile 1")]
+    assert children(engine, sid)[0].launched_at is not None
+    clock["offset"] = timedelta(seconds=150)  # past the normal 120 s claim deadline, inside 180 s from launch
+    ext.reconcile_ext()
+    assert children(engine, sid)[0].state == "queued" and ext._test_launches == [(fake_chrome, "Profile 1")]
+    clock["offset"] = timedelta(0)
+    chrome.hello("alice", UID_A)  # Chrome came up
+    job = chrome.next().json()
+    assert job["id"] == children(engine, sid)[0].id
+
+
+def test_launched_job_still_fails_definitely_after_the_extended_deadline(engine, app, clock, video_file, fake_chrome):
+    aid = chrome_account(engine)
+    chrome = Chrome(app, "alice", UID_A)
+    _offline(engine, chrome.client_id)
+    sid = schedule(engine, aid)
+    worker.tick()
+    clock["offset"] = timedelta(seconds=181)
+    ext.reconcile_ext()
+    row = parent(engine, sid)
+    assert row.status == "failed" and not row.publish_uncertain and "Chrome chưa sẵn sàng" in row.result_text
+
+
+def test_no_second_launch_for_the_same_profile_within_three_minutes(engine, app, clock, video_file, fake_chrome):
+    aid = chrome_account(engine)
+    chrome = Chrome(app, "alice", UID_A)
+    _offline(engine, chrome.client_id)
+    first = schedule(engine, aid)
+    worker.tick()
+    clock["offset"] = timedelta(seconds=181)
+    ext.reconcile_ext()  # first fails; the next job of the account gets a child
+    assert parent(engine, first).status == "failed"
+    clock["offset"] = timedelta(seconds=150)
+    schedule(engine, aid, title="second")
+    ext.reconcile_ext()
+    assert len(ext._test_launches) == 1  # 150 s after the first launch: not again
+    second = children(engine)[-1]
+    assert second.caption == "second" and second.launched_at is not None  # deadline counted from that launch
+    clock["offset"] = timedelta(seconds=200)
+    ext.reconcile_ext()
+    assert len(ext._test_launches) == 1  # a child is launched for at most once
+
+
+def test_online_chrome_is_never_launched(engine, app, video_file, fake_chrome):
+    aid = chrome_account(engine)
+    chrome = Chrome(app, "alice", UID_A)
+    app.patch(f"/api/ext/clients/{chrome.client_id}", json={"chrome_profile_dir": "Default"})
+    schedule(engine, aid)
+    worker.tick()
+    assert ext._test_launches == []
+
+
+def test_unknown_profile_gives_the_reason_and_no_launch(engine, app, clock, video_file, fake_chrome):
+    aid = chrome_account(engine)
+    chrome = Chrome(app, "alice", UID_A)
+    _offline(engine, chrome.client_id, profile_dir=None)
+    sid = schedule(engine, aid)
+    worker.tick()
+    clock["offset"] = timedelta(seconds=121)
+    ext.reconcile_ext()
+    row = parent(engine, sid)
+    assert ext._test_launches == []
+    assert row.status == "failed" and not row.publish_uncertain and row.result_text == ext.NO_PROFILE_TEXT
+
+
+def test_chrome_exe_missing_gives_a_reason_and_no_launch(engine, app, clock, video_file, monkeypatch):
+    monkeypatch.setenv("AUTOTOK_BROWSER_PATH", "")
+    monkeypatch.setattr(ext, "chrome_exe", lambda: None)
+    aid = chrome_account(engine)
+    chrome = Chrome(app, "alice", UID_A)
+    _offline(engine, chrome.client_id)
+    sid = schedule(engine, aid)
+    worker.tick()
+    clock["offset"] = timedelta(seconds=121)
+    ext.reconcile_ext()
+    assert ext._test_launches == [] and parent(engine, sid).result_text == ext.NO_CHROME_TEXT
+
+
+@pytest.mark.parametrize("value,ok", [
+    ("Default", True), ("Profile 1", True), ("Profile 12", True), ("Hồ sơ", False), ("..", False),
+    (r"a\b", False), ("a/b", False), (r"C:\Users\x", False), ("x" * 65, False), (" Profile 1", False),
+    ("Guest Profile", True), (5, False), ("", True), (None, True),
+])
+def test_profile_dir_validation(engine, app, value, ok):
+    chrome = Chrome(app, "alice", UID_A)
+    r = app.patch(f"/api/ext/clients/{chrome.client_id}", json={"chrome_profile_dir": value})
+    assert (r.status_code == 200) is ok, r.text
+    listed = app.get("/api/ext/clients").json()[0]["chrome_profile_dir"]
+    assert listed == (value or None if ok else None)
+    assert app.patch(f"/api/ext/clients/{chrome.client_id}", headers={"Origin": ORIGIN},
+                     json={"chrome_profile_dir": "Default"}).status_code == 403  # GUI only
+
+
+def test_spawn_uses_minimized_no_focus_detached(monkeypatch):
+    import subprocess as sp
+    seen = {}
+
+    class FakePopen:
+        def __init__(self, args, **kw):
+            seen["args"], seen["kw"] = args, kw
+
+    monkeypatch.setattr(ext.subprocess, "Popen", FakePopen)
+    assert ext.spawn_chrome(r"C:\Chrome\chrome.exe", "Profile 1") is True
+    assert seen["args"] == [r"C:\Chrome\chrome.exe", "--profile-directory=Profile 1", "--no-first-run"]
+    if ext.os.name == "nt":
+        assert seen["kw"]["startupinfo"].wShowWindow == 7
+        assert seen["kw"]["creationflags"] & sp.DETACHED_PROCESS and seen["kw"]["creationflags"] & sp.CREATE_NEW_PROCESS_GROUP
