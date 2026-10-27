@@ -222,4 +222,8 @@ Test-Case 'ext: remove-client sends DELETE; pair-code sends POST' {
     $r = Invoke-ExtAction $fake @{ op = 'pair-code' }
     Assert-Equal ($r.Result[0].text | ConvertFrom-Json).code '123456'
 }
+Test-Case 'the background runspace is given Get-TikTokActiveStatuses (the worker calls it; a missing function broke the fast status pass)' {
+    Assert-True ($script:tikTokWorkerFunctions -contains 'Get-TikTokActiveStatuses') 'not in tikTokWorkerFunctions'
+    foreach ($n in $script:tikTokWorkerFunctions) { Assert-True (Test-Path "function:$n") "worker function $n is not defined" }
+}
 Complete-Tests

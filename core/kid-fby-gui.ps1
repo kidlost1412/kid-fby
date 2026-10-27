@@ -3497,7 +3497,7 @@ $script:tikTokWorker = {
 $script:tikTokWorkerFunctions = @('Get-CanonicalPath', 'Get-FileStamp', 'Get-ReupMutexName', 'Get-ReupMetadata', 'Update-ReupMetadata',
     'Set-ReupField', 'Get-ReupManualState', 'Update-ReupAggregate', 'Format-TikTokTime', 'Get-TikTokSortKey', 'ConvertTo-TikTokHistoryEntry',
     'Get-TikTokHistorySignature', 'Get-TikTokReceiptAge', 'Get-TikTokReceiptState', 'Merge-TikTokVideoHistory', 'Set-TikTokItemHistory',
-    'Test-TikTokStaleDowngrade', 'Update-TikTokEntryFromJob', 'New-TikTokReceiptIndex',
+    'Test-TikTokStaleDowngrade', 'Get-TikTokActiveStatuses', 'Update-TikTokEntryFromJob', 'New-TikTokReceiptIndex',
     'Test-KhoVideoFileName', 'Get-KhoVideoKey', 'Test-KhoVideoKey', 'Get-KhoVideoFileName', 'Get-KhoVideoPath', 'Get-KhoThumbKey')
 
 function Get-TikTokWorkerSessionState {
