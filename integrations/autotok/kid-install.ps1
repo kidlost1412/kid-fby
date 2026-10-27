@@ -22,6 +22,9 @@ KID_AUTOTOK_FAKE_STATE ('dead'/'broken': services down / not coming back on star
 injects a failure, hang-<phase> waits there to be killed (fake mode only).
 Takeover of a git/custom starter keeps a durable journal (autotok-takeover-journal.json) until the new release is
 verified; rollback, the next run and autotok-start.ps1 restore the old setup from it.
+Chrome extension: bundle entries extension/<file> are verified, staged to integrations\autotok-extension.new and swapped in by
+rename (old folder kept as .bak, restored on any failure). The swap waits while /health says ext_active is busy (-1 or > 0), up to
+-DrainTimeoutSec, then is postponed to the next run. It never touches the database (data lives outside the releases).
 KID_AUTOTOK_PYTHON_NUPKG may point at an already downloaded python nupkg; it must match the pinned SHA256.
 #>
 param(
@@ -61,6 +64,8 @@ $LauncherPath = Join-Path $Integrations 'autotok-start.ps1'
 $LocalJsonPath = Join-Path $Integrations 'tiktok\local.json'
 $TikTokStartPath = Join-Path $Integrations 'tiktok\start.ps1'
 $LogPath = Join-Path $Integrations 'autotok-install.log'
+$ExtDir = Join-Path $Integrations 'autotok-extension'
+$HealthUrl = 'http://127.0.0.1:8765/health'   # tests point it at a fake /health
 # Takeover of a git/custom setup: original bytes of the files below (fixed keys; paths never come from the journal),
 # written before anything is stopped and deleted once the new release passed the readiness gate.
 $JournalPath = Join-Path $Integrations 'autotok-takeover-journal.json'
@@ -183,6 +188,7 @@ function Get-BundleTarget([string]$Name, [string]$Dest) {
     # bundle.json and tiktok/start.ps1 go to <release>\.kid\; autotok/<x> goes to <release>\<x>.
     if ($Name -ceq 'bundle.json') { $rel = '.kid\bundle.json' }
     elseif ($Name -ceq 'tiktok/start.ps1') { $rel = '.kid\tiktok-start.ps1' }
+    elseif ($Name.StartsWith('extension/', [StringComparison]::Ordinal)) { $rel = '.kid\extension\' + $Name.Substring(10).Replace('/', '\') }
     elseif ($Name.StartsWith('autotok/', [StringComparison]::Ordinal) -and -not $Name.StartsWith('autotok/.kid/', [StringComparison]::OrdinalIgnoreCase)) { $rel = $Name.Substring(8).Replace('/', '\') }
     else { return $null }
     $target = [IO.Path]::GetFullPath((Join-Path $Dest $rel))
@@ -507,7 +513,14 @@ function Get-BusyJobCount {
     if ($Fake) { return [int](Get-FakeState).busy }
     $running = Get-LocalJson 'http://127.0.0.1:8765/api/schedules?status=running'
     $pending = Get-LocalJson 'http://127.0.0.1:8765/api/schedules?status=pending'
-    return (@($running | Where-Object { $_ }).Count + @($pending | Where-Object { $_ }).Count)
+    $count = (@($running | Where-Object { $_ }).Count + @($pending | Where-Object { $_ }).Count)
+    # Chrome publisher: waiting / posting jobs and a busy-or-unknown ext_active (-1) also block the switch.
+    $h = Get-LocalJson $HealthUrl
+    if ($null -ne $h.PSObject.Properties['chrome_ext']) {
+        foreach ($st in @('pending_ext', 'waiting_ext')) { $count += @((Get-LocalJson "http://127.0.0.1:8765/api/schedules?status=$st") | Where-Object { $_ }).Count }
+        if ($null -ne $h.PSObject.Properties['ext_active']) { $a = [int]$h.ext_active; if ($a -ne 0) { $count += [Math]::Max(1, $a) } }
+    }
+    return $count
 }
 function Test-ProcessRecordAlive($Record) {
     $p = Get-Process -Id ([int]$Record.pid) -ErrorAction SilentlyContinue
@@ -726,6 +739,93 @@ function Remove-OldReleases([string[]]$Keep) {
     }
 }
 
+# ------------------------------------------------------- Chrome extension: stage, verify, swap ----
+function Get-ExtActive {
+    # /health ext_active: number of Chrome jobs in flight, -1 = unknown (busy). Missing field (backend without Chrome) or
+    # no backend answering = nothing can be in flight = 0.
+    if ($Fake) { $s = Get-FakeState; if ($null -ne $s.PSObject.Properties['ext_active']) { return [int]$s.ext_active } return 0 }
+    try { $h = Get-LocalJson $HealthUrl } catch { Write-Log "ext_active: /health not answering ($($_.Exception.Message)): treated as idle"; return 0 }
+    if ($null -eq $h.PSObject.Properties['ext_active']) { return 0 }
+    return [int]$h.ext_active
+}
+function Remove-ExtTree([string]$Path) {
+    # Only the three extension folders may be deleted here.
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if ($full -notin @($ExtDir, ($ExtDir + '.new'), ($ExtDir + '.bak'))) { throw "Refusing to delete outside the extension folders: $full" }
+    if (Test-Path -LiteralPath $full) { Remove-TreeNoFollow $full }
+}
+function Test-ExtFolder([string]$Dir, [hashtable]$Wanted) {
+    # True when $Dir holds exactly the wanted files with the wanted SHA256 (Wanted: relative path with '/' -> sha256).
+    if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return $false }
+    $have = @(Get-ChildItem -LiteralPath $Dir -Recurse -File -Force)
+    if ($have.Count -ne $Wanted.Count) { return $false }
+    foreach ($rel in $Wanted.Keys) {
+        $f = Join-Path $Dir ($rel -replace '/', '\')
+        if (-not [IO.File]::Exists($f) -or (Get-Sha256Hex $f).ToLowerInvariant() -ne $Wanted[$rel]) { return $false }
+    }
+    return $true
+}
+function Install-Extension([hashtable]$Info, [string]$SrcDir) {
+    # Returns 'none' | 'current' | 'postponed' | 'installed'; throws after restoring the old folder when the swap fails.
+    $wanted = @{}
+    foreach ($k in $Info.Files.Keys) { if ($k.StartsWith('extension/', [StringComparison]::Ordinal)) { $wanted[$k.Substring(10)] = $Info.Files[$k].Sha } }
+    if (-not $wanted.Count) { return 'none' }
+    if (Test-ExtFolder $ExtDir $wanted) { Write-Log 'extension: already current'; return 'current' }
+    $new = $ExtDir + '.new'; $bak = $ExtDir + '.bak'
+    Remove-ExtTree $new
+    try {
+        foreach ($rel in $wanted.Keys) {
+            $src = Join-Path $SrcDir ($rel -replace '/', '\'); $dst = Join-Path $new ($rel -replace '/', '\')
+            [void][IO.Directory]::CreateDirectory((Split-Path -Parent $dst))
+            [IO.File]::Copy($src, $dst, $false)
+        }
+        Test-FailAt 'ext-stage'
+        if (-not (Test-ExtFolder $new $wanted)) { throw 'staged extension does not match the bundle manifest (SHA256)' }
+    } catch { Remove-ExtTree $new; throw }
+    $deadline = (Get-Date).AddSeconds($DrainTimeoutSec)
+    while ($true) {
+        $active = Get-ExtActive
+        if ($active -eq 0) { break }
+        if ((Get-Date) -ge $deadline) {
+            Remove-ExtTree $new
+            Write-Log "extension: swap POSTPONED to the next run (ext_active=$active after $DrainTimeoutSec s)"
+            return 'postponed'
+        }
+        Write-Log "extension: waiting, ext_active=$active"
+        Start-Sleep -Seconds $(if ($Fake) { 1 } else { 5 })
+    }
+    Remove-ExtTree $bak
+    $hadOld = Test-Path -LiteralPath $ExtDir -PathType Container
+    try {
+        if ($hadOld) { [IO.Directory]::Move($ExtDir, $bak) }
+        Test-FailAt 'ext-swap'
+        [IO.Directory]::Move($new, $ExtDir)
+        Test-FailAt 'ext-verify'
+        if (-not (Test-ExtFolder $ExtDir $wanted)) { throw 'extension folder does not match the manifest after the swap' }
+    } catch {
+        Write-Log "extension: swap FAILED ($($_.Exception.Message)), restoring the old folder"
+        if (Test-Path -LiteralPath $ExtDir) { Remove-ExtTree $ExtDir }
+        if ($hadOld -and (Test-Path -LiteralPath $bak)) { [IO.Directory]::Move($bak, $ExtDir) }
+        Remove-ExtTree $new
+        throw
+    }
+    Write-Log "extension: installed $($wanted.Count) files (previous kept in autotok-extension.bak)"
+    return 'installed'
+}
+function Invoke-ExtensionInstall([hashtable]$Info, [string]$ReleaseDir) {
+    # Never fails the backend install (already committed): returns a sentence for the result line, '' when nothing to say.
+    try {
+        switch (Install-Extension $Info (Join-Path $ReleaseDir '.kid\extension')) {
+            'installed' { return ' Tiện ích Chrome đã cập nhật: vào chrome://extensions bấm ⟳ nếu tiện ích đang bật.' }
+            'postponed' { return ' Tiện ích Chrome chưa cập nhật vì Chrome đang đăng video; sẽ cập nhật ở lần mở sau.' }
+        }
+    } catch {
+        Write-Log "extension: not updated: $($_.Exception.Message)"
+        return " Tiện ích Chrome chưa cập nhật được ($($_.Exception.Message)); thư mục cũ được giữ nguyên."
+    }
+    return ''
+}
+
 # ------------------------------------------------------------------ main ----
 $installLock = $null; $upgradeLock = $null
 $newDir = $null; $staging = $null; $committed = $false
@@ -847,7 +947,8 @@ try { :main do {
         try { Wait-Ready $current.Dir }
         catch { Stop-Install 'not-ready' "Bộ đăng TikTok $($info.Version) đã cài nhưng chưa chạy đủ (/health, cổng 17900 hoặc bộ hẹn giờ) sau $ReadyTimeoutSec giây. Nhật ký dịch vụ: $($current.Dir)\runtime\" }
         $committed = $true
-        $resultLine = "@@AUTOTOK_RESULT ok already-current Bộ đăng TikTok $($info.Version) đã sẵn sàng."
+        $extNote = Invoke-ExtensionInstall $info $current.Dir
+        $resultLine = "@@AUTOTOK_RESULT ok already-current Bộ đăng TikTok $($info.Version) đã sẵn sàng.$extNote"
         break main
     }
     if ($prev.Kind -eq 'none' -and ((Test-BackendHealthy) -or -not (Test-PortsFree))) {
@@ -926,7 +1027,8 @@ try { :main do {
 
     Write-Step 'cleanup' 98 'Đang dọn bản cũ…'
     Remove-OldReleases @($releaseName, $previousName)
-    $resultLine = "@@AUTOTOK_RESULT ok installed Đã cài bộ đăng TikTok $($info.Version)."
+    $extNote = Invoke-ExtensionInstall $info $newDir
+    $resultLine = "@@AUTOTOK_RESULT ok installed Đã cài bộ đăng TikTok $($info.Version).$extNote"
 } while ($false) } catch {
     $reason = [string]$_.Exception.Data['reason']
     if (-not $reason) { $reason = 'internal' }

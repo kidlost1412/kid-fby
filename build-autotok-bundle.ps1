@@ -3,10 +3,11 @@
   Build core\autotok-bundle.zip: the TikTok backend (integrations\autotok) packed for the one-click installer
   (integrations\autotok\kid-install.ps1). Only files on the explicit allowlist below go in; the zip is deterministic
   (sorted entries, fixed timestamps) so an unchanged backend gives the same SHA256 and is not re-downloaded by the updater.
-    .\build-autotok-bundle.ps1 [-Root <repo>] [-OutFile <zip>]
+    .\build-autotok-bundle.ps1 [-Root <repo>] [-OutFile <zip>] [-ExtensionDir <folder>]
+  The Chrome extension (integrations\autotok-extension, or -ExtensionDir) goes in as extension/<file> on an allowlist; the build FAILS when key material is found in that folder.
   Local build only: does not publish, commit or change the version.
 #>
-param([string]$Root = '', [string]$OutFile = '')
+param([string]$Root = '', [string]$OutFile = '', [string]$ExtensionDir = '')
 $ErrorActionPreference = 'Stop'
 if (-not $Root) { $Root = $PSScriptRoot }
 $Root = [IO.Path]::GetFullPath($Root).TrimEnd('\')
@@ -70,6 +71,25 @@ foreach ($name in @('__init__.py', 'control_server.py')) {
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing bundle file: integrations/autotok/src/web/novnc/$name" }
     $entries['autotok/src/web/novnc/' + $name] = $file
 }
+# Chrome extension: allowlist only (manifest.json, *.js, *.html, *.css, icons/*, the owner's guide). devserver/ and tests/ stay out.
+# Any key material anywhere in the extension folder fails the build (a signing key must never reach the bundle).
+if (-not $ExtensionDir) { $ExtensionDir = Join-Path $Root 'integrations\autotok-extension' }
+$ExtensionDir = [IO.Path]::GetFullPath($ExtensionDir).TrimEnd('\')
+if (-not (Test-Path -LiteralPath $ExtensionDir -PathType Container)) { throw "Missing extension folder: $ExtensionDir" }
+$keyPattern = '(?i)(\.(pem|key|p12|pfx|jks|keystore|crx|der|xml\.key)$|^(\.env.*|id_rsa.*|.*private.*key.*|.*secret.*|update-signing.*)$)'
+foreach ($fi in @(Get-ChildItem -LiteralPath $ExtensionDir -Recurse -File -Force)) {
+    if ($fi.Name -match $keyPattern) { throw "Key material in the extension folder, build refused: $($fi.FullName)" }
+}
+foreach ($fi in @(Get-ChildItem -LiteralPath $ExtensionDir -Recurse -File -Force)) {
+    if ($fi.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Links are not allowed in the bundle: $($fi.FullName)" }
+    $rel = $fi.FullName.Substring($ExtensionDir.Length + 1).Replace('\', '/')
+    $parts = $rel.Split('/')
+    if ($parts[0] -in @('devserver', 'tests', 'node_modules', '__pycache__')) { continue }
+    $ok = ($parts.Count -eq 1 -and ($rel -ceq 'manifest.json' -or $rel -ceq 'HUONG-DAN-CAI-TIEN-ICH.md' -or $rel -cmatch '^[A-Za-z0-9_.-]+\.(js|html|css)$')) -or
+          ($parts[0] -ceq 'icons' -and $parts.Count -eq 2 -and $rel -cmatch '^icons/[A-Za-z0-9_.-]+\.(png|svg|ico)$')
+    if ($ok) { $entries['extension/' + $rel] = $fi.FullName }
+}
+if (-not $entries.ContainsKey('extension/manifest.json')) { throw 'Bundle is missing extension/manifest.json' }
 $tiktokStarter = Join-Path $Root 'integrations\tiktok\start.ps1'
 if (-not (Test-Path -LiteralPath $tiktokStarter -PathType Leaf)) { throw 'Missing bundle file: integrations/tiktok/start.ps1' }
 $entries['tiktok/start.ps1'] = $tiktokStarter

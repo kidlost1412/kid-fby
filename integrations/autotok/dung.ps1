@@ -28,10 +28,23 @@ if (-not $Force -and ($taskAlive | Where-Object { $_.service -eq 'api' })) {
         $taskRunningJobs = @($taskRunningRaw | Where-Object { $_ })
         $taskPendingRaw = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/schedules?status=pending' -TimeoutSec 5
         $taskPendingJobs = @($taskPendingRaw | Where-Object { $_ })
+        # Chrome publisher (backend with chrome_ext): jobs waiting for / posted by the extension also count, and so does
+        # a busy or unknown ext_active (-1).
+        $taskHealth = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/health' -TimeoutSec 5
+        $taskExtJobs = @()
+        $taskExtActive = 0
+        if ($taskHealth.PSObject.Properties['chrome_ext']) {
+            foreach ($taskExtStatus in @('pending_ext', 'waiting_ext')) {
+                $taskExtRaw = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/schedules?status=$taskExtStatus" -TimeoutSec 5
+                $taskExtJobs += @($taskExtRaw | Where-Object { $_ })
+            }
+            if ($taskHealth.PSObject.Properties['ext_active']) { $taskExtActive = [int]$taskHealth.ext_active }
+        }
     } catch {
         throw "Khong kiem tra duoc lich dang chay ($($_.Exception.Message)). Dung -Force neu chac chan muon dung."
     }
     if ($taskRunningJobs.Count -gt 0) { throw "Dang co $($taskRunningJobs.Count) lich dang dang bai. Doi xong hoac dung -Force." }
+    if ($taskExtJobs.Count -gt 0 -or $taskExtActive -ne 0) { throw "Con video dang cho hoac dang dang qua Chrome ($($taskExtJobs.Count) lich, ext_active=$taskExtActive). Doi xong hoac dung -Force." }
     if ($taskPendingJobs.Count -gt 0) { throw "Con video dang cho gui len TikTok ($($taskPendingJobs.Count) lich). Doi gui xong hoac dung -Force." }
 }
 
