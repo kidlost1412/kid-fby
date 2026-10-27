@@ -772,6 +772,11 @@ function Install-Extension([hashtable]$Info, [string]$SrcDir) {
     if (-not $wanted.Count) { return 'none' }
     if (Test-ExtFolder $ExtDir $wanted) { Write-Log 'extension: already current'; return 'current' }
     $new = $ExtDir + '.new'; $bak = $ExtDir + '.bak'
+    # Power loss between old -> .bak and .new -> live leaves no live folder: put .bak back first (before any postponement or delete).
+    if (-not (Test-Path -LiteralPath $ExtDir) -and (Test-Path -LiteralPath $bak -PathType Container)) {
+        [IO.Directory]::Move($bak, $ExtDir)
+        Write-Log 'extension: live folder was missing, restored autotok-extension.bak (interrupted swap)'
+    }
     Remove-ExtTree $new
     try {
         foreach ($rel in $wanted.Keys) {
