@@ -971,6 +971,39 @@
                             Content="Tải Google Chrome" ToolTip="Mở https://www.google.com/chrome/" AutomationProperties.Name="Tải Google Chrome"/>
                   </StackPanel>
                 </ContentControl>
+                <!-- Ket noi Chrome: dang bai qua tien ich Chrome (ghep ma, danh sach Chrome, dang qua Cookie/Chrome) -->
+                <ContentControl x:Name="CardChrome" Style="{DynamicResource StickerCard}" Padding="20,16" Margin="0,0,0,14">
+                  <StackPanel>
+                    <DockPanel>
+                      <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button x:Name="BtnChromeGuide" Style="{DynamicResource BtnGhost}" Margin="0,0,10,0" Content="Mở hướng dẫn cài"
+                                AutomationProperties.Name="Mở hướng dẫn cài tiện ích Chrome"/>
+                        <Button x:Name="BtnChromeFolder" Style="{DynamicResource BtnGhost}" Margin="0,0,10,0" Content="Mở thư mục tiện ích"
+                                AutomationProperties.Name="Mở thư mục tiện ích Chrome"/>
+                        <Button x:Name="BtnChromePair" Style="{DynamicResource BtnPrimary}" Content="Tạo mã ghép nối" MinWidth="128"
+                                AutomationProperties.Name="Tạo mã ghép nối Chrome"/>
+                      </WrapPanel>
+                      <StackPanel Margin="0,0,16,0">
+                        <TextBlock Text="Kết nối Chrome" Style="{DynamicResource TextHeading}"/>
+                        <TextBlock x:Name="TxtChromeInfo" Style="{DynamicResource TextMutedStyle}" TextWrapping="Wrap" Margin="0,4,0,0"
+                                   Text="Đăng TikTok qua Chrome đã đăng nhập sẵn, không cần cookie. Cài tiện ích, bấm Tạo mã rồi nhập 6 số vào tiện ích."/>
+                      </StackPanel>
+                    </DockPanel>
+                    <Border x:Name="PanelChromeCode" Visibility="Collapsed" Background="{DynamicResource ButterSoft}" BorderBrush="{DynamicResource ButterLine}"
+                            BorderThickness="2" CornerRadius="16" Padding="18,10" Margin="0,12,0,0" HorizontalAlignment="Left">
+                      <StackPanel Orientation="Horizontal">
+                        <TextBlock x:Name="TxtChromeCode" FontSize="40" FontWeight="ExtraBold" VerticalAlignment="Center" Text="000 000"
+                                   AutomationProperties.Name="Mã ghép nối"/>
+                        <TextBlock x:Name="TxtChromeCountdown" Style="{DynamicResource TextMutedStyle}" VerticalAlignment="Center" Margin="18,0,0,0" Text="Còn 5:00"/>
+                      </StackPanel>
+                    </Border>
+                    <TextBlock x:Name="TxtChromeStatus" Style="{DynamicResource TextMutedStyle}" TextWrapping="Wrap" Margin="0,10,0,0" Visibility="Collapsed"/>
+                    <TextBlock Text="Chrome đã ghép nối" Style="{DynamicResource TextLabel}" FontWeight="ExtraBold" Margin="0,14,0,4"/>
+                    <StackPanel x:Name="ListChromeClients"/>
+                    <TextBlock Text="Tài khoản TikTok — đăng qua" Style="{DynamicResource TextLabel}" FontWeight="ExtraBold" Margin="0,14,0,4"/>
+                    <StackPanel x:Name="ListChromeAccounts"/>
+                  </StackPanel>
+                </ContentControl>
                 <ContentControl Style="{DynamicResource StickerCard}" Padding="20,16">
                   <DockPanel>
                     <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">

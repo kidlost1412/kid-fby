@@ -598,6 +598,7 @@ $script:uiNames = @(
     'BadgeStatusScrcpy','TxtStatusScrcpy','BtnInstallScrcpy','BadgeStatusAdb','TxtStatusAdb','BtnInstallAdb',
     'BadgeStatusYtdlp','TxtStatusYtdlp','BtnInstallYtdlp','BadgeStatusFfmpeg','TxtStatusFfmpeg','BtnInstallFfmpeg',
     'BadgeStatusWhisper','TxtStatusWhisper','BtnInstallWhisper','BtnCheckTools','BtnOpenUninstall',
+    'CardChrome','BtnChromeGuide','BtnChromeFolder','BtnChromePair','TxtChromeInfo','PanelChromeCode','TxtChromeCode','TxtChromeCountdown','TxtChromeStatus','ListChromeClients','ListChromeAccounts',
     'BadgeAutotok','TxtAutotokBadge','BtnAutotokInstall','TxtAutotokInfo','TxtAutotokProgress','BarAutotok','BtnAutotokChrome',
     'ViewLogs','TxtLogPath','BtnCopyLog','BtnOpenLogFolder','BtnClearLog','TxtLog',
     'ViewUpdate','BtnUpdate','TxtUpdateButton','TxtUpdateInfo','ViewAbout','TxtAboutVersion',
@@ -806,6 +807,7 @@ function Get-CurrentSettings {
             customW = [double]$script:gifCustomWidth; customH = [double]$script:gifCustomHeight
         }
         sync = [ordered]@{ allowOnset = [bool]($ui.ChkAllowOnsetSync -and $ui.ChkAllowOnsetSync.IsChecked) }
+        chrome = [ordered]@{ cookieAccounts = @($script:chromeCookieChoice) }
         window = [ordered]@{ width = [double]$winW; height = [double]$winH; state = $state }
     }
 }
@@ -872,6 +874,7 @@ function Import-UserSettings {
         }
         # G-C3: dong bo theo am thanh khi khong thu duoc hinh - mac dinh TAT; chi bat khi file luu dung $true.
         if ($ui.ChkAllowOnsetSync) { $ui.ChkAllowOnsetSync.IsChecked = [bool]($s.sync -and $s.sync.allowOnset -eq $true) }
+        if ($s.chrome -and $s.chrome.cookieAccounts) { $script:chromeCookieChoice = @(@($s.chrome.cookieAccounts) | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^[0-9]+$' }) }
         $w = $s.window
         if ($w) {
             $ww = ConvertTo-SettingDouble $w.width 0; $wh = ConvertTo-SettingDouble $w.height 0
@@ -2825,6 +2828,7 @@ function Invoke-AutotokInstallTick {
     $ui.BarAutotok.Visibility = 'Collapsed'
     if ($p.Result -eq 'ok') {
         $ui.TxtAutotokProgress.Text = $p.Message
+        Start-ChromeConnect
         if (Enable-TikTokIntegrationLive) { Show-Toast ($p.Message + ' Nút Đăng video đã sẵn sàng.') -Kind success }
         else { Show-Toast ($p.Message + ' Nhưng app chưa nhận cấu hình TikTok; mở lại app.') -Kind warning }
     } else {
@@ -2835,6 +2839,288 @@ function Invoke-AutotokInstallTick {
         Show-Toast ('Chưa cài được bộ đăng TikTok: ' + $message) -Kind error
     }
     Update-AutotokSection
+}
+
+# ------------------------------------------------------------- Ket noi Chrome (Cai dat): ghep ma, danh sach Chrome, dang qua Cookie/Chrome ----
+# Every backend call goes through the 'ext' background action (never on the UI thread); one operation at a time, in order.
+$script:chromeCookieChoice = @()   # ids of accounts the owner put back on Cookie: never switched to Chrome automatically (settings.json)
+$script:chromeUi = @{ Task = $null; Op = $null; Ops = (New-Object System.Collections.ArrayList); Timer = $null; LastPoll = [DateTime]::MinValue
+    Clients = @(); Accounts = @(); ChromeOk = $false; Tried = @{}; ReloadToasted = $false; PairExpires = ''; PairClients = 0; Building = $false }
+
+function Select-ChromeClientForAccount {
+    # Which Chrome an account is bound to when the owner picks "Chrome": the one reporting the same TikTok username;
+    # with no such name and exactly one healthy Chrome, that one but flagged Mismatch (the owner must confirm).
+    param($Account, $Clients)
+    $ok = @(@($Clients) | Where-Object { $_ -and [string]$_.status -eq 'ok' -and [bool]$_.has_identity })
+    if (-not $ok.Count) { return @{ Error = 'Chưa có Chrome nào đang kết nối và đã đăng nhập TikTok. Mở Chrome có tiện ích trước.' } }
+    $name = ([string]$Account.username).Trim().TrimStart('@')
+    $same = @($ok | Where-Object { ([string]$_.tiktok_username).Trim().TrimStart('@') -ieq $name })
+    if ($same.Count -eq 1) { return @{ Client = $same[0]; Mismatch = $false } }
+    if ($same.Count -gt 1) { return @{ Error = 'Có nhiều Chrome cùng tài khoản này — gỡ bớt một ở danh sách trên.' } }
+    if ($ok.Count -eq 1) { return @{ Client = $ok[0]; Mismatch = $true } }
+    return @{ Error = 'Không có Chrome nào đăng nhập TikTok tên @' + $name + '. Mở đúng Chrome rồi thử lại.' }
+}
+
+function Get-ChromeGuidePath { return (Join-Path $script:root 'integrations\autotok-extension\HUONG-DAN-CAI-TIEN-ICH.md') }
+function Get-ChromeExtensionDir { return (Join-Path $script:root 'integrations\autotok-extension') }
+
+function Test-ChromeSectionVisible {
+    return [bool]($ui.ViewSettings -and $ui.ViewTools -and $ui.ViewSettings.IsVisible -and $ui.ViewTools.IsVisible)
+}
+
+function Set-ChromeStatusText {
+    param([string]$Text)
+    if (-not $ui.TxtChromeStatus) { return }
+    $ui.TxtChromeStatus.Text = $Text
+    $ui.TxtChromeStatus.Visibility = $(if ($Text) { 'Visible' } else { 'Collapsed' })
+}
+
+function Add-ChromeOp {
+    param([string]$Kind, [hashtable]$Payload, $Ctx = $null)
+    if ($Kind -eq 'refresh') {
+        # One refresh is enough: a queued or running one will see the newest state.
+        if (($script:chromeUi.Op -and $script:chromeUi.Op.Kind -eq 'refresh') -or @($script:chromeUi.Ops | Where-Object { $_.Kind -eq 'refresh' }).Count) { return }
+    }
+    [void]$script:chromeUi.Ops.Add(@{ Kind = $Kind; Payload = $Payload; Ctx = $Ctx })
+    Start-ChromeTimer
+}
+
+function Start-ChromeTimer {
+    if ($script:chromeUi.Timer) { return }
+    $t = New-Object Windows.Threading.DispatcherTimer
+    $t.Interval = [TimeSpan]::FromSeconds(1)
+    $t.Add_Tick({ try { Invoke-ChromeTick } catch { Write-FileLog "WARN Chrome tick: $($_.Exception.Message)" } })
+    $script:chromeUi.Timer = $t
+    $t.Start()
+}
+
+function Start-ChromeConnect {
+    # App start / after an install: one quiet look at the connected Chromes (reload reminder, automatic switch to Chrome).
+    Add-ChromeOp 'refresh' @{ op = 'refresh' } @{ Silent = $true }
+}
+
+function Update-ChromeCountdown {
+    $s = $script:chromeUi
+    if (-not $s.PairExpires -or -not $ui.PanelChromeCode) { return }
+    $left = Get-ChromePairCodeRemaining $s.PairExpires
+    if ($left -le 0) {
+        $s.PairExpires = ''
+        $ui.PanelChromeCode.Visibility = 'Collapsed'
+        Set-ChromeStatusText 'Mã đã hết hạn. Bấm Tạo mã ghép nối để lấy mã mới.'
+        return
+    }
+    $ui.TxtChromeCountdown.Text = 'Còn {0}:{1:00}' -f [int][Math]::Floor($left / 60), ($left % 60)
+}
+
+function Invoke-ChromeTick {
+    $s = $script:chromeUi
+    Update-ChromeCountdown
+    if ($s.Task) {
+        if (-not $s.Task.Async.IsCompleted) { return }
+        Complete-ChromeOp
+    }
+    if ($s.Task) { return }
+    if (-not $s.Ops.Count) {
+        # Poll only while the section is on screen; faster while a pairing code is waiting to be used.
+        $every = $(if ($s.PairExpires) { 2 } else { 5 })
+        if ((Test-ChromeSectionVisible) -and ([DateTime]::UtcNow - $s.LastPoll).TotalSeconds -ge $every) { Add-ChromeOp 'refresh' @{ op = 'refresh' } @{ Silent = $false } }
+    }
+    if (-not $s.Ops.Count) { return }
+    $op = $s.Ops[0]; $s.Ops.RemoveAt(0)
+    $s.Op = $op
+    if ($op.Kind -eq 'refresh') { $s.LastPoll = [DateTime]::UtcNow }
+    try { $s.Task = Start-TikTokTask -Action 'ext' -Payload $op.Payload }
+    catch { $s.Op = $null; Write-FileLog "WARN Chrome start $($op.Kind): $($_.Exception.Message)"; Set-ChromeStatusText ('Không gọi được bộ đăng: ' + (Get-FriendlyError $_.Exception.Message)) }
+}
+
+function Complete-ChromeOp {
+    $s = $script:chromeUi
+    $task = $s.Task; $op = $s.Op; $s.Task = $null; $s.Op = $null
+    if ($ui.BtnChromePair) { $ui.BtnChromePair.IsEnabled = $true }
+    $silent = [bool]($op.Ctx -and $op.Ctx.Silent)
+    try { $r = Complete-TikTokTask $task }
+    catch {
+        $text = Get-FriendlyError $_.Exception.Message
+        Write-FileLog "WARN Chrome $($op.Kind): $($_.Exception.Message)"
+        if (-not $silent) { Set-ChromeStatusText $text }
+        return
+    }
+    if (-not $r.ok) {
+        $text = Get-ChromeApiErrorText ([int]$r.status) ([string]$r.text)
+        Write-FileLog "WARN Chrome $($op.Kind) HTTP $($r.status): $($r.text)"
+        if ($op.Ctx -and $op.Ctx.Auto) { return }   # automatic switch refused by the backend rules: stay on cookies, say nothing
+        if (-not $silent) { Set-ChromeStatusText $text }
+        if ($op.Kind -in @('set-publisher', 'from-chrome', 'remove-client')) { Show-Toast $text -Kind warning; Add-ChromeOp 'refresh' @{ op = 'refresh' } @{ Silent = $false } }
+        return
+    }
+    switch ($op.Kind) {
+        'refresh' {
+            $clientsRaw = $r.clients | ConvertFrom-Json; $accountsRaw = $r.accounts | ConvertFrom-Json
+            $s.Clients = @($clientsRaw | Where-Object { $_ }); $s.Accounts = @($accountsRaw | Where-Object { $_ }); $s.ChromeOk = [bool]$r.chrome
+            if (-not $silent) { Set-ChromeStatusText '' }
+            if ($s.PairExpires -and $s.Clients.Count -gt $s.PairClients) {
+                $s.PairExpires = ''; $ui.PanelChromeCode.Visibility = 'Collapsed'
+                Set-ChromeStatusText 'Đã ghép nối xong. Chrome sẽ hiện ở danh sách dưới đây.'
+            }
+            Update-ChromeLists
+            Invoke-ChromeReloadReminder
+            Invoke-ChromeAutoSwitch
+        }
+        'pair-code' {
+            $j = $r.text | ConvertFrom-Json
+            $s.PairExpires = [string]$j.expires_at; $s.PairClients = $s.Clients.Count
+            $digits = [string]$j.code
+            $ui.TxtChromeCode.Text = $(if ($digits.Length -eq 6) { $digits.Substring(0, 3) + ' ' + $digits.Substring(3) } else { $digits })
+            $ui.PanelChromeCode.Visibility = 'Visible'
+            Set-ChromeStatusText 'Nhập 6 số này vào tiện ích (bấm biểu tượng tiện ích trên Chrome). Mã dùng một lần.'
+            Update-ChromeCountdown
+        }
+        'remove-client' { Show-Toast 'Đã gỡ Chrome này.' -Kind success; Add-ChromeOp 'refresh' @{ op = 'refresh' } @{ Silent = $false } }
+        'from-chrome' {
+            $a = $r.text | ConvertFrom-Json
+            Show-Toast ('Đã thêm tài khoản @' + [string]$a.username + ' (đăng qua Chrome).') -Kind success
+            Add-ChromeOp 'refresh' @{ op = 'refresh' } @{ Silent = $false }
+        }
+        'set-publisher' {
+            $id = [string]$op.Ctx.AccountId
+            if ($op.Ctx.Publisher -eq 'cookies') { if ($script:chromeCookieChoice -notcontains $id) { $script:chromeCookieChoice = @($script:chromeCookieChoice) + $id } }
+            else { $script:chromeCookieChoice = @($script:chromeCookieChoice | Where-Object { $_ -ne $id }) }
+            Request-SaveSettings
+            if ($op.Ctx.Auto) { Show-Toast ('Tài khoản ' + [string]$op.Ctx.Username + ' sẽ đăng qua Chrome') -Kind success }
+            else { Show-Toast ('Tài khoản ' + [string]$op.Ctx.Username + $(if ($op.Ctx.Publisher -eq 'chrome') { ' đăng qua Chrome.' } else { ' đăng qua Cookie.' })) -Kind success }
+            Add-ChromeOp 'refresh' @{ op = 'refresh' } @{ Silent = $false }
+        }
+    }
+}
+
+function Invoke-ChromeReloadReminder {
+    $s = $script:chromeUi
+    if ($s.ReloadToasted -or -not (Test-ChromeNeedReload $s.Clients)) { return }
+    $s.ReloadToasted = $true
+    Show-Toast 'Có bản tiện ích mới — vào chrome://extensions bấm ⟳' -Kind warning
+}
+
+function Invoke-ChromeAutoSwitch {
+    # Chrome is the default publisher: switch matching cookie accounts once. Needs the saved choices to be known.
+    $s = $script:chromeUi
+    if (-not $script:settingsReady -or -not $s.ChromeOk) { return }
+    foreach ($item in @(Get-ChromeAutoSwitchPlan -Accounts $s.Accounts -Clients $s.Clients -CookieChoice $script:chromeCookieChoice -Tried $s.Tried)) {
+        $id = [string]$item.Account.id
+        $s.Tried[$id] = $true
+        Add-ChromeOp 'set-publisher' @{ op = 'set-publisher'; account_id = [int]$item.Account.id; publisher = 'chrome'; client_id = [int]$item.Client.id; confirm = $false } `
+            @{ Auto = $true; AccountId = $id; Username = '@' + [string]$item.Account.username; Publisher = 'chrome' }
+    }
+}
+
+function New-ChromeText {
+    param([string]$Text, [bool]$Muted = $false, [bool]$Bold = $false)
+    $t = New-Object Windows.Controls.TextBlock
+    $t.Text = $Text; $t.TextWrapping = 'Wrap'
+    if ($Muted) { $t.Style = $win.FindResource('TextMutedStyle') }
+    if ($Bold) { $t.FontWeight = [Windows.FontWeights]::ExtraBold }
+    return $t
+}
+
+function New-ChromeButton {
+    param([string]$Text, [string]$StyleName = 'BtnGhost')
+    $b = New-Object Windows.Controls.Button
+    $b.Content = $Text; $b.Style = $win.FindResource($StyleName); $b.MinHeight = 44; $b.Margin = [Windows.Thickness]::new(8, 4, 0, 4)
+    [Windows.Automation.AutomationProperties]::SetName($b, $Text)
+    return $b
+}
+
+function Update-ChromeLists {
+    if (-not $ui.ListChromeClients) { return }
+    $s = $script:chromeUi
+    $s.Building = $true
+    try {
+        $ui.ListChromeClients.Children.Clear(); $ui.ListChromeAccounts.Children.Clear()
+        if (-not $s.ChromeOk) {
+            [void]$ui.ListChromeClients.Children.Add((New-ChromeText 'Bộ đăng TikTok hiện tại chưa hỗ trợ Chrome. Bấm Cập nhật / Kiểm tra bộ đăng ở thẻ trên.' $true))
+            return
+        }
+        if (-not $s.Clients.Count) { [void]$ui.ListChromeClients.Children.Add((New-ChromeText 'Chưa có Chrome nào. Cài tiện ích rồi bấm Tạo mã ghép nối.' $true)) }
+        foreach ($cl in $s.Clients) {
+            $row = New-Object Windows.Controls.DockPanel; $row.Margin = [Windows.Thickness]::new(0, 4, 0, 4)
+            $buttons = New-Object Windows.Controls.WrapPanel; [Windows.Controls.DockPanel]::SetDock($buttons, 'Right'); $buttons.VerticalAlignment = 'Center'
+            $name = $(if ([string]$cl.tiktok_username) { '@' + [string]$cl.tiktok_username } else { '(chưa đăng nhập TikTok)' })
+            $hasAccount = [bool](@($s.Accounts | Where-Object { [string]$cl.tiktok_username -and ([string]$_.username).TrimStart('@') -ieq ([string]$cl.tiktok_username).TrimStart('@') }).Count)
+            if ([bool]$cl.has_identity -and [string]$cl.status -eq 'ok' -and -not $hasAccount) {
+                $add = New-ChromeButton 'Thêm tài khoản từ Chrome' 'BtnPrimary'
+                $add.Tag = [int]$cl.id
+                $add.Add_Click({ param($sender, $e) $sender.IsEnabled = $false; Add-ChromeOp 'from-chrome' @{ op = 'from-chrome'; client_id = [int]$sender.Tag } })
+                [void]$buttons.Children.Add($add)
+            }
+            $del = New-ChromeButton 'Gỡ'
+            $del.Tag = @{ Id = [int]$cl.id; Name = $name }
+            $del.Add_Click({ param($sender, $e)
+                if (Show-ConfirmDialog -Title 'Gỡ Chrome này?' -ConfirmText 'Gỡ' -Danger -Message ("Gỡ $($sender.Tag.Name) khỏi danh sách? Chrome đó sẽ không đăng được nữa cho tới khi ghép nối lại.")) {
+                    Add-ChromeOp 'remove-client' @{ op = 'remove-client'; client_id = [int]$sender.Tag.Id }
+                }
+            })
+            [void]$buttons.Children.Add($del)
+            [void]$row.Children.Add($buttons)
+            $info = New-Object Windows.Controls.StackPanel
+            [void]$info.Children.Add((New-ChromeText ($name + $(if ([string]$cl.label) { ' · ' + [string]$cl.label } else { '' })) $false $true))
+            [void]$info.Children.Add((New-ChromeText ((Get-ChromeClientStatusText $cl) + ' · thấy ' + (Format-ChromeLastSeen ([string]$cl.last_seen_at)) + $(if ([string]$cl.ext_version) { ' · tiện ích ' + [string]$cl.ext_version } else { '' })) $true))
+            if ([bool]$cl.need_reload) { [void]$info.Children.Add((New-ChromeText 'Có bản tiện ích mới — vào chrome://extensions bấm ⟳' $false $true)) }
+            [void]$row.Children.Add($info)
+            [void]$ui.ListChromeClients.Children.Add($row)
+        }
+        $withPublisher = @($s.Accounts | Where-Object { $_.PSObject.Properties['publisher'] })
+        if (-not $withPublisher.Count) { [void]$ui.ListChromeAccounts.Children.Add((New-ChromeText 'Chưa có tài khoản TikTok. Thêm từ Chrome ở trên, hoặc đăng nhập cookie ở Tài khoản / Lịch đăng.' $true)) }
+        foreach ($a in $withPublisher) {
+            $row = New-Object Windows.Controls.DockPanel; $row.Margin = [Windows.Thickness]::new(0, 4, 0, 4)
+            $combo = New-Object Windows.Controls.ComboBox
+            [void]$combo.Items.Add('Chrome'); [void]$combo.Items.Add('Cookie')   # Chrome first: the default publisher
+            $combo.SelectedIndex = $(if ([string]$a.publisher -eq 'cookies') { 1 } else { 0 })
+            $combo.MinWidth = 120; $combo.MinHeight = 44; $combo.VerticalAlignment = 'Center'; $combo.Tag = $a
+            [Windows.Automation.AutomationProperties]::SetName($combo, 'Đăng qua cho @' + [string]$a.username)
+            [Windows.Controls.DockPanel]::SetDock($combo, 'Right')
+            $combo.Add_SelectionChanged({ param($sender, $e) Invoke-ChromePublisherChoice $sender })
+            [void]$row.Children.Add($combo)
+            $info = New-Object Windows.Controls.StackPanel
+            [void]$info.Children.Add((New-ChromeText ('@' + [string]$a.username) $false $true))
+            $note = Get-TikTokAccountNote $a
+            $hint = ''
+            if ([string]$a.publisher -eq 'cookies' -and -not (Select-ChromeClientForAccount $a $s.Clients).Client) { $hint = 'Mở Chrome có tiện ích để đăng qua Chrome' }
+            [void]$info.Children.Add((New-ChromeText $(if ($note) { 'Chưa đăng được: ' + $note } else { 'Sẵn sàng' }) $true))
+            if ($hint) { [void]$info.Children.Add((New-ChromeText $hint $true)) }
+            [void]$row.Children.Add($info)
+            [void]$ui.ListChromeAccounts.Children.Add($row)
+        }
+    } finally { $s.Building = $false }
+}
+
+function Invoke-ChromePublisherChoice {
+    param($Combo)
+    $s = $script:chromeUi
+    if ($s.Building -or $Combo.SelectedIndex -lt 0) { return }
+    $a = $Combo.Tag
+    $want = $(if ($Combo.SelectedIndex -eq 0) { 'chrome' } else { 'cookies' })
+    if ($want -eq [string]$a.publisher) { return }
+    if ($want -eq 'cookies') {
+        Add-ChromeOp 'set-publisher' @{ op = 'set-publisher'; account_id = [int]$a.id; publisher = 'cookies' } @{ AccountId = [string]$a.id; Username = '@' + [string]$a.username; Publisher = 'cookies' }
+        return
+    }
+    $pick = Select-ChromeClientForAccount $a $s.Clients
+    if (-not $pick.Client) { Show-Toast $pick.Error -Kind warning; Update-ChromeLists; return }
+    if ($pick.Mismatch -and -not (Show-ConfirmDialog -Title 'Chrome khác tên tài khoản?' -ConfirmText 'Đúng, cùng tài khoản' -Message (
+            "Chrome đang đăng nhập TikTok @$($pick.Client.tiktok_username), khác tên tài khoản @$($a.username).`r`nChỉ đồng ý nếu đúng là cùng một tài khoản."))) { Update-ChromeLists; return }
+    Add-ChromeOp 'set-publisher' @{ op = 'set-publisher'; account_id = [int]$a.id; publisher = 'chrome'; client_id = [int]$pick.Client.id; confirm = [bool]$pick.Mismatch } `
+        @{ AccountId = [string]$a.id; Username = '@' + [string]$a.username; Publisher = 'chrome' }
+}
+
+function Open-ChromeGuide {
+    $guide = Get-ChromeGuidePath
+    if ([IO.File]::Exists($guide)) { Start-Process -FilePath $guide; return }
+    Show-Toast 'Chưa có file hướng dẫn. Cài hoặc cập nhật bộ đăng TikTok trước (Cài đặt → Bộ đăng TikTok).' -Kind warning
+}
+
+function Open-ChromeExtensionFolder {
+    $dir = Get-ChromeExtensionDir
+    if ([IO.Directory]::Exists($dir)) { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"' + $dir + '"'); return }
+    Show-Toast 'Chưa có thư mục tiện ích. Cài hoặc cập nhật bộ đăng TikTok trước (Cài đặt → Bộ đăng TikTok).' -Kind warning
 }
 
 $script:tikTokWorker = {
@@ -3059,7 +3345,7 @@ $script:tikTokWorker = {
         foreach($p in $Meta.PSObject.Properties){
             if($null -eq $p.Value -or $p.Value.Source -ne 'autotok-history'){continue}
             foreach($h in @($p.Value.History)){
-                if($h -and [string]$h.request_id -cmatch '^[a-f0-9]{32}$' -and [string]$h.status -in @('preparing','pending','queued','running')){$list.Add(@{VideoId=[string]$p.Name;RequestId=[string]$h.request_id})}
+                if($h -and [string]$h.request_id -cmatch '^[a-f0-9]{32}$' -and [string]$h.status -in (Get-TikTokActiveStatuses)){$list.Add(@{VideoId=[string]$p.Name;RequestId=[string]$h.request_id})}
             }
         }
         return $list.ToArray()
@@ -3154,6 +3440,41 @@ $script:tikTokWorker = {
                     throw ('Bộ đăng trả về HTTP '+[int]$response.StatusCode+$detail+'. Xem Lịch sử / Lịch đăng để kiểm tra.')
                 }finally{$response.Dispose()}
             }finally{$form.Dispose()}
+        }
+        if($Action -eq 'ext'){
+            # Chrome publisher, GUI-only endpoints. HttpClient sends no Origin header (the backend refuses requests that have one).
+            # HTTP refusals are returned (status + body), not thrown: the UI turns them into Vietnamese text.
+            function Send-Ext([string]$Method,[string]$Path,$Body){
+                $req=[Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::new($Method),$BaseUrl+$Path)
+                try{
+                    if($null -ne $Body){$req.Content=[Net.Http.StringContent]::new((ConvertTo-Json -InputObject $Body -Compress),[Text.Encoding]::UTF8,'application/json')}
+                    $resp=$client.SendAsync($req,$CancelToken).GetAwaiter().GetResult()
+                    try{return @{ok=[bool]$resp.IsSuccessStatusCode;status=[int]$resp.StatusCode;text=$resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()}}
+                    finally{$resp.Dispose()}
+                }finally{$req.Dispose()}
+            }
+            $op=[string]$payload.op
+            if($op -eq 'refresh'){
+                $health=Test-Health
+                if(-not $health){throw 'Chưa kết nối được bộ đăng nền. Mở app lại hoặc cài bộ đăng TikTok.'}
+                $chrome=[bool]($health.PSObject.Properties['chrome_ext'] -and [int]$health.chrome_ext -ge 1)
+                $clientsText='[]'
+                if($chrome){
+                    $c=Send-Ext 'GET' '/api/ext/clients' $null
+                    if(-not $c.ok){return @{ok=$false;status=$c.status;text=$c.text}}
+                    $clientsText=$c.text
+                }
+                return @{ok=$true;status=200;chrome=$chrome;clients=$clientsText;accounts=(ConvertTo-Json -InputObject @(Get-Json ($BaseUrl+'/api/accounts')) -Depth 5 -Compress)}
+            }
+            if($op -eq 'pair-code'){return (Send-Ext 'POST' '/api/ext/pair-code' @{})}
+            if($op -eq 'remove-client'){return (Send-Ext 'DELETE' ('/api/ext/clients/'+[int]$payload.client_id) $null)}
+            if($op -eq 'from-chrome'){return (Send-Ext 'POST' '/api/accounts/from-chrome' @{client_id=[int]$payload.client_id})}
+            if($op -eq 'set-publisher'){
+                $body=@{publisher=[string]$payload.publisher}
+                if([string]$payload.publisher -eq 'chrome'){$body.client_id=[int]$payload.client_id;$body.confirm_username_mismatch=[bool]$payload.confirm}
+                return (Send-Ext 'PATCH' ('/api/accounts/'+[int]$payload.account_id) $body)
+            }
+            throw 'Tác vụ Chrome không hợp lệ.'
         }
         if($Action -eq 'refresh-link'){
             $content=[Net.Http.StringContent]::new('',[Text.Encoding]::UTF8,'application/json')
@@ -3336,12 +3657,154 @@ function Test-TikTokTransferActive {
     return $false
 }
 
+function Get-TikTokActiveStatuses {
+    # Backend job states that are still going (a new post on the account waits for them). pending_ext / waiting_ext are
+    # the Chrome publisher's states (waiting for the extension / the extension is posting).
+    return @('preparing', 'pending', 'queued', 'running', 'pending_ext', 'waiting_ext')
+}
+
+# ------------------------------------------------------------- Chrome publisher: accounts, clients, pairing ----
+function Test-TikTokAccountReady {
+    # AccountRead.ready (cookies: session, Chrome: bound client online). A backend without Chrome support has no
+    # `ready`: fall back to has_valid_session.
+    param($Account)
+    if ($null -eq $Account) { return $false }
+    if ($Account.PSObject.Properties['ready']) { return [bool]$Account.ready }
+    return [bool]$Account.has_valid_session
+}
+
+function Select-TikTokReadyAccounts {
+    param($Accounts)
+    return @(@($Accounts) | Where-Object { $_ -and (Test-TikTokAccountReady $_) })
+}
+
+function Get-TikTokReadyReasonText {
+    param([string]$Reason)
+    switch ($Reason) {
+        'chrome_offline' { return 'Chrome chưa mở/chưa bật tiện ích' }
+        'chrome_conflict' { return 'Có hai hồ sơ Chrome cùng tài khoản này — gỡ bớt một ở Cài đặt → Kết nối Chrome' }
+        'chrome_need_reload' { return 'Cần tải lại tiện ích (chrome://extensions → ⟳)' }
+        'chrome_unbound' { return 'Chưa gắn với Chrome nào — kết nối Chrome ở Cài đặt' }
+        'no_session' { return 'chưa đăng nhập' }
+    }
+    return ''
+}
+
+function Get-TikTokAccountNote {
+    # Why a not-ready account cannot be picked ('' when it is ready).
+    param($Account)
+    if (Test-TikTokAccountReady $Account) { return '' }
+    if ($Account.PSObject.Properties['ready_reason']) {
+        $text = Get-TikTokReadyReasonText ([string]$Account.ready_reason)
+        if ($text) { return $text }
+    }
+    if ($Account.PSObject.Properties['publisher'] -and [string]$Account.publisher -eq 'chrome') { return 'Chrome chưa sẵn sàng' }
+    return 'chưa đăng nhập'
+}
+
+function Get-TikTokNoReadyAccountsText {
+    # Text for "no account can post now": names the reason of each account that exists.
+    param($Accounts)
+    $list = @(@($Accounts) | Where-Object { $_ })
+    if (-not $list.Count) { return 'Chưa có tài khoản. Mở Tài khoản / Lịch đăng để thêm, hoặc Cài đặt → Kết nối Chrome.' }
+    $parts = @($list | ForEach-Object { '@' + [string]$_.username + ': ' + (Get-TikTokAccountNote $_) })
+    return 'Chưa có tài khoản sẵn sàng. ' + ($parts -join '; ')
+}
+
+function Get-ChromeClientStatusText {
+    param($Client)
+    switch ([string]$Client.status) {
+        'ok' { return 'Đang kết nối' }
+        'need_reload' { return 'Cần tải lại tiện ích' }
+        'offline' { return 'Chrome chưa mở' }
+        'no_identity' { return 'Chưa đăng nhập TikTok trong Chrome' }
+        'conflict' { return 'Trùng tài khoản với Chrome khác' }
+    }
+    return 'Chưa rõ'
+}
+
+function Format-ChromeLastSeen {
+    param([string]$Value, [DateTime]$NowUtc = [DateTime]::UtcNow)
+    if (-not $Value) { return 'chưa thấy' }
+    try { $when = [DateTimeOffset]::Parse($Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal) } catch { return 'chưa rõ' }
+    $age = ($NowUtc - $when.UtcDateTime).TotalSeconds
+    if ($age -lt 0) { $age = 0 }
+    if ($age -lt 60) { return 'vừa xong' }
+    if ($age -lt 3600) { return ([int][Math]::Floor($age / 60)).ToString() + ' phút trước' }
+    return $when.ToLocalTime().ToString('HH:mm dd/MM')
+}
+
+function Test-ChromeNeedReload {
+    param($Clients)
+    return [bool](@(@($Clients) | Where-Object { $_ -and [bool]$_.need_reload }).Count)
+}
+
+function Get-ChromePairCodeRemaining {
+    # Whole seconds left of a pairing code (0 = expired).
+    param([string]$ExpiresAt, [DateTime]$NowUtc = [DateTime]::UtcNow)
+    try { $end = [DateTimeOffset]::Parse($ExpiresAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal).UtcDateTime } catch { return 0 }
+    return [int][Math]::Max(0, [Math]::Ceiling(($end - $NowUtc).TotalSeconds))
+}
+
+function Get-ChromeApiErrorText {
+    # Backend refusals of the Chrome calls -> Vietnamese. Body is the raw response text ({"detail": ...} or {"message": ...}).
+    param([int]$Status, [string]$Body)
+    $detail = ''
+    try {
+        $o = $Body | ConvertFrom-Json -ErrorAction Stop
+        if ($o.PSObject.Properties['message'] -and $o.message) { $detail = [string]$o.message }
+        elseif ($o.PSObject.Properties['detail'] -and $o.detail -is [string]) { $detail = [string]$o.detail }
+    } catch { $detail = '' }
+    if ($detail -match '[^\u0000-\u007F]') { return $detail }   # the backend already speaks Vietnamese
+    switch -Regex ($detail) {
+        'username already exists' { return 'Đã có tài khoản trùng tên này.' }
+        'client_id is required' { return 'Chưa chọn Chrome để gắn.' }
+        'pending or running' { return 'Tài khoản còn video đang chờ hoặc đang đăng — đợi xong hoặc hủy trước.' }
+        'not found' { return 'Không tìm thấy tài khoản này (có thể đã bị xóa).' }
+    }
+    switch ($Status) {
+        403 { return 'Bộ đăng từ chối yêu cầu này.' }
+        404 { return 'Không tìm thấy (có thể đã bị gỡ).' }
+        409 { return 'Bộ đăng không cho thực hiện lúc này.' }
+        422 { return 'Thông tin gửi lên chưa đúng.' }
+    }
+    return "Bộ đăng trả về lỗi $Status."
+}
+
+function Get-ChromeAutoSwitchPlan {
+    # Owner decision: Chrome is the default publisher. A cookie account whose TikTok username is reported by exactly one
+    # healthy connected Chrome is switched to Chrome once. Never switched: accounts the owner put back on Cookie,
+    # accounts already tried this session, a conflict (two profiles with the same user), a client that is not 'ok'
+    # (offline / needs reload / no identity), several matching clients, and a different username (mismatch needs a
+    # human confirmation, so it is not automatic). The backend's own rules still apply (confirm_username_mismatch=false).
+    param($Accounts, $Clients, $CookieChoice = @(), [hashtable]$Tried = @{})
+    $plan = New-Object System.Collections.Generic.List[object]
+    $choice = @(@($CookieChoice) | ForEach-Object { [string]$_ })
+    $list = @(@($Clients) | Where-Object { $_ })
+    foreach ($a in @($Accounts)) {
+        if (-not $a -or -not $a.PSObject.Properties['publisher'] -or [string]$a.publisher -ne 'cookies') { continue }
+        $id = [string]$a.id
+        if ($choice -contains $id -or $Tried.ContainsKey($id)) { continue }
+        $name = ([string]$a.username).Trim().TrimStart('@')
+        if (-not $name) { continue }
+        $same = @($list | Where-Object { $_.tiktok_username -and ([string]$_.tiktok_username).Trim().TrimStart('@') -ieq $name })
+        if (-not $same.Count) { continue }
+        if (@($same | Where-Object { [string]$_.status -eq 'conflict' -or [bool]$_.conflict }).Count) { continue }
+        $good = @($same | Where-Object { [string]$_.status -eq 'ok' -and [bool]$_.has_identity })
+        if ($good.Count -ne 1 -or $same.Count -ne 1) { continue }
+        $plan.Add(@{ Account = $a; Client = $good[0] })
+    }
+    return $plan.ToArray()
+}
+
 function Get-TikTokStatusText {
     param($Result)
     if ($Result.publish_uncertain) { return 'Chưa rõ kết quả: video có thể đã lên TikTok. Kiểm tra tài khoản trước khi đăng lại.' }
     switch ([string]$Result.status) {
         'pending' { 'Đã nhận tác vụ, sắp gửi lên TikTok.' }
         'running' { 'Đang gửi video lên TikTok…' }
+        'pending_ext' { 'Chờ Chrome: mở Chrome có tiện ích để đăng.' }
+        'waiting_ext' { 'Chrome đang đăng video lên TikTok…' }
         'succeeded' { 'TikTok đã nhận yêu cầu đăng thành công. Video có thể cần thời gian xử lý.' }
         'failed' { 'Đăng thất bại. Xem chi tiết trong Lịch đăng ở bảng điều khiển.' }
         'cancelled' { 'Tác vụ đã được hủy.' }
@@ -3483,7 +3946,7 @@ function Test-TikTokStaleDowngrade {
     # A stored success is never replaced by non-terminal data for the same request (A2). Entries carry no attempt id and a
     # retry is a new request_id, so there is no "newer attempt" to tell apart.
     param($Stored, [string]$IncomingStatus)
-    return [bool]($Stored -and [string]$Stored.status -eq 'succeeded' -and $IncomingStatus -in @('preparing', 'pending', 'queued', 'running'))
+    return [bool]($Stored -and [string]$Stored.status -eq 'succeeded' -and $IncomingStatus -in (Get-TikTokActiveStatuses))
 }
 
 function Update-TikTokEntryFromJob {
@@ -3634,6 +4097,8 @@ function Get-TikTokEntryLabel {
             else { 'Đang chờ đăng' }
         }
         'running' { if ($mode -eq 'native') { 'Đang gửi lên TikTok · hẹn ' + (Format-TikTokClock (Get-TikTokEntryWhen $Entry)) } else { 'Đang đăng…' } }
+        'pending_ext' { 'Chờ Chrome' + $(if ($mode -eq 'native') { ' · hẹn ' + (Format-TikTokClock (Get-TikTokEntryWhen $Entry)) } else { '' }) }
+        'waiting_ext' { 'Chrome đang đăng' + $(if ($mode -eq 'native') { ' · hẹn ' + (Format-TikTokClock (Get-TikTokEntryWhen $Entry)) } else { '…' }) }
         'preparing' { 'Đang chuyển video' }
         'preparation_failed' { 'Chuẩn bị video thất bại' }
         'transfer_failed' { 'Chưa chuyển được sang bộ đăng nền' }
@@ -3659,6 +4124,8 @@ function Get-TikTokEntryShort {
             else { 'Đang chờ đăng' }
         }
         'running' { if ($mode -eq 'native') { "Đang gửi hẹn`n" + (Format-TikTokClock (Get-TikTokEntryWhen $Entry)) } else { 'Đang đăng…' } }
+        'pending_ext' { 'Chờ Chrome' }
+        'waiting_ext' { 'Chrome đang đăng' }
         'preparing' { 'Đang chuyển…' }
         'cancelled' { 'Đã hủy lịch' }
         'transfer_failed' { 'Chưa chuyển được' }
@@ -4479,7 +4946,7 @@ function Get-TikTokBusyTimes {
     # va $ExtraEntries. Muc lich su co cung key (cung mot lan dang) chi tinh MOT lan: luc dang chuyen kho, lich su co the nam o hai thu muc.
     param($Metadata, [string]$Account, [DateTime]$Now = [DateTime]::Now, [object[]]$ExtraEntries = @())
     $u = ([string]$Account).Trim().TrimStart('@')
-    $active = @('pending', 'queued', 'running', 'preparing')
+    $active = Get-TikTokActiveStatuses
     $all = New-Object 'System.Collections.Generic.List[object]'
     foreach ($m in @($Metadata)) { if ($m) { foreach ($p in $m.PSObject.Properties) { foreach ($h in @($p.Value.History)) { if ($h) { $all.Add($h) } } } } }
     foreach ($h in @($ExtraEntries)) { if ($h) { $all.Add($h) } }
@@ -4558,7 +5025,7 @@ function Get-TikTokSpreadWarn {
     # Lịch sử đã lưu của 1 video (mọi tài khoản): 'active' (có lệnh đang chờ/chạy - luôn bỏ qua), 'posted' (đã đăng xác nhận hoặc đã hẹn thành công - mặc định bỏ qua), '' (trống).
     param([object[]]$History, [bool]$Posted = $false)
     $h = @(@($History) | Where-Object { $_ })
-    if (@($h | Where-Object { [string]$_.status -in @('pending', 'queued', 'running', 'preparing') }).Count) { return 'active' }
+    if (@($h | Where-Object { [string]$_.status -in (Get-TikTokActiveStatuses) }).Count) { return 'active' }
     if (@($h | Where-Object { [string]$_.status -eq 'succeeded' -and $_.publish_uncertain -ne $true }).Count) { return 'posted' }
     if ($Posted) { return 'posted' }
     return ''
@@ -4854,7 +5321,7 @@ function Show-TikTokPublishDialog {
         if($videoLib){$state.VideoKho=[string]$videoLib.id;$state.VideoKhoAccount=[string]$videoLib.account}
     }catch{Write-FileLog ('WARN TikTok dialog kho info: '+$_.Exception.Message)}
     $updateSelection={
-        $blocking=@('pending','queued','running','preparing')
+        $blocking=Get-TikTokActiveStatuses
         $own=@($state.Entries | Where-Object {$_.username -eq $state.SelectedAccount -or (-not $_.username -and $_.status -in $blocking)})
         $active=@($own | Where-Object {$_.status -in $blocking})
         $repeat=@($own | Where-Object {$_.status -eq 'succeeded' -or $_.publish_uncertain -or $_.prior_uncertain})
@@ -5105,7 +5572,7 @@ function Show-TikTokPublishDialog {
                 [void]$c.History.Children.Add($row)
             }
             $c.Accounts.Children.Clear();$group='TikTokAccount'+[Guid]::NewGuid().ToString('N')
-            $accounts=@($result.accounts | Where-Object has_valid_session)
+            $accounts=Select-TikTokReadyAccounts $result.accounts
             foreach($account in $accounts){
                 $button=New-Object Windows.Controls.RadioButton;$button.Style=$dlg.FindResource('SegButton');$button.GroupName=$group;$button.Content='@'+$account.username;$button.Tag=@{State=$state;Controls=$c;Username=[string]$account.username;Update=$updateSelection;OnAccount=$onAccount};$button.MinHeight=48;$button.Padding=[Windows.Thickness]::new(16,0,16,0);$button.Margin=[Windows.Thickness]::new(0,0,8,8)
                 $button.Add_Checked($accountChecked)
@@ -5125,7 +5592,7 @@ function Show-TikTokPublishDialog {
                 foreach($w in $want){$pre=@($c.Accounts.Children | Where-Object {$_.Tag.Username -ieq $w})[0];if($pre){break}}
                 if(-not $pre){$pre=$c.Accounts.Children[0]}
                 $pre.IsChecked=$true
-            }else{$c.Status.Text='Chưa có tài khoản sẵn sàng. Mở Tài khoản / Lịch đăng để đăng nhập.'}
+            }else{$c.Status.Text=(Get-TikTokNoReadyAccountsText $result.accounts)}
             & $updateSelection
             if($state.SeedSlot){$state.SeedSlot=$false;$c.NextFree.RaiseEvent((New-Object Windows.RoutedEventArgs ([Windows.Controls.Primitives.ButtonBase]::ClickEvent)))}
         }catch{$c.Status.Text=$_.Exception.Message;$state.Ready=$false}
@@ -5481,7 +5948,7 @@ function Show-TikTokSpreadDialog {
                 if (-not $state.AccountsLoaded) {
                     $state.AccountsLoaded = $true
                     $c.Accounts.Children.Clear(); $group = 'SpreadAccount' + [Guid]::NewGuid().ToString('N')
-                    $accounts = @($result.accounts | Where-Object has_valid_session)
+                    $accounts = Select-TikTokReadyAccounts $result.accounts
                     foreach ($a in $accounts) {
                         $b = New-Object Windows.Controls.RadioButton; $b.Style = $dlg.FindResource('SegButton'); $b.GroupName = $group; $b.Content = '@' + $a.username; $b.Tag = [string]$a.username
                         $b.MinHeight = 48; $b.Padding = [Windows.Thickness]::new(16, 0, 16, 0); $b.Margin = [Windows.Thickness]::new(0, 0, 8, 8)
@@ -5500,7 +5967,7 @@ function Show-TikTokSpreadDialog {
                         if (-not $pre) { $pre = $c.Accounts.Children[0] }
                         $pre.IsChecked = $true
                         $c.Status.Text = $(if ($state.Native) { '' } else { 'Bộ đăng nền chưa hỗ trợ hẹn giờ trên TikTok. Cập nhật bộ đăng nền rồi khởi động lại.' })
-                    } else { $c.Status.Text = 'Chưa có tài khoản sẵn sàng. Mở Tài khoản / Lịch đăng để đăng nhập.' }
+                    } else { $c.Status.Text = (Get-TikTokNoReadyAccountsText $result.accounts) }
                 }
                 & $state.Replan
                 # Con thu muc kho khac (video chon tu nhieu kho): lam moi lich su tung kho mot, roi xep lai.
@@ -8635,7 +9102,7 @@ function Show-KhoManagerDialog {
                 foreach ($a in $accounts) {
                     if ($have.ContainsKey((ConvertTo-KhoUsername ([string]$a.username)).ToLowerInvariant())) { continue }
                     $ci = New-Object Windows.Controls.ComboBoxItem
-                    $ci.Content = '@' + $a.username + $(if ($a.has_valid_session -eq $false) { ' (chưa đăng nhập)' } else { '' })
+                    $ci.Content = '@' + $a.username + $($note = Get-TikTokAccountNote $a; if ($note) { ' (' + $note + ')' } else { '' })
                     $ci.Tag = [string]$a.username
                     [void]$c.CmbAcct.Items.Add($ci)
                 }
@@ -9906,6 +10373,9 @@ $ui.BtnInstallWhisper.Add_Click({  Install-ToolGUI 'whisper' })
 $ui.BtnCheckTools.Add_Click({      Update-ToolsStatus })
 $ui.BtnAutotokInstall.Add_Click({  Start-AutotokInstall })
 $ui.BtnAutotokChrome.Add_Click({   Start-Process 'https://www.google.com/chrome/' })
+$ui.BtnChromeGuide.Add_Click({ Open-ChromeGuide })
+$ui.BtnChromeFolder.Add_Click({ Open-ChromeExtensionFolder })
+$ui.BtnChromePair.Add_Click({ $ui.BtnChromePair.IsEnabled = $false; Add-ChromeOp 'pair-code' @{ op = 'pair-code' } })
 $ui.BtnOpenUninstall.Add_Click({
     if (Test-AppBusy) { Show-Toast 'Đang chạy tác vụ hoặc hàng đợi — không thể gỡ thư viện lúc này.' -Kind warning; return }
     $confirmed = Show-ConfirmDialog -Title 'Gỡ thư viện công cụ?' -ConfirmText 'Gỡ thư viện' -Danger -Message (
@@ -12531,6 +13001,7 @@ $engine" -Title 'Thiếu file' | Out-Null
     # Nguoi dung chon the trong Kho -> nap o 0:00, khong phat.
     Clear-Player
     Start-TikTokStatusSync
+    if (Test-TikTokEnabled) { Start-ChromeConnect }
 
     $icoFile = Join-Path $root 'Kid-FB.Y.ico'
     if (-not (Test-Path -LiteralPath $icoFile)) { $icoFile = Join-Path $scriptDir 'Kid-FB.Y.ico' }
