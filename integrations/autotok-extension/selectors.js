@@ -34,6 +34,10 @@
       css: ['[data-e2e="upload_status_container"]', '[data-e2e="file_name"]', '[class*="uploaded"]', 'video'],
       text: [T('button, span, div', /^(replace|thay thế|change video|đổi video)$/i)],
     },
+    cancelUpload: {
+      css: ['[data-e2e*="cancel"]'],
+      text: [T('button, span, div', /^(cancel|hủy|huỷ|hủy tải lên|cancel upload)$/i)],
+    },
     uploadBusy: {
       css: ['[role="progressbar"]', '[class*="progress"]:not([class*="progress-bar-bg"])'],
       text: [T('span, div', /(uploading|đang tải lên|processing|đang xử lý)/i)],

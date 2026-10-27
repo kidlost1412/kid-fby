@@ -28,6 +28,7 @@ class State:
         self.token = token
         self.video = video
         self.allow_post = allow_post
+        self.stale_s = 120.0
         self.log_path = log_path
         self.lock = threading.Lock()
         self.log_lock = threading.Lock()
@@ -37,7 +38,8 @@ class State:
     def log(self, event: str, **data) -> None:
         rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": event, **data}
         line = json.dumps(rec, ensure_ascii=False)
-        print(line, flush=True)
+        # Console may be cp1252 on Windows: never let printing break a request.
+        print(line.encode("ascii", "backslashreplace").decode("ascii"), flush=True)
         if self.log_path:
             with self.log_lock, open(self.log_path, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
@@ -61,7 +63,7 @@ class State:
         }
         with self.lock:
             self.jobs[job["id"]] = {"job": job, "state": "queued", "claims": 0, "authorized": False,
-                                    "result": None, "progress": []}
+                                    "result": None, "progress": [], "last_seen": 0.0}
             self.order.append(job["id"])
         self.log("job-added", id=job["id"], mode=mode, visibility=visibility, schedule_time=schedule_time)
         return job
@@ -125,6 +127,9 @@ def make_server(state: State, port: int = 8799) -> ThreadingHTTPServer:
                 with state.lock:
                     return self._json(200, {i: {k: v for k, v in state.jobs[i].items() if k != "progress"}
                                             | {"progress_count": len(state.jobs[i]["progress"])} for i in state.order})
+            if u.path == "/api/job_state":
+                e = self._entry(jid)
+                return e and self._json(200, {"state": e["state"], "authorized": e["authorized"]})
             if u.path == "/api/video/meta":
                 e = self._entry(jid)
                 return e and self._json(200, e["job"]["video"])
@@ -153,7 +158,10 @@ def make_server(state: State, port: int = 8799) -> ThreadingHTTPServer:
                 return
             if path == "/api/progress":
                 with state.lock:
+                    if e["state"] == "cancelled":
+                        return self._json(200, {"ok": False, "cancelled": True})
                     e["progress"].append(body)
+                    e["last_seen"] = time.time()
                     if e["state"] == "claimed":
                         e["state"] = "running"
                 state.log("progress", id=e["job"]["id"], phase=body.get("phase"), msg=body.get("msg"), pct=body.get("pct"), extra=body.get("extra"))
@@ -172,9 +180,18 @@ def make_server(state: State, port: int = 8799) -> ThreadingHTTPServer:
                         ok, reason = True, None
                 state.log("authorize", id=e["job"]["id"], ok=ok, reason=reason)
                 return self._json(200, {"ok": ok, "reason": reason})
+            if path == "/api/cancel":
+                with state.lock:
+                    if e["state"] != "done":
+                        e["state"] = "cancelled"
+                    st = e["state"]
+                state.log("cancel", id=e["job"]["id"], state=st)
+                return self._json(200, {"ok": True, "state": st})
             if path == "/api/result":
                 with state.lock:
                     dup = e["state"] == "done"
+                    if e["state"] == "cancelled":
+                        return self._json(200, {"ok": True, "cancelled": True})
                     if not dup:
                         e["state"], e["result"] = "done", body
                 state.log("result-duplicate" if dup else "result", id=e["job"]["id"], result=body)
@@ -187,8 +204,10 @@ def make_server(state: State, port: int = 8799) -> ThreadingHTTPServer:
                 with state.lock:
                     for jid in state.order:
                         e = state.jobs[jid]
-                        if e["state"] in ("queued", "claimed", "running"):
+                        live = e["state"] in ("claimed", "running") and time.time() - e["last_seen"] < state.stale_s
+                        if e["state"] in ("queued", "claimed", "running") and not live:
                             e["claims"] += 1
+                            e["last_seen"] = time.time()
                             if e["state"] == "queued":
                                 e["state"] = "claimed"
                             if e["claims"] > 1:

@@ -157,13 +157,34 @@
     return { file, stats: { bytes: meta.size, chunks: n, ms: Date.now() - t0, memBefore: mem0, memAfter: mem() } };
   }
 
-  function attach(file) {
-    const input = need('fileInput');
+  function setFiles(file, method) {
     const dt = new DataTransfer(); dt.items.add(file);
-    input.files = dt.files;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    return input.files.length;
+    if (method === 'input') {
+      const input = need('fileInput');
+      input.files = dt.files;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return input.files.length;
+    }
+    const zone = (S.find('fileInput').el || document.body).closest('[class*="upload"], [data-e2e*="upload"]') || document.body;
+    for (const t of ['dragenter', 'dragover', 'drop']) zone.dispatchEvent(new DragEvent(t, { bubbles: true, cancelable: true, dataTransfer: dt }));
+    return 1;
+  }
+  const UPLOADED_RE = /(đã tải lên|uploaded)\s*\(?\d/i;
+  const uploadedText = () => UPLOADED_RE.test(document.body.innerText || '');
+  const started = () => uploadedText() || !!S.find('uploadedMarker').el || pageProgress() != null || !!S.find('postButton').el;
+  // Studio may ignore the first attach right after the window opens: wait for readiness, retry (max 3), never double-upload.
+  async function attachWithRetry(file) {
+    await waitFor(() => S.find('fileInput').el && document.readyState === 'complete', { timeout: CFG.fileInputMs, what: 'trang upload sẵn sàng' });
+    await sleep(2000);
+    for (const [i, method] of ['input', 'input', 'drop'].entries()) {
+      if (started()) { await report('attach', `Studio đã bắt đầu upload (trước lần ${i + 1})`); return method; }
+      const n = setFiles(file, method);
+      await report('attach', `lần ${i + 1}/3 cách ${method}: đã gán (${n})`, null, { attempt: i + 1, method });
+      const t0 = Date.now();
+      while (Date.now() - t0 < 8000) { if (started()) return method; await sleep(500); }
+    }
+    throw new StepError('attach-ignored', 'Studio không nhận file sau 3 lần');
   }
 
   // ---- upload + processing ----
@@ -173,19 +194,35 @@
     const m = /(\d{1,3})\s?%/.exec(document.body.innerText || '');
     return m ? Number(m[1]) : null;
   }
+  const UPLOAD_FAIL_RE = /(upload failed|tải lên thất bại|couldn.t upload|failed to upload|không thể tải lên)/i;
+  function uploadDiag() {
+    const busy = {};
+    for (const k of ['uploadBusy']) { const r = S.findAll(k); busy[k] = { n: r.els.length, via: r.via }; }
+    const bar = document.querySelector('[role="progressbar"]');
+    const node = [...document.querySelectorAll('div,span')].find((e) => e.children.length < 6 && /\.(mp4|mov|webm)|MB\)/i.test(e.textContent || '') && (e.textContent || '').length < 300);
+    const card = node && (node.parentElement || node);
+    return { card: card ? card.textContent.trim().slice(0, 200) : null,
+      bar: bar ? { now: bar.getAttribute('aria-valuenow'), w: bar.style.width || (bar.firstElementChild && bar.firstElementChild.style.width) || null } : null,
+      busy, cancel: !!S.find('cancelUpload').el };
+  }
   async function waitProcessed() {
-    const t0 = Date.now(); let lastRep = 0, okSince = 0;
+    const t0 = Date.now(); let lastRep = 0, lastDiag = 0, okSince = 0;
     for (;;) {
       const txt = document.body.innerText || '';
-      if (/(upload failed|tải lên thất bại|couldn.t upload|failed to upload|không thể tải lên)/i.test(txt)) throw new StepError('upload-failed', txt.match(/(upload failed|tải lên thất bại|couldn.t upload|failed to upload|không thể tải lên)/i)[0]);
-      const post = S.find('postButton').el, editor = S.find('editor').el, busy = S.find('uploadBusy').el;
-      const ready = post && editor && !isDisabled(post) && !busy;
+      const m = UPLOAD_FAIL_RE.exec(txt);
+      if (m) throw new StepError('upload-failed', m[0]);
+      const post = S.find('postButton').el, editor = S.find('editor').el;
+      const pct = pageProgress();
+      const uploaded = uploadedText() || (pct === 100 && !S.find('cancelUpload').el);
+      const ready = post && editor && !isDisabled(post) && uploaded;
       okSince = ready ? (okSince || Date.now()) : 0;
-      if (ready && Date.now() - okSince > 4000) return { elapsedMs: Date.now() - t0 };
+      if (ready && Date.now() - okSince > 3000) return { elapsedMs: Date.now() - t0 };
       if (Date.now() - t0 > CFG.processMs) throw new StepError('timeout', 'xử lý video quá ' + Math.round(CFG.processMs / 60000) + ' phút');
       if (Date.now() - lastRep > 5000) {
         lastRep = Date.now();
-        await report('processing', `chờ upload/xử lý, ${Math.round((Date.now() - t0) / 1000)}s`, pageProgress(), { post: !!post, postDisabled: post ? isDisabled(post) : null, busy: !!busy });
+        const extra = { post: !!post, postDisabled: post ? isDisabled(post) : null, uploaded };
+        if (Date.now() - lastDiag > 15000) { lastDiag = Date.now(); extra.diag = uploadDiag(); }
+        await report('processing', `chờ upload/xử lý, ${Math.round((Date.now() - t0) / 1000)}s`, pct, extra);
       }
       await sleep(1000);
     }
@@ -349,12 +386,9 @@
     R.identity = await checkIdentity(job);
     await report('identity', 'tài khoản: ' + R.identity.value + ' (' + R.identity.source + ')', null, { account: R.identity.value });
 
-    await waitFor(() => S.find('fileInput').el, { timeout: CFG.fileInputMs, what: 'ô chọn file' });
     const { file, stats } = await buildFile();
     R.steps.transfer = stats;
-    const n = attach(file);
-    await report('attach', `đã gán file (${n}), chờ Studio nhận`, null, stats);
-    await waitFor(() => S.find('uploadedMarker').el || S.find('uploadBusy').el || !S.find('fileInput').el, { timeout: CFG.acceptMs, what: 'Studio nhận file' });
+    R.steps.attach = await attachWithRetry(file);
     R.steps.processing = await waitProcessed();
     await report('processed', 'upload + xử lý xong', 100, R.steps.processing);
 

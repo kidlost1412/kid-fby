@@ -73,6 +73,8 @@ function b64(buf) {
 
 // ---------- window / tab ----------
 async function openJobWindow(job) {
+  const existing = await findJobTab({ id: job.id, windowId: null, strategy: 'tab' });
+  if (existing) { await log(`đã có tab ${existing.id} cho job ${job.id}, không mở thêm`, 'WARN'); await patchActive({ tabId: existing.id, windowId: existing.windowId }, job.id); return; }
   const s = await getSettings();
   const url = STUDIO_URL + '#autotok=' + encodeURIComponent(job.id);
   let tab, windowId;
@@ -246,6 +248,15 @@ const handlers = {
       await finishJob(a.id, { outcome: 'uncertain', reason: 'tab-reloaded-after-authorization' });
       return { role: 'none' };
     }
+    if (!a.local) { // resume only while the server still considers the job active
+      let st = null;
+      try { st = await api('/api/job_state?id=' + encodeURIComponent(a.id), { timeoutMs: 5000 }); } catch (e) { await log('job_state: ' + e.message, 'WARN'); }
+      if (!st || st.state === 'cancelled' || st.state === 'done' || st.authorized) {
+        await log(`không tiếp tục job ${a.id}: server=${st && st.state}${st && st.authorized ? ' đã cấp quyền' : ''}`, 'WARN');
+        await chrome.storage.local.set({ lastDoneId: a.id }); await chrome.storage.local.remove('activeJob');
+        return { role: 'none' };
+      }
+    }
     await patchActive({ phase: 'hello', lastBeat: Date.now() }, a.id);
     return { role: a.mode === 'selfcheck' ? 'selfcheck' : 'job', job: a.job, nonce: a.nonce };
   },
@@ -344,7 +355,11 @@ const popup = {
   },
   async clear() { // abandon the active job (e.g. after a test); does not post anything
     const a = await getActive();
-    if (a) await closeJobWindow(a);
+    if (a) {
+      if (!a.local) await api('/api/cancel', { method: 'POST', body: { id: a.id, nonce: a.nonce }, timeoutMs: 5000 }).catch((e) => log('cancel lỗi: ' + e.message, 'WARN'));
+      try { if (a.strategy === 'tab' && a.tabId != null) await chrome.tabs.remove(a.tabId); else if (a.windowId != null) await chrome.windows.remove(a.windowId); } catch (e) { await log('đóng cửa sổ: ' + e.message, 'WARN'); }
+      await chrome.storage.local.set({ lastDoneId: a.id });
+    }
     await chrome.storage.local.remove(['activeJob', 'log']);
     await log('đã xoá job đang chạy và log');
     return { ok: true };

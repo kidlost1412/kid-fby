@@ -64,9 +64,9 @@ class DevServerTest(unittest.TestCase):
         self.assertEqual(got["schedule_time"], "2026-10-30T20:30:00+07:00")
         self.assertEqual(got["video"]["size"], len(VIDEO_BYTES))
         self.assertEqual(got["id"], job["id"])
-        # same job is re-issued until a result arrives (SW restart safety)
+        # a fresh claim is not re-issued; staleness re-issue is tested separately
         code, again, _ = self.call("/api/next?wait=0")
-        self.assertEqual((code, again["id"]), (200, job["id"]))
+        self.assertEqual(code, 204)  # fresh claim is not re-issued
 
     def test_video_range_exact_bytes(self):
         self.start()
@@ -106,6 +106,30 @@ class DevServerTest(unittest.TestCase):
         self.assertEqual(self.call("/api/next?wait=0")[0], 204)
         lines = [json.loads(l) for l in self.log.read_text(encoding="utf-8").splitlines()]
         self.assertTrue(any(l["event"] == "result" and l["result"]["outcome"] == "selftest_ok" for l in lines))
+
+    def test_no_reissue_while_heartbeat_fresh_then_reissue_when_stale(self):
+        self.start()
+        a = self.state.add_job("c", "selftest")
+        self.assertEqual(self.call("/api/next?wait=0")[0], 200)
+        self.assertEqual(self.call("/api/next?wait=0")[0], 204)  # fresh claim: not re-issued
+        self.call("/api/progress", {"id": a["id"], "nonce": a["nonce"], "phase": "x"})
+        self.assertEqual(self.call("/api/next?wait=0")[0], 204)  # fresh progress
+        self.state.jobs[a["id"]]["last_seen"] -= 121
+        code, got, _ = self.call("/api/next?wait=0")
+        self.assertEqual((code, got["id"]), (200, a["id"]))
+        self.assertEqual(self.call("/api/next?wait=0")[0], 204)  # re-claim refreshed the heartbeat
+
+    def test_cancel_is_terminal_and_checks_nonce(self):
+        self.start()
+        a = self.state.add_job("c", "selftest")
+        self.assertEqual(self.call("/api/next?wait=0")[0], 200)
+        self.assertEqual(self.call("/api/cancel", {"id": a["id"], "nonce": "bad"})[0], 403)
+        self.assertEqual(self.call("/api/next?wait=0")[0], 204)
+        self.assertEqual(self.call("/api/cancel", {"id": a["id"], "nonce": a["nonce"]})[1], {"ok": True, "state": "cancelled"})
+        self.state.jobs[a["id"]]["last_seen"] -= 9999
+        self.assertEqual(self.call("/api/next?wait=0")[0], 204)  # never issued again, even when stale
+        self.assertEqual(self.call(f"/api/job_state?id={a['id']}")[1]["state"], "cancelled")
+        self.assertEqual(self.call("/api/result", {"id": a["id"], "nonce": a["nonce"], "outcome": "x"})[1].get("cancelled"), True)
 
     def test_post_mode_needs_allow_flag(self):
         self.start(allow_post=False)
