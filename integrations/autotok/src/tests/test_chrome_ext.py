@@ -762,3 +762,12 @@ def test_release_claim_hands_an_undelivered_job_back_only_while_still_claimed(en
     with Session(engine) as s:
         job = s.get(ExtensionJob, wire["id"])
     assert ext.release_claim(job) is False  # past 'claimed': never handed back
+
+
+def test_health_counts_queued_children_for_the_installer_drain(engine, app, video_file):
+    aid = chrome_account(engine)
+    assert app.get("/health").json()["ext_active"] == 0
+    schedule(engine, aid)
+    worker.tick()
+    assert children(engine)[0].state == "queued"
+    assert app.get("/health").json()["ext_active"] == 1

@@ -639,9 +639,9 @@ def _finalize_all(_now: datetime) -> None:
 
 
 def active_children(session: Session) -> int:
-    """Children Chrome may be working on right now (claimed..authorized): the installer drains these."""
+    """Unfinished children (queued..authorized): Chrome may claim or be posting them, so the installer drains these."""
     return session.exec(select(func.count()).select_from(ExtensionJob)
-                        .where(ExtensionJob.state.in_(RUNNING + ("authorized",)))).one()
+                        .where(ExtensionJob.state.in_(PRE_AUTH + ("authorized",)))).one()
 
 
 # ---------- extension calls -------------------------------------------------
