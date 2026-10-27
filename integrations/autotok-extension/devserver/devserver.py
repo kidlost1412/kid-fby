@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
 import re
 import secrets
 import sys
@@ -19,14 +20,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-# Post mode is disabled in the upload-only spike: no code path can authorize or send a post.
-MODES = ("selftest", "intercept")
+# Post mode needs BOTH --allow-post and a job that is mode=post, private, unscheduled, with expect_account.
+MODES = ("selftest", "intercept", "post")
 VISIBILITY = ("public", "friends", "private")
 
 
 class State:
-    def __init__(self, token: str, video: Path, log_path: Path | None):
+    def __init__(self, token: str, video: Path, log_path: Path | None, allow_post: bool = False, state_path: Path | None = None):
         self.token = token
+        self.allow_post = allow_post
+        self.state_path = state_path
         self.video = video
         self.stale_s = 120.0
         self.log_path = log_path
@@ -34,6 +37,38 @@ class State:
         self.log_lock = threading.Lock()
         self.jobs: dict[str, dict] = {}
         self.order: list[str] = []
+        self._load()
+
+    # ---- durable state (authorization must survive a restart) ----
+    def _persist(self) -> None:
+        """Write the job table atomically (temp file + os.replace). Caller holds self.lock. Raises on failure."""
+        if not self.state_path:
+            return
+        keep = ("job", "state", "claims", "authorized", "authorized_at", "auth_sha", "auth_creation_id", "cancel_requested",
+                "late_result", "result")
+        data = {"jobs": {i: {k: self.jobs[i].get(k) for k in keep} for i in self.order}}
+        tmp = self.state_path.with_name(self.state_path.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self.state_path)
+
+    def _load(self) -> None:
+        if not self.state_path or not self.state_path.is_file():
+            return
+        raw = json.loads(self.state_path.read_text(encoding="utf-8"))
+        for jid, rec in raw.get("jobs", {}).items():
+            st = rec.get("state")
+            if rec.get("authorized") and st != "done":
+                st = "uncertain"          # a post may have been sent: never re-issue, never re-authorize
+            elif st in ("queued", "claimed", "running"):
+                st = "cancelled"          # abandoned by the restart; nothing was authorized
+            self.jobs[jid] = {"job": rec["job"], "state": st, "claims": rec.get("claims", 0), "authorized": bool(rec.get("authorized")),
+                              "authorized_at": rec.get("authorized_at"), "auth_sha": rec.get("auth_sha"),
+                              "auth_creation_id": rec.get("auth_creation_id"), "cancel_requested": bool(rec.get("cancel_requested")),
+                              "late_result": rec.get("late_result"), "result": rec.get("result"), "progress": [], "last_seen": 0.0}
+            self.order.append(jid)
 
     def log(self, event: str, **data) -> None:
         rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": event, **data}
@@ -46,7 +81,7 @@ class State:
 
     def add_job(self, caption: str, mode: str = "selftest", visibility: str = "private",
                 schedule_time: str | None = None, expect_account: str | None = None,
-                chunk_credentials: str = "omit") -> dict:
+                chunk_credentials: str = "omit", expect_user_id: str | None = None) -> dict:
         if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}")
         if visibility not in VISIBILITY:
@@ -55,17 +90,27 @@ class State:
             raise ValueError("chunk_credentials must be 'omit' or 'include'")
         if not self.video.is_file():
             raise ValueError(f"video not found: {self.video}")
+        if mode == "post":
+            if not self.allow_post:
+                raise ValueError("mode 'post' needs the server to be started with --allow-post")
+            if visibility != "private" or schedule_time:
+                raise ValueError("post is limited to visibility=private and no schedule in this prototype")
+            if not expect_account:
+                raise ValueError("post needs expect_account")
         job = {
             "id": "job-" + secrets.token_hex(4), "nonce": secrets.token_hex(8), "caption": caption,
             "visibility": visibility, "schedule_time": schedule_time, "mode": mode,
-            "expect_account": expect_account, "chunk_credentials": chunk_credentials,
+            "expect_account": expect_account, "chunk_credentials": chunk_credentials, "expect_user_id": expect_user_id,
             "video": {"name": self.video.name, "size": self.video.stat().st_size,
                       "type": mimetypes.guess_type(self.video.name)[0] or "video/mp4"},
         }
         with self.lock:
             self.jobs[job["id"]] = {"job": job, "state": "queued", "claims": 0, "authorized": False,
+                                    "authorized_at": None, "auth_sha": None, "auth_creation_id": None,
+                                    "cancel_requested": False, "late_result": None,
                                     "result": None, "progress": [], "last_seen": 0.0}
             self.order.append(job["id"])
+            self._persist()
         self.log("job-added", id=job["id"], mode=mode, visibility=visibility, schedule_time=schedule_time)
         return job
 
@@ -151,7 +196,7 @@ def make_server(state: State, port: int = 8799) -> ThreadingHTTPServer:
                 try:
                     job = state.add_job(body.get("caption", ""), body.get("mode", "selftest"), body.get("visibility", "private"),
                                         body.get("schedule_time"), body.get("expect_account"),
-                                        body.get("chunk_credentials", "omit"))
+                                        body.get("chunk_credentials", "omit"), body.get("expect_user_id"))
                 except ValueError as exc:
                     return self._json(400, {"error": str(exc)})
                 return self._json(200, job)
@@ -162,6 +207,8 @@ def make_server(state: State, port: int = 8799) -> ThreadingHTTPServer:
                 with state.lock:
                     if e["state"] == "cancelled":
                         return self._json(200, {"ok": False, "cancelled": True})
+                    if e["state"] == "done":
+                        return self._json(200, {"ok": True, "done": True})
                     e["progress"].append(body)
                     e["last_seen"] = time.time()
                     if e["state"] == "claimed":
@@ -169,26 +216,58 @@ def make_server(state: State, port: int = 8799) -> ThreadingHTTPServer:
                 state.log("progress", id=e["job"]["id"], phase=body.get("phase"), msg=body.get("msg"), pct=body.get("pct"), extra=body.get("extra"))
                 return self._json(200, {"ok": True})
             if path == "/api/authorize":
-                # Post mode is disabled: nothing is ever authorized (also true for cancelled/done jobs).
-                state.log("authorize", id=e["job"]["id"], ok=False, reason="post-disabled")
-                return self._json(200, {"ok": False, "reason": "post-disabled"})
+                return self._authorize(e, body)
             if path == "/api/cancel":
                 with state.lock:
-                    if e["state"] != "done":
+                    if e["state"] == "authorized":
+                        e["cancel_requested"] = True          # recorded only: an authorization is never undone
+                    elif e["state"] not in ("done", "uncertain", "cancelled"):
                         e["state"] = "cancelled"
+                    state._persist()
                     st = e["state"]
-                state.log("cancel", id=e["job"]["id"], state=st)
+                state.log("cancel", id=e["job"]["id"], state=st, cancel_recorded=e["cancel_requested"])
                 return self._json(200, {"ok": True, "state": st})
             if path == "/api/result":
                 with state.lock:
-                    dup = e["state"] == "done"
                     if e["state"] == "cancelled":
                         return self._json(200, {"ok": True, "cancelled": True})
+                    dup = e["state"] == "done"
                     if not dup:
+                        if e["state"] == "uncertain":
+                            e["late_result"] = True           # the real outcome arrived after a restart
                         e["state"], e["result"] = "done", body
+                        state._persist()
                 state.log("result-duplicate" if dup else "result", id=e["job"]["id"], result=body)
                 return self._json(200, {"ok": True, "duplicate": dup})
             self._json(404, {"error": "no route"})
+
+        def _authorize(self, e, body) -> None:
+            """ready -> AUTHORIZED: conditional, one-time, persisted BEFORE the reply."""
+            sha, cid = body.get("body_sha256"), body.get("creation_id")
+            with state.lock:
+                if not state.allow_post:
+                    reason = "post-disabled"
+                elif e["job"]["mode"] != "post":
+                    reason = "not-post-mode"
+                elif e["state"] == "authorized" or e["authorized"]:
+                    reason = "already-authorized"
+                elif e["state"] not in ("claimed", "running"):
+                    reason = e["state"] if e["state"] in ("cancelled", "done", "uncertain") else "not-ready"
+                elif not (isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha)) or not (isinstance(cid, str) and cid):
+                    reason = "bad-binding"
+                else:
+                    reason = None
+                if reason is None:
+                    prev = (e["state"], e["authorized"], e["authorized_at"], e["auth_sha"], e["auth_creation_id"])
+                    e["state"], e["authorized"], e["authorized_at"], e["auth_sha"], e["auth_creation_id"] = "authorized", True, time.time(), sha, cid
+                    try:
+                        state._persist()
+                    except OSError as exc:                  # not durable => not granted
+                        e["state"], e["authorized"], e["authorized_at"], e["auth_sha"], e["auth_creation_id"] = prev
+                        state.log("authorize", id=e["job"]["id"], ok=False, reason="persist-failed", error=str(exc))
+                        return self._json(500, {"ok": False, "reason": "persist-failed"})
+            state.log("authorize", id=e["job"]["id"], ok=reason is None, reason=reason, sha=(sha or "")[:12], creation_id=cid)
+            return self._json(200, {"ok": reason is None, "reason": reason})
 
         def _next(self, wait: float) -> None:
             end = time.time() + min(max(wait, 0), 30)
@@ -197,7 +276,7 @@ def make_server(state: State, port: int = 8799) -> ThreadingHTTPServer:
                     for jid in state.order:
                         e = state.jobs[jid]
                         live = e["state"] in ("claimed", "running") and time.time() - e["last_seen"] < state.stale_s
-                        if e["state"] in ("queued", "claimed", "running") and not live:
+                        if e["state"] in ("queued", "claimed", "running") and not live:   # never authorized/uncertain
                             e["claims"] += 1
                             e["last_seen"] = time.time()
                             if e["state"] == "queued":
@@ -265,13 +344,17 @@ def main(argv=None) -> int:
     ap.add_argument("--expect-account", default=None, help="TikTok unique id the page must be logged in as")
     ap.add_argument("--port", type=int, default=8799)
     ap.add_argument("--log", type=Path, default=Path(__file__).with_name("logs") / "autotok-dev.jsonl")
+    ap.add_argument("--allow-post", action="store_true", help="REQUIRED for --mode post (really posts to TikTok, one private video)")
+    ap.add_argument("--expect-user-id", default=None, help="numeric TikTok user_id_str the page must be logged in as")
+    ap.add_argument("--state", type=Path, default=Path(__file__).with_name("logs") / "state.json", help="durable job/authorization state")
     ap.add_argument("--chunk-credentials", choices=("omit", "include"), default="omit", help="fetch credentials mode for the storage host")
     a = ap.parse_args(argv)
     if a.log:
         a.log.parent.mkdir(parents=True, exist_ok=True)
-    state = State(a.token, a.video.resolve(), a.log)
+    a.state.parent.mkdir(parents=True, exist_ok=True)
+    state = State(a.token, a.video.resolve(), a.log, a.allow_post, a.state)
     try:
-        state.add_job(a.caption, a.mode, a.visibility, a.schedule, a.expect_account, a.chunk_credentials)
+        state.add_job(a.caption, a.mode, a.visibility, a.schedule, a.expect_account, a.chunk_credentials, a.expect_user_id)
     except ValueError as exc:
         print("error:", exc, file=sys.stderr)
         return 2

@@ -1,5 +1,5 @@
 // MAIN-world job runner (needs lib.js loaded first). P0b spike: upload-only selftest + intercept (body built, never sent).
-// There is NO code path here that sends /project/post/ - post mode is disabled in this step.
+// Publishing (post mode only) goes through ONE gated path: publishOnce(). Everything else never sends /project/post/.
 // Talks to content.js (isolated world) via window.postMessage {__autotok:1, nonce, ...}.
 (function () {
   'use strict';
@@ -7,7 +7,8 @@
   window.__autotokApi = true;
   const L = window.AutotokLib;
   const AID = 1988, REGION = 'ap-singapore-1';
-  const MODES = ['selftest', 'intercept'];
+  const MODES = ['selftest', 'intercept', 'post'];
+  const gate = L.createPublishGate();
   let running = false;           // single-flight: a duplicate 'run' message is ignored
   let NONCE = null;
 
@@ -132,21 +133,97 @@
     return { payload, probe, resolvedMentions: Object.keys(userIds), tz: Intl.DateTimeFormat().resolvedOptions().timeZone };
   }
 
+
+  // Strict identity: only the passport self endpoint decides (data.username + data.user_id_str).
+  async function strictIdentity(job, when) {
+    if (job.mode === 'post' && !job.expect_account) throw new StepFail('identity', 'post needs expect_account');
+    let j = null;
+    try { j = await (await fetch('/passport/web/account/info/?aid=' + AID, { credentials: 'include' })).json(); } catch (e) { throw new StepFail('identity', 'passport lookup failed: ' + e.message); }
+    const r = L.checkIdentity(j, { username: job.expect_account, userId: job.expect_user_id });
+    progress('identity', `${when}: ${r.ok ? 'ok' : r.reason} ${r.username || ''}`, null, { when, ok: r.ok, username: r.username || null, userId: r.userId ? mask(r.userId) : null });
+    if (!r.ok) throw new StepFail('identity', `${r.reason}${r.username ? ` (page account ${r.username})` : ''} [${when}]`);
+    return { value: r.username, user_id: r.userId };
+  }
+
+  // SDK readiness: page code replaced XHR.send on top of our wrapper (our hook is installed at document_start, so the
+  // SDK wraps AFTER us). `[native code]` cannot be used because our own wrapper is not native either.
+  async function waitSdk() {
+    const hk = window.__autotokHook;
+    if (!hk) throw new StepFail('sdk', 'hook-main.js not installed');
+    const t0 = Date.now();
+    while (XMLHttpRequest.prototype.send === hk.wrapperSend) {
+      if (Date.now() - t0 > 30000) throw new StepFail('sdk-not-ready', 'page SDK never wrapped XMLHttpRequest.send', { byted_acrawler: typeof window.byted_acrawler });
+      await sleep(500);
+    }
+    progress('sdk', 'SDK đã bọc XHR.send', null, { waitedMs: Date.now() - t0, byted_acrawler: typeof window.byted_acrawler });
+  }
+
+  let authResolve = null;
+  function requestAuthorization(sha, creationId) {
+    return new Promise((resolve) => {
+      authResolve = resolve;
+      post('auth-req', { sha, creation_id: creationId });
+      setTimeout(() => resolve({ ok: false, reason: 'authorize-timeout' }), 30000);
+    });
+  }
+
+  // The ONLY place that can send a post. Grant is bound to sha256(body)+creation_id+nonce and consumed before send.
+  async function publishOnce(bodyStr) {
+    const url = '/tiktok/web/project/post/v1/?app_name=tiktok_web&channel=tiktok_web&device_platform=web&tz_name='
+      + encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone) + '&aid=' + AID;
+    await gate.check(bodyStr, NONCE);                 // throws -> nothing sent; consumes the grant synchronously on success
+    const xhr = new XMLHttpRequest();                 // same tick as the consume: no await between check and send
+    const settled = new Promise((resolve) => {
+      xhr.onload = () => resolve({ status: xhr.status, text: String(xhr.responseText || '') });
+      xhr.onerror = () => resolve({ error: 'network', blocked: !!xhr.__autotokBlocked });
+      xhr.ontimeout = () => resolve({ error: 'timeout' });
+      xhr.onabort = () => resolve({ error: 'abort' });
+    });
+    xhr.open('POST', url, true);
+    xhr.withCredentials = true;
+    xhr.timeout = 180000;
+    xhr.setRequestHeader('content-type', 'application/json');
+    window.__autotokHook.allow(xhr);
+    xhr.send(bodyStr);                                // never retried after this line
+    return settled;                                   // correlated to this exact XHR object
+  }
+
+  async function doPost(job, up, body, id) {
+    const bodyStr = JSON.stringify(body.payload);
+    const sha = await L.sha256Hex(bodyStr);
+    await waitSdk();
+    await strictIdentity(job, 'before-publish');
+    const auth = await requestAuthorization(sha, up.ids.creation_id);
+    if (!auth.ok) throw new StepFail('authorize', 'denied: ' + auth.reason);   // nothing sent
+    gate.arm({ sha, creationId: up.ids.creation_id, nonce: NONCE });
+    progress('post', 'ĐÃ cấp quyền, gửi 1 lần', null, { sha: sha.slice(0, 12) });
+    let res;
+    try { res = await publishOnce(bodyStr); } catch (e) { throw new StepFail('gate', e.message); }   // check failed: not sent
+    if (res.blocked) return { outcome: 'failed', definite: true, reason: 'blocked-by-hook', note: 'không gì được gửi' };
+    if (res.error) return { outcome: 'uncertain', reason: 'xhr-' + res.error, note: 'đã gửi, không có phản hồi' };
+    const m = L.mapPublishResult(res.status, res.text);
+    if (m.outcome === 'uncertain') m.text = res.text.slice(0, 300);
+    return Object.assign(m, { creation_id: up.ids.creation_id, video_id: up.ids.video_id, body_sha256: sha, identity: id });
+  }
+
   async function run(msg) {
     const job = msg.job;
     if (!MODES.includes(job.mode)) return post('done', { result: { outcome: 'failed', definite: true, reason: 'mode-disabled', detail: job.mode } });
     const t0 = Date.now();
     try {
+      if (job.mode === 'post' && (job.visibility !== 'private' || job.schedule_time)) throw new StepFail('validate', 'post is limited to private, unscheduled in this prototype');
       const resp = await fetch(msg.blobUrl);
       const blob = await resp.blob();
       post('blob-ready', {});                      // content.js may revoke the Blob URL now
       if (blob.size !== msg.size) throw new StepFail('blob', `size ${blob.size} != ${msg.size}`);
-      progress('start', `upload-only ${job.mode}, ${(blob.size / 1048576).toFixed(1)} MB`, 0, { mem: mem() });
+      const id0 = await strictIdentity(job, 'before-upload');     // nothing is uploaded for the wrong/unknown account
+      progress('start', `${job.mode}, ${(blob.size / 1048576).toFixed(1)} MB`, 0, { mem: mem() });
       const up = await upload(job, blob);
-      const result = { outcome: job.mode === 'selftest' ? 'selftest_ok' : 'intercepted', note: 'đã tải video lên TikTok, KHÔNG đăng', ids: up.ids, parts: up.parts, chunkCredentials: up.chunkCredentials, elapsed_ms: Date.now() - t0, mem: mem() };
-      if (job.mode === 'intercept') {
+      let result = { outcome: job.mode === 'selftest' ? 'selftest_ok' : 'intercepted', note: 'đã tải video lên TikTok, CHƯA đăng', ids: up.ids, parts: up.parts, chunkCredentials: up.chunkCredentials, identity: id0, elapsed_ms: Date.now() - t0, mem: mem() };
+      if (job.mode !== 'selftest') {
         const b = await buildBody(job, up.ids, blob);
-        Object.assign(result, { sent: false, body: b.payload, probe: b.probe, resolvedMentions: b.resolvedMentions, tz: b.tz });
+        if (job.mode === 'intercept') Object.assign(result, { sent: false, body: b.payload, probe: b.probe, resolvedMentions: b.resolvedMentions, tz: b.tz });
+        else result = Object.assign({ ids: up.ids, parts: up.parts, elapsed_ms: Date.now() - t0 }, await doPost(job, up, b, id0));
       }
       post('done', { result });
     } catch (e) {
@@ -156,6 +233,7 @@
 
   window.addEventListener('message', (e) => {
     const d = e.data;
+    if (e.source === window && d && d.__autotok === 1 && d.from === 'content' && d.kind === 'auth-res' && d.nonce === NONCE && authResolve) { const r = authResolve; authResolve = null; r({ ok: !!d.ok, reason: d.reason }); return; }
     if (e.source !== window || !d || d.__autotok !== 1 || d.kind !== 'run' || d.from === 'api') return;
     if (running) { post('p', { phase: 'warn', msg: 'duplicate run ignored' }); return; }
     running = true; NONCE = String(d.nonce);

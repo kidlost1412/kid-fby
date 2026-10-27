@@ -104,7 +104,7 @@ async function closeJobWindow(a) {
 
 // ---------- job lifecycle ----------
 async function startJob(job, local) {
-  if (!['selftest', 'intercept', 'selfcheck'].includes(job.mode)) { // post mode is disabled in this step
+  if (!['selftest', 'intercept', 'post', 'selfcheck'].includes(job.mode)) {
     await log(`từ chối job ${job.id}: chế độ "${job.mode}" bị tắt`, 'WARN');
     if (!local) await api('/api/result', { method: 'POST', body: { id: job.id, nonce: job.nonce, outcome: 'failed', definite: true, reason: 'mode-disabled' } }).catch((e) => log('gửi từ chối lỗi: ' + e.message, 'WARN'));
     return;
@@ -326,7 +326,28 @@ const handlers = {
   },
 
   // One-time permission to click Post. Persist FIRST (conservative: a crash after this point = uncertain).
-  async authorize() { return { ok: false, reason: 'post-disabled' }; }, // no publish path exists in this step
+  // One-time publish grant. The local flag is persisted FIRST (a crash after it = uncertain), then the server's durable
+  // conditional transition decides. A denial clears the local flag (nothing was sent).
+  async authorize(msg, sender) {
+    const a = await jobFor(sender, msg);
+    if (!a || a.mode !== 'post') return { ok: false, reason: 'not-a-post-job' };
+    const won = await locked(async () => {
+      const cur = await getActive();
+      if (!cur || cur.id !== a.id || cur.authorized || cur.finished) return false;
+      await chrome.storage.local.set({ activeJob: Object.assign({}, cur, { authorized: true, authorizedAt: Date.now() }) });
+      return true;
+    });
+    if (!won) return { ok: false, reason: 'already-authorized' };
+    let r = null;
+    try { r = await api('/api/authorize', { method: 'POST', body: { id: a.id, nonce: a.nonce, body_sha256: msg.sha, creation_id: msg.creation_id } }); } catch (e) { r = { ok: false, reason: 'server-unreachable:' + e.message, unknown: true }; }
+    if (!r || !r.ok) {
+      // unreachable = the server may have committed the grant: stay authorized (=> uncertain) and refuse the click
+      if (!(r && r.unknown)) await patchActive({ authorized: false }, a.id);
+      return { ok: false, reason: (r && r.reason) || 'denied' };
+    }
+    await log('ĐÃ CẤP QUYỀN đăng (một lần, gắn với hash nội dung)');
+    return { ok: true };
+  },
 
   async result(msg, sender) {
     const a = await jobFor(sender, msg);

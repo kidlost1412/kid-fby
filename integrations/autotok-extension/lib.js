@@ -147,7 +147,76 @@
       single_post_req_list: [{ batch_index: 0, video_id: videoId, is_long_video: 0, single_post_feature_info: info }] };
   }
 
-  const api = { CHUNK_SIZE, MAX_CAPTION_LENGTH, crc32Hex, splitParts, sigv4, sha256Hex, pyStrip, codePointLength, validateCaption, TOKEN_RE, mentionsIn,
+
+  // ---- publish result mapping (uploader.py:157-193 post id, 664-698 _check_publish) ----
+  // Big integers lose precision in JSON.parse: keep the raw source text of numbers (reviver context, Chrome 114+/Node 20+).
+  function parseKeepNumbers(text) { return JSON.parse(text, function (k, v, ctx) { return typeof v === 'number' && ctx && typeof ctx.source === 'string' && /^[0-9]{16,}$/.test(ctx.source) ? ctx.source : v; }); }
+  const postIdValue = (v) => (typeof v === 'string' && /^[0-9]{17,20}$/.test(v) ? v : null);
+  function idIn(o) {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+    for (const k of Object.keys(o)) if (/^(itemid|awemeid)$/.test(k.replace(/_/g, '').toLowerCase())) { const f = postIdValue(o[k]); if (f) return f; }
+    return null;
+  }
+  function extractPostId(resp) {
+    if (!resp || typeof resp !== 'object' || Array.isArray(resp)) return null;
+    let f = idIn(resp) || idIn(resp.data);
+    if (f) return f;
+    for (const k of Object.keys(resp)) if (k.toLowerCase() === 'single_post_resp_list' && Array.isArray(resp[k])) for (const it of resp[k]) { f = idIn(it); if (f) return f; }
+    return null;
+  }
+  // -> {outcome: 'posted'|'rejected'|'uncertain', ...}. Never retried by the caller.
+  function mapPublishResult(status, text) {
+    const base = { http: status };
+    if (status !== 200) {
+      if (status >= 500 || status === 408 || status === 429) return Object.assign(base, { outcome: 'uncertain', reason: 'http-' + status });
+      return Object.assign(base, { outcome: 'rejected', definite: true, reason: 'http-' + status });
+    }
+    let j;
+    try { j = parseKeepNumbers(text); } catch (_) { return Object.assign(base, { outcome: 'uncertain', reason: 'non-json' }); }
+    const code = j && typeof j === 'object' ? j.status_code : undefined;
+    if (typeof code !== 'number' || !Number.isInteger(code)) return Object.assign(base, { outcome: 'uncertain', reason: 'no-usable-status_code' });
+    if (code !== 0) return Object.assign(base, { outcome: 'rejected', definite: true, reason: 'status_code', status_code: code, status_msg: typeof j.status_msg === 'string' ? j.status_msg : '' });
+    const id = extractPostId(j);
+    return Object.assign(base, { outcome: 'posted', status_code: 0, item_id: id, no_item_id: id == null });
+  }
+
+  // ---- single-flight, payload-bound publish gate ----
+  // arm() stores the grant (bound to sha256(body), creation_id, nonce). check() verifies and CONSUMES it in one
+  // synchronous section, so two concurrent calls can never both pass; the caller sends in the same tick.
+  function createPublishGate() {
+    let grant = null, used = false;
+    return {
+      arm(g) { if (grant) throw new Error('gate already armed'); grant = { sha: g.sha, creationId: g.creationId, nonce: g.nonce }; },
+      async check(bodyStr, nonce) {
+        const sha = await sha256Hex(bodyStr);
+        let cid = null; try { cid = JSON.parse(bodyStr).post_common_info.creation_id; } catch (_) { /* mismatch below */ }
+        if (!grant) throw new Error('no grant');
+        if (used) throw new Error('grant already used');
+        if (nonce !== grant.nonce) throw new Error('nonce mismatch');
+        if (sha !== grant.sha) throw new Error('body does not match the authorized hash');
+        if (cid !== grant.creationId) throw new Error('creation_id mismatch');
+        used = true;                                 // consumed before the caller's send
+        return true;
+      },
+      get used() { return used; },
+    };
+  }
+
+  // ---- strict identity: passport self endpoint only (data.username + data.user_id_str) ----
+  // -> {ok, username, userId} or {ok:false, reason}. `expect` = {username, userId} (either may be empty).
+  function checkIdentity(passportJson, expect) {
+    const d = passportJson && passportJson.data;
+    const username = d && typeof d.username === 'string' ? d.username.replace(/^@/, '').trim().toLowerCase() : '';
+    const userId = d && typeof d.user_id_str === 'string' ? d.user_id_str.trim() : '';
+    if (!username || !userId) return { ok: false, reason: 'identity-missing' };
+    const eu = expect && expect.username ? String(expect.username).replace(/^@/, '').trim().toLowerCase() : '';
+    const ei = expect && expect.userId ? String(expect.userId).trim() : '';
+    if (eu && eu !== username) return { ok: false, reason: 'identity-mismatch', username, userId };
+    if (ei && ei !== userId) return { ok: false, reason: 'identity-mismatch', username, userId };
+    return { ok: true, username, userId };
+  }
+
+  const api = { mapPublishResult, extractPostId, parseKeepNumbers, createPublishGate, checkIdentity, CHUNK_SIZE, MAX_CAPTION_LENGTH, crc32Hex, splitParts, sigv4, sha256Hex, pyStrip, codePointLength, validateCaption, TOKEN_RE, mentionsIn,
     buildCaption, visibilityCode, resolveSchedule, finalizeSchedule, buildPayload };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.AutotokLib = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

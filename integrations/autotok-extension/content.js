@@ -61,6 +61,10 @@
       if (d.nonce !== NONCE) return;
       if (d.kind === 'p') report(d.phase, d.msg, d.pct, d.extra);
       else if (d.kind === 'done') api.done = d;
+      else if (d.kind === 'auth-req') {
+        send('authorize', { sha: d.sha, creation_id: d.creation_id }).catch((err) => ({ ok: false, reason: 'sw-error:' + err.message }))
+          .then((r) => window.postMessage({ __autotok: 1, from: 'content', kind: 'auth-res', nonce: NONCE, ok: !!(r && r.ok), reason: r && r.reason }, location.origin));
+      }
       return;
     }
     if (d.from === 'content') return;
@@ -127,15 +131,6 @@
     return { value: good.length && good[0].value ? good[0].value.toLowerCase() : null, source: good.length ? good[0].source : null, all: c };
   }
 
-  async function checkIdentity(job) {
-    const id = await waitFor(async () => { const i = await getIdentity(); return i.value ? i : null; }, { timeout: CFG.identityMs, interval: 2000, what: 'tài khoản đăng nhập' })
-      .catch(async (e) => { throw new StepError('identity-unknown', JSON.stringify((await getIdentity()).all)); });
-    if (job.expect_account && id.value !== String(job.expect_account).replace(/^@/, '').toLowerCase()) {
-      throw new StepError('identity-mismatch', `trang đang đăng nhập "${id.value}", job cần "${job.expect_account}"`);
-    }
-    return id;
-  }
-
   // ---- video bytes: pulled chunk by chunk through the SW (stateless range fetches) ----
   function decode(b) { const bin = atob(b); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
 
@@ -173,16 +168,16 @@
     return { outcome: 'selfcheck_ok', url: location.pathname, identity: id, dom: S.report(), title: document.title };
   }
 
-  // Upload-only feasibility spike: selftest | intercept. Post mode is refused here and in the SW and dev server.
+  // selftest (upload only) | intercept (body built, never sent) | post (gated, see api-main.js publishOnce).
   async function runJob(job) {
-    if (job.mode !== 'selftest' && job.mode !== 'intercept') throw new StepError('mode-disabled', String(job.mode));
+    if (!['selftest', 'intercept', 'post'].includes(job.mode)) throw new StepError('mode-disabled', String(job.mode));
     const R = { steps: {} };
     await waitFor(() => document.readyState !== 'loading', { timeout: 30000, what: 'trang tải xong' });
     await arm('block');                       // safety net: any /project/post/ request is blocked, whatever the mode
     if (/\/login/.test(location.pathname)) throw new StepError('not-logged-in', location.href);
     await report('start', `bắt đầu ${job.mode}, caption ${job.caption.length} ký tự`);
-    R.identity = await checkIdentity(job);
-    await report('identity', 'tài khoản: ' + R.identity.value + ' (' + R.identity.source + ')', null, { account: R.identity.value });
+    // Fallback identity sources are diagnostics only; the decision is made by api-main.js (passport user_id_str + username).
+    R.identityDiag = await getIdentity().catch((e) => ({ error: e.message }));
 
     const { blob, meta, stats } = await buildBlob();
     R.steps.transfer = stats;
@@ -193,7 +188,7 @@
       const t0 = Date.now();
       const done = await waitFor(() => api.done, { timeout: CFG.processMs, interval: 500, what: 'MAIN-world runner (api-main.js)' });
       R.steps.api = { ms: Date.now() - t0 };
-      return Object.assign(R, done.result, { identity: R.identity });
+      return Object.assign(R, done.result);
     } finally { revoke(); }
   }
 
