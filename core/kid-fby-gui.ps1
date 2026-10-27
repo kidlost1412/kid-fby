@@ -3854,6 +3854,7 @@ function Get-ChromeApiErrorText {
         'not found' { return 'Không tìm thấy tài khoản này (có thể đã bị xóa).' }
     }
     switch ($Status) {
+        400 { return 'Thông tin gửi lên chưa đúng.' }
         403 { return 'Bộ đăng từ chối yêu cầu này.' }
         404 { return 'Không tìm thấy (có thể đã bị gỡ).' }
         409 { return 'Bộ đăng không cho thực hiện lúc này.' }

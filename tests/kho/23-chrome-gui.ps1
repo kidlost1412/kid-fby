@@ -332,4 +332,9 @@ Test-Case 'the refresh keeps chrome_profile_dir from an old/new backend untouche
     Assert-True (@($c.PSObject.Properties.Name) -contains 'chrome_profile_dir') 'field present (null)'
     Assert-True (-not (Get-ChromeProfileChoice $c (Read-ChromeProfiles (New-LocalState $localJson))).Hidden) 'combo shown'
 }
+Test-Case 'backend 400 bad_request for a bad profile name: its Vietnamese message is shown; a bare 400 gets the generic text' {
+    Assert-Equal (Get-ChromeApiErrorText 400 '{"ok":false,"error":"bad_request","message":"Tên profile Chrome không hợp lệ (ví dụ: Default, Profile 1)"}') 'Tên profile Chrome không hợp lệ (ví dụ: Default, Profile 1)'
+    Assert-Equal (Get-ChromeApiErrorText 400 '{"error":"bad_request","message":"invalid JSON"}') 'Thông tin gửi lên chưa đúng.'
+    Assert-Equal (Get-ChromeApiErrorText 404 '{"error":"unknown_client","message":"x"}') 'Không tìm thấy (có thể đã bị gỡ).'
+}
 Complete-Tests
