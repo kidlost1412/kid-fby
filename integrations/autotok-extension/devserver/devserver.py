@@ -89,6 +89,8 @@ def make_server(state: State, port: int = 8799) -> ThreadingHTTPServer:
             self.end_headers()
 
         def _auth(self) -> bool:
+            state.log("request", method=self.command, path=self.path, range=self.headers.get("Range"),
+                      auth=self.headers.get("Authorization", "")[:7] == "Bearer ")
             if self.headers.get("Authorization", "") == "Bearer " + state.token:
                 return True
             state.log("auth-denied", path=self.path)

@@ -14,7 +14,7 @@ async function refresh() {
   const a = s.active;
   $('state').textContent = a ? `Job ${a.id} [${a.mode}] pha: ${a.phase}${a.authorized ? ' · ĐÃ CẤP QUYỀN ĐĂNG' : ''}${a.finished ? ' · đã xong, chờ gửi kết quả' : ''}` : 'Rảnh (không có job)';
   $('poll').textContent = s.poll ? `Poll: ${s.poll.state} (${new Date(s.poll.at).toLocaleTimeString()})` : '';
-  $('log').textContent = s.log.slice(-25).join('\n');
+  const lg = s.log.slice(-25).join('\n'); if ($('log').textContent !== lg) $('log').textContent = lg;
   $('last').textContent = s.lastResult ? JSON.stringify(s.lastResult, null, 1).slice(0, 6000) : '';
   window.__last = s.lastResult;
 }
@@ -28,4 +28,7 @@ $('save').onclick = async () => {
     windowStrategy: $('strategy').value, keepOpen: $('keepOpen').checked, polling: $('polling').checked } });
   refresh();
 };
-refresh(); setInterval(refresh, 1500);
+// event-driven: refresh when storage changes (debounced), plus a slow fallback
+let timer = null;
+chrome.storage.onChanged.addListener(() => { clearTimeout(timer); timer = setTimeout(refresh, 400); });
+refresh(); setInterval(refresh, 5000);

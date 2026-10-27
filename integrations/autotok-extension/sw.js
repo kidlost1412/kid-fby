@@ -14,8 +14,9 @@ const STUDIO_URL = 'https://www.tiktok.com/tiktokstudio/upload';
 const DEFAULTS = { server: 'http://127.0.0.1:8799', token: '', windowStrategy: 'minimized', keepOpen: false, polling: true };
 const JOB_DEADLINE_MS = 40 * 60 * 1000;   // whole job
 const STALL_MS = 5 * 60 * 1000;           // no progress message from the tab (minimized tabs are throttled)
-const CHUNK = 4 * 1024 * 1024;
-const MAX_LOG = 80;
+const CHUNK = 1024 * 1024;
+const MAX_LOG = 40;
+const CLOSE_GRACE_MS = 10000;
 
 // ---------- storage helpers (serialized so concurrent handlers cannot interleave read-modify-write) ----------
 let chain = Promise.resolve();
@@ -143,6 +144,11 @@ async function finishJob(id, result) {
   return { ok: true };
 }
 
+async function findJobTab(a) {
+  const tabs = await chrome.tabs.query({ url: 'https://www.tiktok.com/*' });
+  return tabs.find((x) => (x.url || '').includes('#autotok=' + encodeURIComponent(a.id))) || tabs.find((x) => x.windowId === a.windowId && a.strategy !== 'tab') || null;
+}
+
 // Called on every tick and every wake-up: reconcile durable state with reality.
 async function recover() {
   const a = await getActive();
@@ -165,10 +171,16 @@ async function recover() {
     }
     return true;
   }
-  try { await chrome.tabs.get(a.tabId); } catch (_) {
+  let gone = false;
+  try { await chrome.tabs.get(a.tabId); if (a.missingSince) await patchActive({ missingSince: null }, a.id); } catch (_) { gone = true; }
+  if (gone) { // the tab id may have changed (prerender/discard): look it up by URL hash / window first
+    const t = await findJobTab(a);
+    if (t) { await log(`tìm lại tab theo URL/cửa sổ: ${a.tabId} -> ${t.id}`, 'WARN'); await patchActive({ tabId: t.id, windowId: t.windowId, missingSince: null }, a.id); return true; }
+    if (!a.missingSince) { await patchActive({ missingSince: now }, a.id); return true; }
+    if (now - a.missingSince < CLOSE_GRACE_MS) return true;
     await finishJob(a.id, a.authorized
       ? { outcome: 'uncertain', reason: 'tab-closed-after-authorization' }
-      : { outcome: 'failed', definite: true, reason: 'tab-closed-before-authorization' });
+      : { outcome: 'failed', definite: true, reason: 'tab-closed-before-authorization', detail: 'missing for ' + (now - a.missingSince) + ' ms, no tab with the job hash in window ' + a.windowId });
     return true;
   }
   if (now - a.startedAt > JOB_DEADLINE_MS || now - a.lastBeat > STALL_MS) {
@@ -181,21 +193,27 @@ async function recover() {
 
 // ---------- polling ----------
 let polling = false;
+let lastPollState = '';
+const setPoll = async (state) => { if (state !== lastPollState) { lastPollState = state; await chrome.storage.local.set({ poll: { at: Date.now(), state } }); } };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
 async function pollLoop() {
   if (polling) return;
   polling = true;
   try {
-    for (let i = 0; i < 100000; i++) {
-      const s = await getSettings();
-      if (!s.polling || !s.token) { await chrome.storage.local.set({ poll: { at: Date.now(), state: s.token ? 'tắt' : 'chưa có token' } }); return; }
-      if (await recover()) { await new Promise((r) => setTimeout(r, 3000)); continue; }
+    for (;;) {
       try {
-        await chrome.storage.local.set({ poll: { at: Date.now(), state: 'đang chờ job' } });
+        const s = await getSettings();
+        if (!s.polling || !s.token) { await setPoll(s.token ? 'tắt' : 'chưa có token'); return; }
+        if (await recover()) { await wait(4000); continue; }
+        await setPoll('đang chờ job');
         const job = await api('/api/next?wait=20', { timeoutMs: 30000 });
         if (job) await startJob(job, false);
       } catch (e) {
-        await chrome.storage.local.set({ poll: { at: Date.now(), state: 'lỗi: ' + e.message } });
-        await new Promise((r) => setTimeout(r, 5000));
+        // includes "No SW" when Chrome tears the worker down mid-await: log, back off, alarm restarts us
+        console.warn('[autotok] pollLoop', e);
+        try { await setPoll('lỗi: ' + e.message); } catch (_) { return; }
+        await wait(5000);
       }
     }
   } finally { polling = false; }
@@ -212,10 +230,16 @@ async function jobFor(sender, msg) {
 const handlers = {
   async hello(msg, sender) {
     let a = await getActive();
-    if (a && !a.finished && a.tabId == null && sender.tab && (sender.tab.url || '').includes('#autotok=' + encodeURIComponent(a.id))) {
-      a = await patchActive({ tabId: sender.tab.id, windowId: sender.tab.windowId, phase: 'opened' }, a.id);
+    const t = sender.tab;
+    if (a && !a.finished && t && !a.authorized && a.tabId !== t.id) {
+      const byHash = (t.url || '').includes('#autotok=' + encodeURIComponent(a.id));
+      const byWindow = a.windowId != null && t.windowId === a.windowId && a.strategy !== 'tab';
+      if (a.tabId == null ? byHash : (byHash || byWindow)) {
+        await log(`hello từ tab ${t.id} (${byHash ? 'hash' : 'cùng cửa sổ'}), nhận làm tab của job (trước: ${a.tabId})`, 'WARN');
+        a = await patchActive({ tabId: t.id, windowId: t.windowId, phase: 'opened', missingSince: null }, a.id);
+      }
     }
-    a = a && !a.finished && sender.tab && a.tabId === sender.tab.id ? a : null;
+    a = a && !a.finished && t && a.tabId === t.id ? a : null;
     if (!a) return { role: 'none' };
     if (a.authorized) { // tab reloaded after the Post click was authorized: never redo
       await finishJob(a.id, { outcome: 'uncertain', reason: 'tab-reloaded-after-authorization' });
@@ -223,6 +247,15 @@ const handlers = {
     }
     await patchActive({ phase: 'hello', lastBeat: Date.now() }, a.id);
     return { role: a.mode === 'selfcheck' ? 'selfcheck' : 'job', job: a.job, nonce: a.nonce };
+  },
+
+  async ready(msg, sender) { // content script injected: log + tell the dev server immediately
+    const a = await getActive();
+    const mine = !!(a && !a.finished && sender.tab && (a.tabId === sender.tab.id || (sender.tab.url || '').includes('#autotok=' + encodeURIComponent(a.id))));
+    await log(`content script ${msg.stage} tab=${sender.tab && sender.tab.id} ${msg.where} job=${mine ? a.id : '-'}`);
+    if (mine && !a.local) api('/api/progress', { method: 'POST', body: { id: a.id, nonce: a.nonce, phase: 'content-ready', msg: msg.stage + ' ' + msg.where, extra: { tabId: sender.tab.id, state: msg.state } } })
+      .catch((e) => log('gửi ready lỗi: ' + e.message, 'WARN'));
+    return { ok: true };
   },
 
   async progress(msg, sender) {
@@ -299,7 +332,7 @@ const popup = {
   },
   async saveSettings(msg) {
     await chrome.storage.local.set({ settings: Object.assign(await getSettings(), msg.settings) });
-    pollLoop();
+    pollLoop().catch((e) => console.warn('[autotok] pollLoop', e));
     return { ok: true };
   },
   async selfcheck() {
@@ -314,7 +347,7 @@ const popup = {
     await log('đã xoá job đang chạy và log');
     return { ok: true };
   },
-  async poll() { pollLoop(); return { ok: true }; },
+  async poll() { pollLoop().catch((e) => console.warn('[autotok] pollLoop', e)); return { ok: true }; },
 };
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !msg.popup || !popup[msg.popup]) return false;
@@ -324,8 +357,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // ---------- wake-up sources ----------
 chrome.alarms.create('autotok-tick', { periodInMinutes: 0.5 });
-chrome.alarms.onAlarm.addListener(() => { recover().catch((e) => log('recover: ' + e.message, 'ERR')); pollLoop(); });
-chrome.runtime.onStartup.addListener(() => pollLoop());
-chrome.runtime.onInstalled.addListener(() => pollLoop());
+const kick = () => pollLoop().catch((e) => console.warn('[autotok] pollLoop', e));
+chrome.alarms.onAlarm.addListener(() => { recover().catch((e) => log('recover: ' + e.message, 'ERR')); kick(); });
+chrome.runtime.onStartup.addListener(kick);
+chrome.runtime.onInstalled.addListener(kick);
+
+// Who closed / replaced the job tab? Log it; recover() decides after a grace period.
+chrome.tabs.onRemoved.addListener(async (tabId, info) => {
+  const a = await getActive();
+  if (a && !a.finished && a.tabId === tabId) {
+    await log(`tab ${tabId} bị đóng: isWindowClosing=${info.isWindowClosing} windowId=${info.windowId}`, 'WARN');
+    await patchActive({ missingSince: Date.now() }, a.id);
+  }
+});
+chrome.tabs.onReplaced.addListener(async (added, removed) => {
+  const a = await getActive();
+  if (a && !a.finished && a.tabId === removed) {
+    await log(`tab ${removed} được thay bằng ${added} (prerender/discard)`, 'WARN');
+    await patchActive({ tabId: added, missingSince: null, lastBeat: Date.now() }, a.id);
+  }
+});
 log('SW khởi động');
-pollLoop();
+kick();

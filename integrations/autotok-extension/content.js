@@ -6,7 +6,11 @@
   'use strict';
   if (window.top !== window || window.__autotokContent) return;
   window.__autotokContent = true;
-  if (!/[#&]autotok=/.test(location.hash)) return;
+  const hasHash = /[#&]autotok=/.test(location.hash);
+  // Tell the SW we exist (document_start and again when loaded), even when the hash was lost to a redirect.
+  const where = () => location.pathname + (hasHash ? '#autotok' : ' (no hash)');
+  chrome.runtime.sendMessage({ type: 'ready', stage: 'document_start', where: where(), state: document.readyState }).catch(() => {});
+  window.addEventListener('load', () => chrome.runtime.sendMessage({ type: 'ready', stage: 'load', where: where(), state: document.readyState }).catch(() => {}));
 
   const S = self.AutotokSel;
   const CFG = {
@@ -143,7 +147,7 @@
       let ok = false;
       for (let a = 1; a <= 3 && !ok; a++) {
         const r = await send('videoChunk', { index: i, size: meta.size }).catch((e) => ({ ok: false, error: e.message }));
-        if (r.ok) { parts.push(decode(r.b64)); ok = true; } else await sleep(1000 * a);
+        if (r.ok) { parts.push(decode(r.b64)); ok = true; await sleep(0); } else await sleep(1000 * a);
       }
       if (!ok) throw new StepError('video-chunk', 'chunk ' + i + '/' + n);
       if (i % 4 === 3 || i === n - 1) await report('transfer', `video ${i + 1}/${n} chunk`, Math.round(((i + 1) / n) * 100), { elapsedMs: Date.now() - t0 });
@@ -375,7 +379,7 @@
 
   async function main() {
     let hello = null;
-    for (let i = 0; i < 15; i++) { // SW may not have recorded the tab yet
+    for (let i = 0; i < (hasHash ? 15 : 3); i++) { // SW may not have recorded the tab yet
       hello = await send('hello').catch(() => null);
       if (hello && hello.role !== 'none') break;
       await sleep(700);
