@@ -109,7 +109,9 @@ backend library.
 Request: `{"id", "nonce", "claim_token", "phase": "upload", "msg": "...", "pct": 40, "extra": {...}}`.
 At least every 60 s while the job runs. Effects: `heartbeat_at = now`; `claimed -> uploading` on
 the first progress; `phase: "ready"` moves `uploading|claimed -> ready` (upload finished and
-committed, identity re-checked, body built; send it right before `authorize`).
+committed, identity re-checked, body built). The extension MUST await the reply to the
+`phase: "ready"` progress (`state: "ready"`) before calling `authorize`; the state change is
+committed before that reply, so an immediate `authorize` sees it.
 Response: `{"ok": true, "state": "uploading"}`. If the job was revoked:
 `{"ok": false, "state": "revoked", "cancelled": true}` -> stop, close the tab, do NOT authorize, send
 a `failed` result if anything is left to report. Progress for an `authorized` job is accepted
@@ -182,8 +184,10 @@ Response `{"ok": true, "state": "...", "authorized": bool}`. 404 `unknown_job`.
   replaces the previous one. Single use, 5 min, at most 5 wrong tries, then burnt. Kept in API
   memory only (a restart forgets it).
 - `GET /api/ext/clients` -> `[{"id", "label", "tiktok_username", "tiktok_user_id", "ext_version",
-  "protocol", "need_reload", "last_seen_at", "online", "conflict", "created_at"}]`
-  (`online` = seen in the last 90 s; removed clients are not listed).
+  "protocol", "need_reload", "last_seen_at", "online", "conflict", "has_identity", "status",
+  "created_at"}]` (`online` = seen in the last 90 s; removed clients are not listed). `status` is one
+  of `ok | need_reload | offline | no_identity | conflict`. A client with `no_identity` never gets
+  work (`/next` answers 409 `no_identity`) and the backend logs a warning on each such `hello`.
 - `DELETE /api/ext/clients/{id}` -> 204. The token stops working at once (401). A job the client
   already claimed keeps its deadlines (and its result is still accepted from any paired client
   that holds the nonce and claim token).
@@ -257,7 +261,10 @@ Per account: at most one non-terminal child (partial unique index). Further jobs
   for chrome accounts; use schedules / the desktop bridge.
 - YouTube sources for chrome accounts are refused definitely at dispatch (nothing sent).
 - The per-job `proxy` option is ignored on the Chrome path (Chrome uses its own network).
-- No backend endpoint for the extension self-test ("Kiểm tra"); it stays local to the extension.
+- No backend endpoint for the extension self-test ("Tự kiểm"); it only checks the identity, locally.
+- Schedule window: the extension enforces TikTok's 15 min..30 days; the backend refuses before
+  dispatch anything outside the app's own rules (private + schedule, beyond 10 days, or already less
+  than 5 min away, i.e. no longer fixable by the 10-min shift).
 
 ## 9. Deviations from the plan contracts (C1-C6)
 
