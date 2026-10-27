@@ -226,4 +226,39 @@ Test-Case 'the background runspace is given Get-TikTokActiveStatuses (the worker
     Assert-True ($script:tikTokWorkerFunctions -contains 'Get-TikTokActiveStatuses') 'not in tikTokWorkerFunctions'
     foreach ($n in $script:tikTokWorkerFunctions) { Assert-True (Test-Path "function:$n") "worker function $n is not defined" }
 }
+function Complete-TikTokTask { param($Task) return $script:stubResult }
+function Start-ChromeTimer { }
+function Invoke-CompleteWith409 {
+    # Real worker -> fake backend answering 409 to the PATCH, then the real Complete-ChromeOp with that result.
+    param([hashtable]$Ctx, [string]$Body)
+    $fake = Start-FakeBackend @{ 'PATCH /api/accounts/7' = @{ Status = 409; Body = $Body } } 1
+    $r = Invoke-ExtAction $fake @{ op = 'set-publisher'; account_id = 7; publisher = 'chrome'; client_id = 3; confirm = $false }
+    $script:ui = @{}; $script:TestLog.Clear()
+    $script:chromeUi = @{ Task = 1; Op = $null; Ops = (New-Object System.Collections.ArrayList); Tried = @{ '7' = $true }; Deferred = @{}; Building = $false }
+    $script:chromeUi.Op = @{ Kind = 'set-publisher'; Ctx = $Ctx }
+    $script:stubResult = $r.Result[0]
+    Complete-ChromeOp
+    return $script:chromeUi
+}
+Test-Case 'manual toggle refused with 409 (account has work): backend Vietnamese message in a toast, list rebuilt to the real publisher, nothing remembered' {
+    $s = Invoke-CompleteWith409 @{ AccountId = '7'; Username = '@anna'; Publisher = 'chrome' } '{"detail":"Tài khoản còn việc đang chờ — đợi xong"}'
+    Assert-True (@($script:TestLog | Where-Object { $_ -eq '[toast] Tài khoản còn việc đang chờ — đợi xong' }).Count -eq 1) "toast: $($script:TestLog -join '|')"
+    Assert-True ($s.Ops.Count -eq 1 -and $s.Ops[0].Kind -eq 'refresh') 'refresh queued so the combo reverts'
+}
+Test-Case 'manual toggle 409 with an English/unknown body uses the fallback Vietnamese text' {
+    [void](Invoke-CompleteWith409 @{ AccountId = '7'; Username = '@anna'; Publisher = 'chrome' } '{"detail":"busy"}')
+    Assert-True (@($script:TestLog | Where-Object { $_ -eq ('[toast] ' + (Get-ChromePublisherBusyText)) }).Count -eq 1) "toast: $($script:TestLog -join '|')"
+}
+Test-Case 'auto-switch 409: account is NOT marked handled (Tried cleared, so the next poll retries); one toast per account per session' {
+    $ctx = @{ Auto = $true; AccountId = '7'; Username = '@anna'; Publisher = 'chrome' }
+    $s = Invoke-CompleteWith409 $ctx '{"detail":"busy"}'
+    Assert-True (-not $s.Tried.ContainsKey('7')) 'Tried must be cleared'
+    Assert-Equal @($script:TestLog | Where-Object { $_ -like '*sẽ chuyển sang Chrome khi hết việc đang chờ*' }).Count 1
+    Assert-Equal @(Get-ChromeAutoSwitchPlan -Accounts @((Acct 7 'anna')) -Clients @((Cl 3 'anna')) -CookieChoice @() -Tried $s.Tried).Count 1 'retried'
+    # second refusal in the same session: still retried, no second toast
+    $script:TestLog.Clear(); $s.Tried['7'] = $true; $s.Op = @{ Kind = 'set-publisher'; Ctx = $ctx }; $s.Task = 1; $script:ui = @{}
+    Complete-ChromeOp
+    Assert-Equal @($script:TestLog | Where-Object { $_ -like '*sẽ chuyển sang Chrome*' }).Count 0 'no second toast'
+    Assert-True (-not $s.Tried.ContainsKey('7')) 'still retriable'
+}
 Complete-Tests

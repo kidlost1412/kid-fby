@@ -2845,7 +2845,7 @@ function Invoke-AutotokInstallTick {
 # Every backend call goes through the 'ext' background action (never on the UI thread); one operation at a time, in order.
 $script:chromeCookieChoice = @()   # ids of accounts the owner put back on Cookie: never switched to Chrome automatically (settings.json)
 $script:chromeUi = @{ Task = $null; Op = $null; Ops = (New-Object System.Collections.ArrayList); Timer = $null; LastPoll = [DateTime]::MinValue
-    Clients = @(); Accounts = @(); ChromeOk = $false; Tried = @{}; ReloadToasted = $false; PairExpires = ''; PairClients = 0; Building = $false }
+    Clients = @(); Accounts = @(); ChromeOk = $false; Tried = @{}; Deferred = @{}; ReloadToasted = $false; PairExpires = ''; PairClients = 0; Building = $false }
 
 function Select-ChromeClientForAccount {
     # Which Chrome an account is bound to when the owner picks "Chrome": the one reporting the same TikTok username;
@@ -2948,9 +2948,17 @@ function Complete-ChromeOp {
     if (-not $r.ok) {
         $text = Get-ChromeApiErrorText ([int]$r.status) ([string]$r.text)
         Write-FileLog "WARN Chrome $($op.Kind) HTTP $($r.status): $($r.text)"
-        if ($op.Ctx -and $op.Ctx.Auto) { return }   # automatic switch refused by the backend rules: stay on cookies, say nothing
+        if ($op.Ctx -and $op.Ctx.Auto) {
+            # Refused by the backend rules. A 409 (account still has work) is not final: forget the attempt so a later poll retries; one toast per account.
+            if ([int]$r.status -eq 409) {
+                $s.Tried.Remove([string]$op.Ctx.AccountId)
+                if (-not $s.Deferred.ContainsKey([string]$op.Ctx.AccountId)) { $s.Deferred[[string]$op.Ctx.AccountId] = $true; Show-Toast ('Tài khoản ' + [string]$op.Ctx.Username + ' sẽ chuyển sang Chrome khi hết việc đang chờ') -Kind info }
+            }
+            return
+        }
         if (-not $silent) { Set-ChromeStatusText $text }
-        if ($op.Kind -in @('set-publisher', 'from-chrome', 'remove-client')) { Show-Toast $text -Kind warning; Add-ChromeOp 'refresh' @{ op = 'refresh' } @{ Silent = $false } }
+        if ($op.Kind -eq 'set-publisher' -and [int]$r.status -eq 409 -and [string]$r.text -notmatch '[^\u0000-\u007F]') { $text = Get-ChromePublisherBusyText }
+        if ($op.Kind -in @('set-publisher', 'from-chrome', 'remove-client')) { Show-Toast $text -Kind warning; Update-ChromeLists; Add-ChromeOp 'refresh' @{ op = 'refresh' } @{ Silent = $false } }
         return
     }
     switch ($op.Kind) {
@@ -3745,6 +3753,8 @@ function Get-ChromePairCodeRemaining {
     try { $end = [DateTimeOffset]::Parse($ExpiresAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal).UtcDateTime } catch { return 0 }
     return [int][Math]::Max(0, [Math]::Ceiling(($end - $NowUtc).TotalSeconds))
 }
+
+function Get-ChromePublisherBusyText { return 'Tài khoản còn video đang chờ hoặc đang đăng — đợi xong hoặc hủy trước khi đổi cách đăng' }
 
 function Get-ChromeApiErrorText {
     # Backend refusals of the Chrome calls -> Vietnamese. Body is the raw response text ({"detail": ...} or {"message": ...}).
