@@ -148,10 +148,9 @@ test('7. two accounts, one stalled: the other account still completes', opts, ()
   assert.equal(b.parent(jobA.schedule_id).publish_uncertain, 0);
 }));
 
-// KNOWN PRODUCT BUG (reported, not fixed here): GET /api/ext/next is a sync handler that loops up to 25 s and never
-// notices the client disconnected, so an orphaned long-poll (MV3 service worker restart, Chrome closed, reload)
-// claims the next job for nobody. The job is then revoked after the stale deadline = definite failure, owner retries.
-test('8. an aborted long-poll must not claim a job (known backend bug, todo)', { todo: 'backend: /api/ext/next keeps polling after the client disconnected (routers/ext.py:146-154)', timeout: 90000 }, () => withBackend({}, async (b, later) => {
+// Regression: GET /api/ext/next must notice the poller hung up (MV3 service worker restart, Chrome closed, reload)
+// and never claim the next job for nobody (it would be revoked after the stale deadline = spurious failure).
+test('8. an aborted long-poll must not claim a job', { timeout: 90000 }, () => withBackend({}, async (b, later) => {
   const { profile, fake, account } = await connect(b, A); track(later, profile, fake);
   await sleep(1500);                                                     // the SW's /next?wait=20 is now in flight
   profile.cutNow();                                                      // SW restart / Chrome exit: the connection dies

@@ -4,10 +4,12 @@ Handlers are plain ``def`` (threadpool): /next long-polls with time.sleep.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlmodel import Session, select
 
@@ -136,22 +138,29 @@ async def hello(request: Request, client: ExtensionClient = Depends(current_clie
 
 
 @router.get("/next")
-def next_job(request: Request, wait: float = 0.0, client: ExtensionClient = Depends(current_client),
-             session: Session = Depends(get_session)):
+async def next_job(request: Request, wait: float = 0.0, client: ExtensionClient = Depends(current_client),
+                   session: Session = Depends(get_session)):
+    """Async so it can see the poller hang up: a job is never claimed for a client that is gone
+    (an aborted long poll would otherwise orphan it until the claim deadline). DB work runs in the threadpool."""
     _need_reload(request)
     if not client.tiktok_user_id:
         raise ExtError(409, "no_identity", "Chrome chưa đăng nhập TikTok (gửi hello sau khi đăng nhập)")
-    if ext.in_conflict(session, client):
+    if await run_in_threadpool(ext.in_conflict, session, client):
         raise ExtError(409, "identity_conflict", "Có hai hồ sơ Chrome cùng một tài khoản TikTok — gỡ bớt một trong ứng dụng")
     end = time.monotonic() + min(max(wait, 0.0), NEXT_MAX_WAIT)
     while True:
-        ext.reconcile_ext()
-        job = ext.claim_next(client)
+        await run_in_threadpool(ext.reconcile_ext)
+        if await request.is_disconnected():
+            return Response(status_code=204)  # nobody reads it
+        job = await run_in_threadpool(ext.claim_next, client)
         if job is not None:
-            return ext.job_payload(job, client)
+            if await request.is_disconnected():  # hung up while claiming: still pre-upload, hand it back
+                await run_in_threadpool(ext.release_claim, job)
+                return Response(status_code=204)
+            return await run_in_threadpool(ext.job_payload, job, client)
         if time.monotonic() >= end:
             return Response(status_code=204)
-        time.sleep(1.0)
+        await asyncio.sleep(1.0)
 
 
 def _video_job(session: Session, client: ExtensionClient, job_id) -> ExtensionJob:
@@ -313,17 +322,34 @@ def install_cors(app) -> None:
     allow = {"Access-Control-Allow-Origin": ext.EXT_ORIGIN, "Vary": "Origin",
              "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges"}
 
-    @app.middleware("http")
-    async def _ext_cors(request: Request, call_next):
+    app.add_middleware(_ExtCors, allow=allow)
+
+
+class _ExtCors:
+    """Plain ASGI (see api.main: BaseHTTPMiddleware would hide disconnects from /api/ext/next)."""
+
+    def __init__(self, app, allow):
+        self.app, self.allow = app, allow
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        request = Request(scope)
         path = request.url.path
         if (request.headers.get("origin") != ext.EXT_ORIGIN or not path.startswith("/api/ext/")
                 or path.startswith(GUI_ONLY)):
-            return await call_next(request)
+            return await self.app(scope, receive, send)
         if request.method == "OPTIONS" and request.headers.get("access-control-request-method"):
-            return Response(status_code=204, headers={
-                **allow, "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            return await Response(status_code=204, headers={
+                **self.allow, "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
                 "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Requested-With, X-Autotok-Protocol, Range",
-                "Access-Control-Max-Age": "600"})
-        response = await call_next(request)
-        response.headers.update(allow)
-        return response
+                "Access-Control-Max-Age": "600"})(scope, receive, send)
+        extra = [(k.lower().encode("latin-1"), v.encode("latin-1")) for k, v in self.allow.items()]
+
+        async def send_with_cors(message):
+            if message["type"] == "http.response.start":
+                names = {k for k, _ in extra}
+                message = {**message, "headers": [h for h in message.get("headers", []) if h[0] not in names] + extra}
+            await send(message)
+
+        await self.app(scope, receive, send_with_cors)

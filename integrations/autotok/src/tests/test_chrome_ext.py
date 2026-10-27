@@ -690,3 +690,21 @@ def test_hello_without_identity_gets_no_work_and_is_visible(engine, app, video_f
     assert c["status"] == "no_identity" and c["has_identity"] is False
     assert any("without TikTok identity" in m for m in caplog.messages)
     assert children(engine)[0].state == "queued"  # still nobody's
+
+
+def test_release_claim_hands_an_undelivered_job_back_only_while_still_claimed(engine, app, video_file):
+    aid = chrome_account(engine)
+    chrome = Chrome(app, "alice", UID_A)
+    sid = schedule(engine, aid)
+    worker.tick()
+    wire = chrome.next().json()
+    with Session(engine) as s:
+        job = s.get(ExtensionJob, wire["id"])
+    assert ext.release_claim(job) is True
+    assert children(engine, sid)[0].state == "queued" and children(engine, sid)[0].claim_client is None
+    again = chrome.next().json()
+    assert again["id"] == wire["id"] and again["claim_token"] != wire["claim_token"]
+    assert chrome.ready(again).json()["state"] == "ready"
+    with Session(engine) as s:
+        job = s.get(ExtensionJob, wire["id"])
+    assert ext.release_claim(job) is False  # past 'claimed': never handed back
