@@ -258,7 +258,8 @@ def test_chrome_job_starts_pending_ext_and_the_database_never_lets_it_run(engine
     con.execute("UPDATE scheduled_uploads SET status='pending' WHERE id=?", (sid,))  # as an old version could
     con.execute("UPDATE scheduled_uploads SET status='running', attempts=attempts+1 WHERE id=?", (sid,))
     con.commit()
-    assert con.execute("SELECT status, attempts FROM scheduled_uploads WHERE id=?", (sid,)).fetchone() == ("pending", 0)
+    # 'pending' is turned back into pending_ext at once (no head-of-line block for v3.1.0), 'running' is refused.
+    assert con.execute("SELECT status, attempts FROM scheduled_uploads WHERE id=?", (sid,)).fetchone() == ("pending_ext", 0)
     con.close()
     worker.tick()  # the safety net adopts it, promotion creates the child
     assert parent(engine, sid).status == "waiting_ext" and parent(engine, sid).attempts == 1
