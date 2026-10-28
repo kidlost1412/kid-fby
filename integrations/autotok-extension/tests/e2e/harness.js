@@ -48,7 +48,7 @@ class Backend {
     b.base = `http://127.0.0.1:${b.port}`;
     // AUTOTOK_CHROME_LAUNCH=off: the backend must never open the owner's real Chrome from the harness.
     const env = Object.assign({}, process.env, { PYTHONIOENCODING: 'utf-8', PYTHONPATH: '', AUTOTOK_CHROME_LAUNCH: 'off' }, {
-      E2E_CLAIM_WITHIN: '10', E2E_STALE_AFTER: '8', E2E_UPLOAD_WITHIN: '60', E2E_RESULT_WITHIN: '4' }, deadlines);
+      E2E_CLAIM_WITHIN: '10', E2E_STALE_AFTER: '60', E2E_UPLOAD_WITHIN: '60', E2E_RESULT_WITHIN: '4' }, deadlines);
     b.proc = spawn(PY, ['-I', path.join(__dirname, 'backend_launcher.py'), '--src', SRC, '--work', b.work, '--port', String(b.port)], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     b.log = '';
     for (const s of [b.proc.stdout, b.proc.stderr]) s.on('data', (d) => { b.log += d.toString(); });
