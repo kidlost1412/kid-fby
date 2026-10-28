@@ -31,3 +31,6 @@ integrations/autotok-start.ps1
 integrations/autotok-install.log
 integrations/autotok-*.lock
 integrations/autotok-takeover-journal.json*
+
+# Extension/private keys must never be committed
+*.pem
