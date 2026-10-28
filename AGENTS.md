@@ -3,7 +3,7 @@
 ## Đọc và đối chiếu
 
 - Đọc `BAN-GIAO.md` rồi đối chiếu mã trước khi kết luận. Tài liệu là bản đồ theo nguồn tại thời điểm bàn giao (rà 21/10/2026, nhánh `audit-fixes-2.1`, commit `7f5851a` cùng `main`), không thay cho kiểm chứng.
-- Phiên bản nguồn ở `core/version.txt` (hiện 3.0.0, đã phát hành tag `v3.0.0` trên `main`). `build-local.ps1` sinh metadata EXE theo file này. `version.json` và `version.json.sig` đã ký (15 file, gồm `core/autotok-bundle.zip`), nằm trên `main`, khớp các file phân phối của 3.0.0; mọi thay đổi file phân phối sau đó cần `publish.ps1` mới.
+- Phiên bản nguồn ở `core/version.txt` (hiện 3.1.0, tag `v3.1.0` tại commit `e403d90`). File này do `publish.ps1` ghi khi phát hành; không sửa tay. `build-local.ps1` sinh metadata EXE theo file này. `version.json` và `version.json.sig` do `publish.ps1` ký (gồm `core/autotok-bundle.zip`); commit `e403d90` đổi cả hai cùng lúc. Nhánh `feature/chrome-ext` (bản 3.2.0) chưa phát hành: `core/version.txt` của nhánh vẫn 3.1.0. Mọi thay đổi file phân phối cần `publish.ps1` mới.
 - Tìm hàm theo tên bằng `rg`; tránh in cả dòng Base64 rất dài gần đầu GUI. Dùng `--max-columns 180` hoặc AST để đọc `$wpfGifPlayerB64`.
 
 ## Nơi sửa
@@ -21,13 +21,17 @@
 | Build, ký manifest và chuẩn bị phát hành | `build-local.ps1`, `publish.ps1`, `new-signing-key.ps1` |
 | Tích hợp TikTok: hộp đăng, hàng chuyển, hashtag, link bài | `core/kid-fby-gui.ps1`; làm sạch video `core/kid-fby.ps1`; backend `integrations/autotok/` |
 | Bộ cài backend TikTok một chấm, gói `core/autotok-bundle.zip` | `integrations/autotok/kid-install.ps1`, `build-autotok-bundle.ps1`; nút cài ở trang Công cụ trong `core/kid-fby-gui.ps1` |
+| Chrome publisher: backend `/api/ext`, máy trạng thái, tự mở Chrome, sẵn sàng | `integrations/autotok/src/web/api/services/ext.py`, `routers/ext.py`, `db.py` (schema 5, trigger); đối soát ở `web/scheduler/worker.py`; giao thức `integrations/autotok-extension/PROTOCOL.md` |
+| Tiện ích Chrome (MV3, ID cố định `pomofdinonmfmpnpjdneihgklgdkidmc`) | `integrations/autotok-extension/` (`manifest.json`, `sw.js`, `content.js`, `hook-main.js`, `api-main.js`, `lib.js`, `popup.*`); hướng dẫn người dùng `HUONG-DAN-CAI-TIEN-ICH.md` |
+| GUI Kết nối Chrome, bộ chọn Chrome/Cookie, chọn profile, nhãn Chờ Chrome | `core/kid-fby-gui.ps1` (các hàm `Get-Chrome*`, `Get-TikTokReadyReasonText`, `Get-ChromeAutoSwitchPlan`); thẻ `CardChrome` trong `core/ui/MainWindow.xaml` |
+| Gói tiện ích vào bộ đăng; thay thư mục tiện ích khi cài; dừng dịch vụ | `build-autotok-bundle.ps1` (allowlist `extension/`); `integrations/autotok/kid-install.ps1` (`Install-Extension`); `integrations/autotok/dung.ps1` |
 
 ## Chạy, kiểm, build, phát hành
 
-- Gốc dự án: `D:\reup video fb meta\`. Nhánh làm việc `audit-fixes-2.1`, nhánh chính `main`.
+- Gốc dự án: `D:\reup video fb meta\`. Nhánh chính `main`; nhánh tính năng hiện tại xem `git branch` (bản 3.2.0 ở `feature/chrome-ext`, xem BAN-GIAO mục 11).
 - GUI: `.\Kid-FB.Y.exe`; tự kiểm khởi tạo: `.\Kid-FB.Y.exe -SelfTest`. Engine: `powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\core\kid-fby.ps1 -Check` (tham số ở đầu `core/kid-fby.ps1`).
 - Biến môi trường khi thử: `KID_FBY_NO_MSGBOX=1` (không bật hộp thoại), `KID_FBY_ALLOW_MULTI=1` (bỏ chặn mở nhiều phiên).
-- Repo không có bộ test hồi quy cho GUI/engine; `-SelfTest` là kiểm duy nhất cho phần đó. Backend autotok có pytest trong `integrations/autotok/src` (25/10/2026: 454 passed, 5 skipped, 1 xfailed). Harness GUI đặt ngoài repo, dùng thư mục xuất tạm.
+- Repo không có bộ test hồi quy cho GUI/engine; `-SelfTest` là kiểm duy nhất cho phần đó. Backend autotok có pytest trong `integrations/autotok/src` (số đo 25/10/2026, trước đợt Chrome; đợt Chrome 28/10/2026: 623 passed, 2 lỗi môi trường đã biết, xem BAN-GIAO mục 11). Harness GUI đặt ngoài repo, dùng thư mục xuất tạm.
 - Build: `powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\build-local.ps1` (csc .NET Framework 4, `Framework64\v4.0.30319`). Build ghi lại Base64 GIF trong `core/kid-fby-gui.ps1` nếu `.cs` đổi, kiểm 13 resource và SelfTest ở thư mục tạm; đạt khi in `PASS: fresh launcher SelfTest and all thirteen embedded resource hashes`. Build không đổi `version.json`.
 - Phát hành: `.\publish.ps1 -Version x.y.z [-Note "..."] [-Mandatory] -NoPush`; phiên bản phải lớn hơn `core/version.txt`; script đổi `version.txt`, EXE, manifest ngay và không hoàn tác. Thiếu `-NoPush` thì script tự commit, tag `v<x.y.z>` và push `main`: chỉ chủ dự án chạy.
 - Không đọc, chép hay gửi ra ngoài (kể cả cho công cụ AI khác) nội dung `data/`, `output/`, `logs/`, khóa ký.
@@ -59,6 +63,8 @@
 - `core/autotok-bundle.zip` do `build-autotok-bundle.ps1` dựng (tất định, từ file git-tracked theo allowlist); không sửa zip tay. Đổi `kid-install.ps1` hoặc allowlist thì dựng lại gói rồi `publish.ps1` mới.
 - Trạng thái bộ cài trên máy (`integrations/autotok-releases`, `autotok-python311`, `autotok-current.json`, `autotok-config.json`, `autotok-start.ps1`, `autotok-install.log`) nằm trong `.gitignore`; không đưa vào git. Đổi giao dịch cài (drain, chuyển `current`, rollback) phải kiểm lại cả đường lỗi.
 - `integrations/tiktok/local.json`, khóa, cookie và dữ liệu backend (mặc định `%LOCALAPPDATA%\KidFBY\autotok-data`, hoặc `DataDir`) không đưa vào git hay tài liệu. Không đăng TikTok thật khi chủ dự án chưa cho phép.
+- Khóa riêng của tiện ích (`ext-private.pem` hoặc bất kỳ khóa nào) không bao giờ được commit hay đưa vào gói. Trường `key` trong `integrations/autotok-extension/manifest.json` là khóa **công khai**; đổi nó là đổi ID tiện ích, và `EXT_ORIGIN` trong `services/ext.py` phải đổi theo. Trong cây hiện không có file `*.pem`; `.gitignore` không chặn `*.pem` (đã kiểm bằng `git check-ignore`), nên khóa riêng phải để ngoài repo. `build-autotok-bundle.ps1` từ chối build khi có file khóa trong thư mục tiện ích.
+- Đổi giao thức (`PROTOCOL_MIN`/`PROTOCOL_MAX`, header `X-Autotok-Protocol`, mã lỗi, `reason`) phải sửa đồng bộ `PROTOCOL.md`, `services/ext.py` và phía tiện ích. Đổi trạng thái `pending_ext`/`waiting_ext` phải xét GUI, `dung.ps1` và `kid-install.ps1` (đếm việc đang chờ). Không bỏ trigger `tr_chrome_job_*` trong `db.py`: chúng giữ an toàn khi lùi về bản cũ (BAN-GIAO mục 11).
 
 ## Dữ liệu cần giữ
 

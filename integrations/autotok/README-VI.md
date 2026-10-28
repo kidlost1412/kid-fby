@@ -24,7 +24,16 @@ Máy đã cài theo cách clone repo ở trên: thẻ hiện "Bản tự cài"; 
 
 Bản cài một chạm nằm trong `integrations\`: `autotok-releases\` (mỗi bản một thư mục), `autotok-python311\`, `autotok-current.json`, `autotok-config.json` (`DataDir`), `autotok-start.ps1`, nhật ký `autotok-install.log`. Đã gitignore. Dừng dịch vụ của bản đang dùng: `dung.ps1` trong thư mục bản ghi ở `autotok-current.json`.
 
-Dừng dịch vụ: `.\integrations\autotok\dung.ps1` (từ chối nếu đang có lịch đăng hoặc còn video đang chờ gửi lên TikTok; thêm `-Force` để ép dừng).
+Dừng dịch vụ: `.\integrations\autotok\dung.ps1` (từ chối nếu đang có lịch đăng, còn video đang chờ gửi lên TikTok, hoặc đang chờ/đăng qua Chrome; thêm `-Force` để ép dừng).
+
+## Đăng bằng Chrome (từ bản 3.2.0)
+
+Ngoài cookie, tài khoản có thể đăng qua Chrome đã đăng nhập TikTok, nhờ tiện ích AutoTok (không cần cookie). Cài tiện ích một lần theo `integrations\autotok-extension\HUONG-DAN-CAI-TIEN-ICH.md`.
+
+- Giữ Chrome mở, với profile đã đăng nhập đúng tài khoản. Nếu app biết profile, nó có thể tự mở Chrome khi tới giờ.
+- Thêm tài khoản: trong Cài đặt → Kết nối Chrome, bấm "Thêm tài khoản từ Chrome". Tài khoản cookie cùng tên sẽ tự chuyển sang Chrome một lần.
+- Sau khi cập nhật tiện ích, vào `chrome://extensions` và bấm ⟳ ở AutoTok.
+- Chưa hỗ trợ trên đường Chrome: đăng riêng tư kèm hẹn giờ, chế độ bạn bè, nguồn YouTube.
 
 ## Dữ liệu nằm ở đâu
 

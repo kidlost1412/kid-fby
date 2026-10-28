@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.2.0 (Kid FB.Y app, not released yet)
+
+The web backend in `src/web` gets a Chrome extension publisher. This is part of the Kid FB.Y app
+3.2.0, on branch `feature/chrome-ext`. The `autotok` package version stays 2.1.1.
+
+### Added
+- Chrome extension publisher (`integrations/autotok-extension`): an account can post from the
+  owner's logged-in Chrome profile instead of cookies. Pairing uses a 6-digit code; the protocol
+  is v1 under `/api/ext/*` (see `integrations/autotok-extension/PROTOCOL.md`).
+- Account `publisher` (`cookies` or `chrome`), with `ready` and `ready_reason` in account responses.
+- Chrome jobs use the `pending_ext` and `waiting_ext` statuses. For a due job whose client is
+  offline, the backend starts Chrome with the saved profile.
+- Database schema version 5: the `extension_clients` and `extension_jobs` tables, Chrome columns on
+  accounts, clients and jobs, and triggers that keep Chrome jobs out of `pending` and `running`, so
+  older versions cannot post them with cookies.
+- `/health` reports `chrome_ext`, `ext_protocol_min`, `ext_protocol_max` and `ext_active`.
+- `dung.ps1` refuses to stop while Chrome jobs are waiting or posting, unless `-Force` is given.
+- Installer: the extension folder is swapped in after running Chrome jobs drain, with `.bak`
+  recovery. The bundle carries the extension files on an allowlist.
+
 ## Unreleased
 
 ### Fixed

@@ -1,6 +1,6 @@
 ﻿# Bàn giao kỹ thuật Kid FB.Y
 
-Ngày rà: 21/10/2026 (đoạn 3.0.0 cập nhật 25/10/2026); lúc rà 21/10, nhánh `audit-fixes-2.1` cùng commit với `main` @ `7f5851a`. `core/version.txt` = 3.0.0; bản 3.0.0 đã phát hành qua `publish.ps1`: tag `v3.0.0` trên `main`, `version.json` và `version.json.sig` đã ký, 15 file, gồm `core/autotok-bundle.zip`. Bản 2.1.0 có tag `v2.1.0`. Bản 3.0.0 phát hành từ nhánh `audit-fixes-2.1` gộp vào `main`. Bản `v3.0.1` (`c29c066`) là gốc của nhánh `feature/kho-accounts` (HEAD `513be65`); `core/version.txt` trên nhánh vẫn 3.0.1. Nhánh này thêm Kho theo tài khoản, chưa gộp và chưa phát hành: xem mục 10. Tài liệu mô tả hành vi có trong nguồn, không chứng nhận không có lỗi, hiệu năng hay kết quả của Facebook.
+Ngày rà: 21/10/2026 (đoạn 3.0.0 cập nhật 25/10/2026; đoạn 3.1.0 và 3.2.0 cập nhật 28/10/2026); lúc rà 21/10, nhánh `audit-fixes-2.1` cùng commit với `main` @ `7f5851a`. `core/version.txt` = 3.1.0 (commit `e403d90`, tag `v3.1.0`, phát hành qua `publish.ps1`; `version.json` và `version.json.sig` đổi trong cùng bản này). Bản 3.0.0 đã phát hành qua `publish.ps1`: tag `v3.0.0` trên `main`, `version.json` và `version.json.sig` đã ký, 15 file, gồm `core/autotok-bundle.zip`. Bản 2.1.0 có tag `v2.1.0`. Bản 3.2.0 (đăng qua Chrome, mục 11) nằm ở `feature/chrome-ext` (HEAD `c1d606f`), chưa phát hành: `core/version.txt` của nhánh này vẫn 3.1.0. Bản 3.0.0 phát hành từ nhánh `audit-fixes-2.1` gộp vào `main`. Bản `v3.0.1` (`c29c066`) là gốc của nhánh `feature/kho-accounts` (HEAD `513be65`); `core/version.txt` trên nhánh vẫn 3.0.1. Kho theo tài khoản (mục 10, nhánh `feature/kho-physical`) đã nằm trong 3.1.0. Tài liệu mô tả hành vi có trong nguồn, không chứng nhận không có lỗi, hiệu năng hay kết quả của Facebook.
 
 ## 1. Cây dự án và công nghệ
 
@@ -18,6 +18,7 @@ Ngày rà: 21/10/2026 (đoạn 3.0.0 cập nhật 25/10/2026); lúc rà 21/10, n
 | `core/fix-ket-noi.ps1` | Tiện ích PowerShell chẩn đoán và thử sửa kết nối Android/LDPlayer. Ghi đè `adb.exe` của LDPlayer chỉ sau khi hỏi Y/N (mặc định N, không hỏi được thì không ghi đè) và sao lưu `.bak-<thời gian>`; vẫn đọc mã trước khi chạy |
 | `build-local.ps1` / `publish.ps1` / `new-signing-key.ps1` | Biên dịch, kiểm khởi tạo; chuẩn bị version, manifest, chữ ký và thao tác Git khi phát hành; tạo cặp khóa RSA 3072 bit ngoài repo |
 | `integrations/tiktok/` | Tích hợp TikTok tùy chọn: `start.ps1` gọi starter autotok; `local.json` gitignore (mục 8–9) |
+| `integrations/autotok-extension/` | Tiện ích Chrome đăng TikTok (MV3, bản 3.2.0): xem mục 11 |
 | `integrations/autotok/kid-install.ps1`, `build-autotok-bundle.ps1` | Bộ cài backend TikTok một chấm và dựng gói `core/autotok-bundle.zip` (mục 9, "Bộ cài một chấm") |
 
 Đây không phải app web/Electron, không có backend hay SQL riêng. Không có `.csproj`, `.sln`, lockfile công cụ chung hoặc bộ regression test được phân phối trong cây Git tại lần rà này. Chạy tác vụ con bằng quyền người dùng Windows; `ExecutionPolicy Bypass` không tạo sandbox.
@@ -147,14 +148,14 @@ powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\core\kid-fby.ps1 
 
 Chạy SelfTest trong thư mục sao chép riêng khi không muốn ghi trạng thái `_update` vào checkout. SelfTest không kiểm dịch, chất lượng audio, đồng bộ tiếng–hình, queue end-to-end, lỗi khóa file hay hiệu năng. Không có regression suite kèm bản Git này; các harness tạo ngoài repo của phiên làm việc không mặc nhiên có mặt trên máy người nhận.
 
-### Bộ test Kho (nhánh `feature/kho-accounts`)
+### Bộ test Kho (`tests\kho`, 01 đến 26)
 
 ```powershell
-# Chạy 12 file tests\kho\NN-*.ps1, mỗi file trong powershell.exe -STA riêng; in "FAILED: ..." và exit 1 nếu có file lỗi
+# Chạy mọi file tests\kho\NN-*.ps1 (hiện 01 đến 26), mỗi file trong powershell.exe -STA riêng; in "FAILED: ..." và exit 1 nếu có file lỗi
 powershell.exe -NoProfile -STA -File tests\kho\run-all.ps1
 ```
 
-`08-perf.ps1` có ngưỡng thời gian; máy đang tải CPU nặng có thể làm file này lỗi dù logic đúng. Harness dùng `FakeBackend.ps1`, không gọi TikTok thật.
+`08-perf.ps1` có ngưỡng thời gian; máy đang tải CPU nặng có thể làm file này lỗi dù logic đúng. Harness dùng `FakeBackend.ps1`, không gọi TikTok thật. Lần chạy 28/10/2026 tại `c1d606f`: toàn bộ `run-all.ps1` đạt (các file 23–26 kiểm đăng qua Chrome, mục 11).
 
 ### Checklist tái hiện khi nhận việc
 
@@ -283,7 +284,7 @@ Mục này thay phần hộp đăng và đồng bộ của bản 23/10 (đã b�
 - Chạy: `start.ps1` bật api, control, scheduler (cổng 8765 và 17900); kiểm PID, giờ bắt đầu và tên tiến trình; trạng thái chạy ở `integrations/autotok/runtime`. `dung.ps1` chỉ dừng tiến trình đã ghi; không có `-Force` thì từ chối khi còn job đang chạy hoặc đang chờ. Hướng dẫn: `integrations/autotok/README-VI.md`.
 - Dữ liệu (tài khoản, phiên đăng nhập, DB, thư viện) nằm NGOÀI repo: mặc định `%LOCALAPPDATA%\KidFBY\autotok-data`; đổi bằng biến `AUTOTOK_DATA_DIR` hoặc `DataDir` trong `config.json`. `.venv`, `runtime`, `config.json`, `data`, `node_modules`, `__pycache__` nằm trong `.gitignore`.
 - Máy này: dữ liệu đã chép sang `%LOCALAPPDATA%`. Thư mục cũ `...\Codex\2026-10-23\ti\work` không còn dùng.
-- `/health`: `history_version` 2, `native_schedule` 1, `post_links` 1. DB `SCHEMA_VERSION` 3.
+- `/health`: `history_version` 2, `native_schedule` 1, `post_links` 1 (bản 3.0.0). DB `SCHEMA_VERSION` 3 ở bản 3.0.0; hiện là 5 (mục 11).
 - Test backend: 454 passed, 5 skipped, 1 xfailed (pytest chạy trong `integrations/autotok/src`; 25/10/2026, trước đó là 428).
 
 ### Bộ cài một chấm (3.0.0, 25/10/2026)
@@ -315,7 +316,7 @@ Mục này thay phần hộp đăng và đồng bộ của bản 23/10 (đã b�
 - **Chưa kiểm**: đăng video TikTok thật; xác minh bài trên hồ sơ; Reel Facebook thật; nhiều DPI cho hộp đăng; phản hồi publish có mã bài; bài hẹn lên đúng giờ khi máy tắt; bộ cài một chấm trên dịch vụ thật (chỉ kiểm với lớp dịch vụ giả). Kiểm bằng fixture và backend giả lập: harness WPF Windows PowerShell 5.1 STA; test làm sạch và đồng bộ trên fixture.
 - Phiên bản 3.0.0 đã phát hành qua `publish.ps1`: `core/version.txt` = 3.0.0, `version.json` và `version.json.sig` đã ký (15 file, gồm `core/autotok-bundle.zip`). Các thay đổi tích hợp TikTok và bộ cài nằm trong bản này (mục 8, 9).
 
-## 10. Kho = thư mục thật theo tài khoản — nhánh `feature/kho-physical` (26/10/2026, chưa gộp)
+## 10. Kho = thư mục thật theo tài khoản — nhánh `feature/kho-physical` (26/10/2026, đã nằm trong 3.1.0)
 
 Vì sao: chủ dự án đăng TikTok bằng 3–5 tài khoản. Kho là một thư mục thật chứa video của nó; chuyển video sang kho là chuyển file; xóa video/kho là đưa file vào Thùng rác Windows. Không còn "Kho chung" và không còn nhãn `Kho`/`KhoManual`.
 
@@ -415,3 +416,83 @@ Vì sao: chủ dự án đăng TikTok bằng 3–5 tài khoản. Kho là một t
 - `Get-KhoList`: 158 ms với 2.500 mục (lần đo này). Báo cáo phiên ghi khoảng 240 ms.
 - Mục 6 của kế hoạch (trang Facebook sang kho) chưa làm. Trường uploader của yt-dlp chưa kiểm (unverified).
 - Chưa có bằng chứng trong tài liệu này cho: đăng/hẹn TikTok thật, Android thật, thao tác giao diện thủ công trên bản thử (unverified).
+
+## 11. Đăng TikTok qua Chrome (tiện ích AutoTok) — nhánh `feature/chrome-ext`, bản 3.2.0 (28/10/2026, chưa phát hành)
+
+Vì sao: tiện ích cho Kid FB.Y đăng video bằng chính Chrome đã đăng nhập TikTok của chủ, không cần cookie (`integrations\autotok-extension\HUONG-DAN-CAI-TIEN-ICH.md`). Đăng qua Chrome là lựa chọn mặc định của tài khoản. Để không đăng trùng, tiện ích chỉ gửi bài sau khi backend ghi nhận cấp phép một lần.
+
+### Kiến trúc
+
+- Tiện ích MV3 ở `integrations\autotok-extension` (`manifest.json`, version 1.0.0). ID cố định `pomofdinonmfmpnpjdneihgklgdkidmc`, do trường `key` (khóa công khai) trong manifest quyết định. Backend chỉ nhận CORS từ đúng ID này (`EXT_ORIGIN` trong `services/ext.py`). Đổi khóa là đổi ID và mất ghép nối.
+- Backend: `integrations\autotok\src\web\api\services\ext.py` (máy trạng thái, dựng job, đối soát), `routers\ext.py` (`/api/ext/*`), `db.py` (schema 5, trigger), `web\scheduler\worker.py` (gọi `reconcile_ext` mỗi nhịp). Giao thức: `integrations\autotok-extension\PROTOCOL.md` (protocol v1).
+- Đăng: tiện ích tải video từ backend, upload trong trang TikTok Studio (`lib.js` ký yêu cầu, `api-main.js` chạy trong trang), rồi gửi bài bằng XHR mà SDK của trang đã bọc (`hook-main.js`, MAIN world, `document_start`).
+- Ghép nối: GUI tạo mã 6 số (5 phút, tối đa 5 lần nhập sai). Tiện ích giữ token trong `chrome.storage.local`; backend chỉ lưu `sha256(token)`.
+- GUI (Cài đặt › Kết nối Chrome): thẻ `CardChrome` trong `core\ui\MainWindow.xaml`, logic các hàm `Get-Chrome*` trong `core\kid-fby-gui.ps1`. Có tạo mã, danh sách Chrome, chọn profile, "Thêm tài khoản từ Chrome", "Gỡ", và bộ chọn Chrome/Cookie ở danh sách tài khoản.
+- Tự chuyển: tài khoản cookie chuyển sang Chrome đúng một lần khi đúng một Chrome đang online báo cùng tên TikTok (`Get-ChromeAutoSwitchPlan`). Không tự chuyển khi lệch tên (cần xác nhận tay), khi hai Chrome xung đột, hoặc khi chủ đã chọn Cookie.
+
+### Trạng thái và chống đăng trùng
+
+- Job cha (`scheduled_uploads`): tài khoản Chrome không bao giờ ở `pending` hay `running`. Job mới thành `pending_ext`; đến giờ và tài khoản rảnh thì thành `waiting_ext` (tăng `attempt`, tạo job con trong cùng giao dịch); kết thúc `succeeded` hoặc `failed`.
+- Job con (`extension_jobs`): `queued` → `claimed` → `uploading` → `ready` → `authorized` → `posted` | `rejected` | `uncertain`; nhánh hủy `revoked`, `failed`. Mỗi tài khoản chỉ có một job con đang mở (chỉ mục duy nhất).
+- `authorize` chỉ là một UPDATE có điều kiện, ghi bền trước khi trả lời. Đã cấp phép thì job không bao giờ chạy lại.
+- `revoked`: chỉ trước khi cấp phép, khi quá hạn chưa nhận việc (120 s), không có tín hiệu (120 s), hoặc quá 15 phút từ lúc nhận. Job cha `failed`, "chưa đăng".
+- `uncertain`: đã cấp phép nhưng không có kết quả sau 180 s. Job cha `failed` kèm `publish_uncertain`; phải kiểm trên TikTok trước khi thử lại. Không bao giờ coi là "chưa đăng".
+- Kết quả muộn: `POST /result` nhận mọi lúc, kể cả sau hạn và sau khi backend khởi động lại. Kết quả đầu tiên thắng. Thành công muộn của lần thử đã bị thay: nếu lần mới chưa được cấp phép thì rút lần mới (không đăng trùng); nếu đã cấp phép thì giữ nguyên và ghi lịch sử kèm cảnh báo.
+- Trigger `tr_chrome_job_never_running`, `tr_chrome_job_pending_insert`, `tr_chrome_job_pending_update` được tạo lại mỗi lần khởi động: đổi job Chrome `pending` thành `pending_ext` và chặn đổi sang `running`. Lý do (ghi chú trong `db.py`): bản 3.1.0 chỉ nhận `pending`, và nếu gặp job không chạy được nó sẽ thử lại mãi, chặn các tài khoản phía sau.
+
+### Tự mở Chrome
+
+- Job `queued` mà không có Chrome nào của TikTok đó online: backend chạy `chrome.exe --profile-directory="<profile>" --no-first-run`, cửa sổ thu nhỏ không lấy focus (SW_SHOWMINNOACTIVE). Tối đa một lần mỗi job và một lần mỗi 3 phút cho mỗi profile. Sau khi mở, hạn nhận việc là 180 s.
+- Đường dẫn `chrome.exe`: `AUTOTOK_BROWSER_PATH` hoặc vị trí chuẩn. `AUTOTOK_CHROME_LAUNCH=off` tắt tự mở (bộ test cũng đặt vậy).
+- Profile: GUI lưu profile cho từng Chrome (`PATCH /api/ext/clients/{id}`); chỉ tự lưu gợi ý khi không thể sai (xem commit `a5b3aa0`). Không biết profile và Chrome đóng thì job hết hạn với lời nhắn "mở Chrome hoặc chọn profile".
+- Cột mới (schema 5): `extension_clients.chrome_profile_dir`, `extension_clients.last_launch_at`, `extension_jobs.launched_at`.
+
+### Sẵn sàng (`ready`, `ready_reason`)
+
+- Cookie: `ready` = có phiên cookie; lý do `ok` hoặc `no_session`.
+- Chrome: `ready` khi Chrome đã gắn với tài khoản, đang online (báo trong 90 s), protocol trong khoảng hỗ trợ, không xung đột. Lý do: `ok`, `chrome_unbound`, `chrome_offline`, `chrome_conflict`, `chrome_need_reload`. GUI đổi thành chữ ở `Get-TikTokReadyReasonText`.
+- `has_valid_session` vẫn chỉ nói về phiên cookie.
+
+### Bộ cài và cập nhật tiện ích
+
+- Gói: `build-autotok-bundle.ps1` chỉ đưa vào `extension/` các file allowlist: `manifest.json`, `HUONG-DAN-CAI-TIEN-ICH.md`, `.js`/`.html`/`.css` ở gốc, `icons/*.png|svg|ico`. `devserver/`, `tests/`, `PROTOCOL.md` không vào gói. Build dừng nếu trong thư mục tiện ích có file khóa (`.pem`, `.key`, `.p12`, `.pfx`, `.jks`, `.keystore`, `.crx`, `.der`, `.env*`, `*private*key*`, `update-signing*`).
+- Cài (`kid-install.ps1`, `Install-Extension`): đưa file vào `autotok-extension.new`, kiểm SHA256 theo bundle, chờ "drain" (`/health` `ext_active` = 0; `-1` = không rõ, coi là bận), tối đa `-DrainTimeoutSec` (mặc định 300 s), hết thì hoãn sang lần sau. Rồi đổi tên: thư mục cũ thành `.bak`, `.new` thành thư mục chính; lỗi thì trả lại `.bak`. Mất điện giữa hai lần đổi tên thì lần chạy sau khôi phục `.bak` trước mọi việc khác. Không chạm database.
+- `dung.ps1` (không `-Force`) từ chối dừng khi còn job `pending_ext`/`waiting_ext` hoặc `ext_active` khác 0.
+- Sau khi file tiện ích được thay, Chrome chạy bản cũ tới khi chủ bấm ⟳ ở `chrome://extensions`. Giao thức lệch thì backend báo `need_reload` (PROTOCOL mục 7).
+
+### Giới hạn đã biết
+
+- Cần Chrome đang mở, hoặc mở được bằng profile đã biết. Không thì job hết hạn, chưa gửi gì lên TikTok.
+- Riêng tư kèm hẹn giờ bị từ chối (backend và tiện ích). Chế độ bạn bè và nguồn YouTube không hỗ trợ trên đường Chrome.
+- Chỉ thử trên Chrome Windows.
+- Sau mỗi lần cập nhật tiện ích phải bấm ⟳.
+- Hai Chrome cùng tài khoản TikTok: xung đột, không nhận việc, phải gỡ bớt một ở Kết nối Chrome.
+- E2E dùng TikTok giả (`integrations\autotok-extension\tests\e2e\harness.js`). Chưa có bằng chứng trong tài liệu này về lần đăng TikTok thật qua Chrome (unverified).
+- 3.2.0 chưa có số phát hành: `core/version.txt` vẫn 3.1.0, chưa có tag `v3.2.0`.
+
+### Vị trí test
+
+- Backend (pytest, chạy trong `integrations\autotok\src`): `tests\test_chrome_ext.py`, `test_ext_migration.py`, `test_kiemdinh_ext_p1.py`, `test_kiemdinh_ext_p2.py`. Các file này cần `responses`, không có trong `requirements.lock.txt`; thiếu thì lỗi `ModuleNotFoundError`.
+- Tiện ích (Node, chạy trong `integrations\autotok-extension`): `node --test tests\*.test.js` (gate, mainworld, parity, protocol, result-parity, sw).
+- E2E: `integrations\autotok-extension\tests\e2e\e2e.test.js` (`node --test tests\e2e\e2e.test.js`); `E2E_PYTHON` trỏ tới Python đã cài thư viện backend.
+- GUI và bộ cài: `tests\kho\23-chrome-gui.ps1`, `24-bundle-installer.ps1`, `25-kiemdinh-ext-install.ps1`, `26-kiemdinh-chrome-profile.ps1` (chạy qua `run-all.ps1`).
+
+Kết quả kiểm lúc cập nhật tài liệu (28/10/2026, `c1d606f`, máy làm việc):
+- Pytest backend: 623 passed; 2 thất bại do môi trường, đã biết (người điều phối báo cáo; tên hai ca chưa ghi lại ở đây).
+- Tiện ích (Node unit): 66/66 pass.
+- E2E: 8/8 pass.
+- `tests\kho\run-all.ps1`: toàn bộ đạt.
+- Chưa kiểm: Chrome thật, đăng TikTok thật, bộ cài trên dịch vụ thật, hạ cấp về 3.1.0.
+
+### Quay lại bản 3.1.0 (thủ tục)
+
+Dùng khi bản 3.2.0 cần lùi. Bản 3.1.0 không biết đường Chrome: nó chỉ nhận job `pending`, còn trigger giữ job Chrome ở `pending_ext`. Vì vậy job Chrome không bị đăng bằng cookie; nó nằm yên ở `pending_ext`.
+
+1. Đợi job Chrome kết thúc, hoặc xóa job chưa gửi. Job `pending_ext` xóa được (`DELETE /api/schedules/{id}`). Job `waiting_ext` không xóa được (409): đợi đến khi nó kết thúc theo hạn ở PROTOCOL mục 5.
+2. Muốn bản 3.1.0 đăng các tài khoản đó bằng cookie thì, trong bản 3.2.0, chuyển từng tài khoản sang Cookie trước khi lùi (`PATCH` `publisher: cookies`, hoặc chọn Cookie trong danh sách). Hai điều kiện không vượt được: (a) tài khoản không còn job `pending`, `running`, `pending_ext`, `waiting_ext` hay job con chưa kết thúc (409 nếu còn); (b) tài khoản có phiên cookie. Tài khoản tạo từ Chrome không có cookie, nên phải đăng nhập bằng cookie trước (409 nếu chưa).
+3. Tài khoản không chuyển về Cookie thì job `pending_ext` còn lại nằm yên với bản 3.1.0; không có đường nào đăng chúng bằng cookie.
+4. Dừng dịch vụ bằng `integrations\autotok\dung.ps1` (không `-Force`); script từ chối nếu còn job Chrome hoặc `ext_active` khác 0.
+5. Khuyến nghị: sao lưu thư mục dữ liệu (`DataDir`, mặc định `%LOCALAPPDATA%\KidFBY\autotok-data`) trước khi đổi bản. Repo không có script sao lưu (unverified).
+6. Đưa app về 3.1.0 (EXE của tag `v3.1.0`, commit `e403d90`) rồi cài lại bộ đăng từ gói của bản đó (mục 9). Chưa có lệnh hạ cấp riêng cho bộ đăng; cơ chế "quay về bản trước" trong `kid-install.ps1` chỉ dùng khi cài lỗi (unverified: chưa thử hạ cấp trên máy thật).
+7. Database: bản 3.1.0 chạy trên schema 5. Migration của 3.1.0 chỉ bỏ qua khi `user_version` ≥ 3 (đọc mã; unverified khi chạy thật). Bảng `extension_*` và cột mới không được 3.1.0 dùng.
+8. Kiểm sau khi lùi: `/health` của 3.1.0 không có `chrome_ext`. Muốn lên lại 3.2.0 thì cài lại 3.2.0; trigger và bảng đã có, migration chạy lại được.
