@@ -3040,11 +3040,11 @@ function New-ChromeButton {
 
 function Get-ChromeLocalStatePath { return (Join-Path ([string]$env:LOCALAPPDATA) 'Google\Chrome\User Data\Local State') }
 
-function Read-ChromeProfiles {
+function Read-ChromeProfilesUncached {
     # Chrome profiles from Local State (profile.info_cache). Chrome keeps the file open: read with sharing, tolerate a BOM.
     # Returns @{ Ok; Profiles = @(@{ Dir; Label }); LastUsed; Error }. A missing/unreadable/odd file is Ok=$false, never an exception.
-    param([string]$Path = (Get-ChromeLocalStatePath))
-    $fail = { param($why) Write-FileLog "WARN Chrome Local State '$Path': $why"; return @{ Ok = $false; Profiles = @(); LastUsed = ''; Error = 'Không đọc được danh sách profile Chrome' } }
+    param([string]$Path)
+    $fail = { param($why) if (-not $script:chromeProfilesWarned) { $script:chromeProfilesWarned = $true; Write-FileLog "WARN Chrome Local State '$Path': $why (logged once per session)" }; return @{ Ok = $false; Profiles = @(); LastUsed = ''; Error = 'Không đọc được danh sách profile Chrome' } }
     if (-not $Path -or -not [IO.File]::Exists($Path)) { return (& $fail 'missing') }
     try {
         $fs = New-Object IO.FileStream($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
@@ -3073,16 +3073,38 @@ function Read-ChromeProfiles {
     return @{ Ok = $true; Profiles = $list.ToArray(); LastUsed = $last; Error = '' }
 }
 
+function Read-ChromeProfiles {
+    # Cached by path + LastWriteTime + size: the list is rebuilt every 2-5 s on the UI thread, the file is parsed only when Chrome changed it.
+    param([string]$Path = (Get-ChromeLocalStatePath))
+    $stamp = ''
+    try { $fi = New-Object IO.FileInfo($Path); $stamp = $(if ($fi.Exists) { "$($fi.LastWriteTimeUtc.Ticks)|$($fi.Length)" } else { 'missing' }) } catch { $stamp = 'unreadable' }
+    $c = $script:chromeProfilesCache
+    if ($c -and $c.Path -ceq $Path -and $c.Stamp -ceq $stamp) { return $c.Result }
+    $r = Read-ChromeProfilesUncached $Path
+    $script:chromeProfilesCache = @{ Path = $Path; Stamp = $stamp; Result = $r }
+    return $r
+}
+
 function Get-ChromeProfileChoice {
     # What the combo shows for a client: its saved profile, else Chrome's last used one. Default = true when it is only a suggestion
     # (the caller saves it once). Hidden = the backend does not know the field (older backend).
-    param($Client, $Profiles)
+    param($Client, $Profiles, $AllClients = $null)
     # Tested by name: a property whose value is null must still count as present.
     if (@($Client.PSObject.Properties.Name) -notcontains 'chrome_profile_dir') { return @{ Hidden = $true; Dir = ''; Default = $false } }
     $saved = [string]$Client.chrome_profile_dir
     if ($saved) { return @{ Hidden = $false; Dir = $saved; Default = $false } }
-    $known = @(@($Profiles.Profiles) | Where-Object { $_.Dir -ceq $Profiles.LastUsed })
-    if ($Profiles.Ok -and $known.Count) { return @{ Hidden = $false; Dir = [string]$Profiles.LastUsed; Default = $true } }
+    # A guess is saved only when it cannot be wrong for another Chrome: Local State lists exactly one profile, or this is the only
+    # paired Chrome without a profile and no other Chrome already uses last_used. A profile saved for another client is never taken.
+    if (-not $Profiles.Ok) { return @{ Hidden = $false; Dir = ''; Default = $false } }
+    $all = @(@($AllClients) | Where-Object { $_ })
+    if (-not $all.Count) { $all = @($Client) }
+    $used = @($all | Where-Object { $_.id -ne $Client.id -and @($_.PSObject.Properties.Name) -contains 'chrome_profile_dir' -and [string]$_.chrome_profile_dir } | ForEach-Object { [string]$_.chrome_profile_dir })
+    $lacking = @($all | Where-Object { @($_.PSObject.Properties.Name) -contains 'chrome_profile_dir' -and -not [string]$_.chrome_profile_dir })
+    $list = @($Profiles.Profiles)
+    $guess = ''
+    if ($list.Count -eq 1) { $guess = [string]$list[0].Dir }
+    elseif ($lacking.Count -eq 1 -and @($list | Where-Object { $_.Dir -ceq $Profiles.LastUsed }).Count) { $guess = [string]$Profiles.LastUsed }
+    if ($guess -and $used -cnotcontains $guess) { return @{ Hidden = $false; Dir = $guess; Default = $true } }
     return @{ Hidden = $false; Dir = ''; Default = $false }
 }
 
@@ -3130,7 +3152,7 @@ function Update-ChromeLists {
             [void]$info.Children.Add((New-ChromeText ($name + $(if ([string]$cl.label) { ' · ' + [string]$cl.label } else { '' })) $false $true))
             [void]$info.Children.Add((New-ChromeText ((Get-ChromeClientStatusText $cl) + ' · thấy ' + (Format-ChromeLastSeen ([string]$cl.last_seen_at)) + $(if ([string]$cl.ext_version) { ' · tiện ích ' + [string]$cl.ext_version } else { '' })) $true))
             if ([bool]$cl.need_reload) { [void]$info.Children.Add((New-ChromeText 'Có bản tiện ích mới — vào chrome://extensions bấm ⟳' $false $true)) }
-            $choice = Get-ChromeProfileChoice $cl $profiles
+            $choice = Get-ChromeProfileChoice $cl $profiles $s.Clients
             if (-not $choice.Hidden) {
                 if (-not $profiles.Ok) { [void]$info.Children.Add((New-ChromeText $profiles.Error $true)) }
                 else {
@@ -3145,7 +3167,8 @@ function Update-ChromeLists {
                     $pc.Add_SelectionChanged({ param($sender, $e) Invoke-ChromeProfileChoice $sender })
                     [void]$pl.Children.Add($pc)
                     [void]$info.Children.Add($pl)
-                    [void]$info.Children.Add((New-ChromeText 'App sẽ tự mở profile này khi Chrome tắt mà đến giờ đăng' $true))
+                    if ($choice.Dir) { [void]$info.Children.Add((New-ChromeText 'App sẽ tự mở profile này khi Chrome tắt mà đến giờ đăng' $true)) }
+                    else { [void]$info.Children.Add((New-ChromeText 'Chưa chọn profile — chọn đúng profile của Chrome này' $false $true)) }
                     if ($choice.Default -and -not $s.ProfileTried.ContainsKey([string]$cl.id)) {
                         $s.ProfileTried[[string]$cl.id] = $true   # saved automatically, once per session
                         Add-ChromeOp 'set-profile' @{ op = 'set-profile'; client_id = [int]$cl.id; chrome_profile_dir = [string]$choice.Dir } @{ Auto = $true; ClientId = [string]$cl.id; Dir = [string]$choice.Dir; Silent = $true }

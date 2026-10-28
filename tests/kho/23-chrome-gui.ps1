@@ -300,7 +300,7 @@ Test-Case 'default selection: saved dir wins; else last_used (only if it is a kn
     Assert-Equal $x.Dir 'Default'; Assert-True (-not $x.Default) 'saved value is not re-saved'
     Assert-True (Get-ChromeProfileChoice (Cl 2 'b') $profiles).Hidden 'old backend'
     $c2 = Cl 3 'c'; $c2 | Add-Member -NotePropertyName chrome_profile_dir -NotePropertyValue ''
-    $bad = Read-ChromeProfiles (New-LocalState '{"profile":{"last_used":"Ghost","info_cache":{"Default":{"name":"x"}}}}')
+    $bad = Read-ChromeProfiles (New-LocalState '{"profile":{"last_used":"Ghost","info_cache":{"Default":{"name":"x"},"Profile 1":{"name":"y"}}}}')   # two profiles: the single-profile rule does not apply
     $x = Get-ChromeProfileChoice $c2 $bad
     Assert-Equal $x.Dir ''; Assert-True (-not $x.Default) 'unknown last_used is not saved'
     $x = Get-ChromeProfileChoice $c2 (Read-ChromeProfiles (Join-Path (New-TestDir) 'nope'))
@@ -336,5 +336,33 @@ Test-Case 'backend 400 bad_request for a bad profile name: its Vietnamese messag
     Assert-Equal (Get-ChromeApiErrorText 400 '{"ok":false,"error":"bad_request","message":"Tên profile Chrome không hợp lệ (ví dụ: Default, Profile 1)"}') 'Tên profile Chrome không hợp lệ (ví dụ: Default, Profile 1)'
     Assert-Equal (Get-ChromeApiErrorText 400 '{"error":"bad_request","message":"invalid JSON"}') 'Thông tin gửi lên chưa đúng.'
     Assert-Equal (Get-ChromeApiErrorText 404 '{"error":"unknown_client","message":"x"}') 'Không tìm thấy (có thể đã bị gỡ).'
+}
+Test-Case 'profile guess: two clients lacking a profile get nothing; one lacking + last_used used by another gets nothing; a profile saved for another client is never taken' {
+    $two = Read-ChromeProfiles (New-LocalState '{"profile":{"last_used":"Profile 1","info_cache":{"Profile 1":{"name":"A"},"Profile 2":{"name":"B"}}}}')
+    $a = Cl 1 'a'; $a | Add-Member -NotePropertyName chrome_profile_dir -NotePropertyValue $null
+    $b = Cl 2 'b'; $b | Add-Member -NotePropertyName chrome_profile_dir -NotePropertyValue $null
+    Assert-Equal (Get-ChromeProfileChoice $a $two @($a, $b)).Dir '' 'two lacking'
+    $b.chrome_profile_dir = 'Profile 1'
+    Assert-Equal (Get-ChromeProfileChoice $a $two @($a, $b)).Dir '' 'last_used already taken'
+    $b.chrome_profile_dir = 'Profile 2'
+    $x = Get-ChromeProfileChoice $a $two @($a, $b); Assert-Equal $x.Dir 'Profile 1'; Assert-True $x.Default 'the only lacking one gets last_used'
+    $one = Read-ChromeProfiles (New-LocalState '{"profile":{"last_used":"Default","info_cache":{"Default":{"name":"Me"}}}}')
+    $b.chrome_profile_dir = $null
+    Assert-Equal (Get-ChromeProfileChoice $a $one @($a, $b)).Dir 'Default' 'single profile in Local State'
+    $b.chrome_profile_dir = 'Default'
+    Assert-Equal (Get-ChromeProfileChoice $a $one @($a, $b)).Dir '' 'single profile but another client owns it'
+}
+Test-Case 'Local State cache: unchanged file is parsed once (same object back); a changed file is re-read; the unreadable warning is logged once' {
+    $p = New-LocalState $localJson
+    $r1 = Read-ChromeProfiles $p; $r2 = Read-ChromeProfiles $p
+    Assert-True ([object]::ReferenceEquals($r1, $r2)) 'second call must come from the cache'
+    [IO.File]::WriteAllText($p, '{"profile":{"last_used":"Default","info_cache":{"Default":{"name":"Only"}}}}', (New-Object Text.UTF8Encoding($false)))
+    $r3 = Read-ChromeProfiles $p
+    Assert-Equal @($r3.Profiles).Count 1 'changed file re-read'
+    $script:chromeProfilesWarned = $false; $script:TestLog.Clear()
+    $missing = Join-Path (New-TestDir) 'nope'
+    1..5 | ForEach-Object { [void](Read-ChromeProfiles $missing) }
+    [void](Read-ChromeProfiles (New-LocalState 'garbage'))
+    Assert-Equal @($script:TestLog | Where-Object { $_ -like '*Chrome Local State*' }).Count 1 'warning once per session'
 }
 Complete-Tests
