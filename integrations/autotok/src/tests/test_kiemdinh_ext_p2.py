@@ -97,37 +97,57 @@ def test_cancel_and_delete_of_chrome_jobs_are_not_blocked(engine, app, video_fil
     assert parent(engine, b) is None
 
 
-def test_trigger_only_refuses_running_for_chrome_accounts(engine, app):
-    """Raw SQL as any other version would write it."""
-    chrome_id = chrome_account(engine)
-    cookie_id = chrome_account(engine, username="bob", user_id="7000000000000000009")
-    con = sqlite3.connect(engine.url.database)
-    con.execute("UPDATE accounts SET publisher='cookies' WHERE id=?", (cookie_id,))
-    con.commit()
-    con.close()
-    s1 = schedule(engine, chrome_id, when_offset=3600)
-    s2 = schedule(engine, cookie_id, when_offset=3600)
-    con = sqlite3.connect(engine.url.database)
-    for sid in (s1, s2):
-        con.execute("UPDATE scheduled_uploads SET status='running' WHERE id=?", (sid,))
-    con.commit()
-    got = dict(con.execute("SELECT id, status FROM scheduled_uploads").fetchall())
-    con.execute("UPDATE scheduled_uploads SET status='failed' WHERE id=?", (s1,))  # other statuses: never blocked
-    con.commit()
-    failed = con.execute("SELECT status FROM scheduled_uploads WHERE id=?", (s1,)).fetchone()[0]
-    con.close()
-    assert got == {s1: "pending", s2: "running"} and failed == "failed"
+def _chrome_and_cookie_rows_behave(db):
+    """Raw SQL as any version (v3.1.0 included) would write it, on the database file `db`.
+    Chrome account: never 'running', a 'pending' row is turned into 'pending_ext'. Cookie account: untouched."""
+    con = sqlite3.connect(db)
+    try:
+        con.execute("INSERT INTO accounts (id, username, cookie_path, has_valid_session, created_at, updated_at,"
+                    " publisher) VALUES (901, 'kd.chrome', '', 0, '2026-10-27 00:00:00', '2026-10-27 00:00:00',"
+                    " 'chrome'), (902, 'kd.cookie', 'C:/x/c.cookie', 1, '2026-10-27 00:00:00',"
+                    " '2026-10-27 00:00:00', 'cookies')")
+        for sid, acct in ((901, 901), (902, 902)):
+            con.execute("INSERT INTO scheduled_uploads (id, account_id, source_type, source_ref, title, options_json,"
+                        " scheduled_for, status, publish_uncertain, attempts, created_at, updated_at) VALUES"
+                        f" ({sid}, {acct}, 'local', 'clip.mp4', 't', '{{}}', '2020-01-01 00:00:00', 'pending', 0, 0,"
+                        " '2026-10-27 00:00:00', '2026-10-27 00:00:00')")
+        con.commit()
+        st = lambda: dict(con.execute("SELECT id, status FROM scheduled_uploads WHERE id IN (901, 902)").fetchall())
+        assert st() == {901: "pending_ext", 902: "pending"}  # insert: Chrome normalised, cookie untouched
+        con.execute("UPDATE scheduled_uploads SET status='failed' WHERE id=901")
+        con.execute("UPDATE scheduled_uploads SET status='pending' WHERE id IN (901, 902)")  # a retry, old style
+        con.commit()
+        assert st() == {901: "pending_ext", 902: "pending"}
+        for sid in (901, 902):
+            con.execute("UPDATE scheduled_uploads SET status='running', attempts=attempts+1 WHERE id=?", (sid,))
+        con.commit()
+        assert st() == {901: "pending_ext", 902: "running"}  # the claim is refused only for Chrome
+        assert con.execute("SELECT attempts FROM scheduled_uploads WHERE id=901").fetchone()[0] == 0
+        con.execute("UPDATE scheduled_uploads SET status='cancelled' WHERE id=901")  # other statuses: never blocked
+        con.execute("UPDATE scheduled_uploads SET status='pending' WHERE id=902")
+        con.commit()
+        assert st() == {901: "cancelled", 902: "pending"}
+        con.execute("DELETE FROM scheduled_uploads WHERE id IN (901, 902)")
+        con.commit()
+        assert st() == {}
+    finally:
+        con.close()
+
+
+def test_chrome_rows_never_run_and_never_stay_pending_cookie_rows_untouched(engine, app):
+    _chrome_and_cookie_rows_behave(engine.url.database)
 
 
 # ---------- schema / rollback ----------
 
-def test_v4_database_from_the_p1_build_gets_the_never_running_trigger(tmp_path):
-    """The owner's test copy is v4 from the first P1 build: no trigger. Upgrading it to v5 must add it, or
-    a rollback from that copy can still post a Chrome job through cookies."""
+def test_v4_database_from_the_p1_build_gets_the_chrome_job_guards(tmp_path):
+    """The owner's test copy is v4 from the first P1 build: no trigger. Upgrading it to v5 must add the
+    guards, or a rollback from that copy can still post a Chrome job through cookies (or stall v3.1.0)."""
     db = tmp_path / "v4.db"
     new_init(db)
     con = sqlite3.connect(db)
-    con.execute("DROP TRIGGER tr_chrome_job_never_running")
+    for (name,) in con.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall():
+        con.execute(f"DROP TRIGGER {name}")  # the P1 build had none
     for table, col in (("extension_clients", "chrome_profile_dir"), ("extension_clients", "last_launch_at"),
                        ("extension_jobs", "launched_at")):
         con.execute(f"ALTER TABLE {table} DROP COLUMN {col}")
@@ -136,7 +156,8 @@ def test_v4_database_from_the_p1_build_gets_the_never_running_trigger(tmp_path):
     con.close()
     new_init(db)
     assert q(db, "PRAGMA user_version") == [(5,)]
-    assert q(db, "SELECT name FROM sqlite_master WHERE type='trigger'") == [("tr_chrome_job_never_running",)]
+    assert ("tr_chrome_job_never_running",) in q(db, "SELECT name FROM sqlite_master WHERE type='trigger'")
+    _chrome_and_cookie_rows_behave(db)
 
 
 def test_rollback_v31_a_chrome_row_in_pending_does_not_starve_other_accounts(old_src, home):

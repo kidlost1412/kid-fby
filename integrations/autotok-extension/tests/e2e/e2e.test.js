@@ -58,7 +58,9 @@ test('2. public scheduled post: body carries schedule_time; history shows a nati
   assert.equal(b.parent(job.schedule_id).status, 'succeeded');
 }));
 
-test('3. extension stops mid-upload (pre-authorize): reconcile revokes, definite failure, 0 publish requests', opts, () => withBackend({}, async (b, later) => {
+// Short stale limits only where a stall is the point: the extension's heartbeat is every 40 s, so a short default
+// revoked healthy uploads on a slow run (flaky test 1).
+test('3. extension stops mid-upload (pre-authorize): reconcile revokes, definite failure, 0 publish requests', opts, () => withBackend({ E2E_STALE_AFTER: '8' }, async (b, later) => {
   const { profile, fake, account } = await connect(b, A); track(later, profile, fake);
   let hung; const hungP = new Promise((r) => { hung = r; });
   fake.onPart = async () => { hung(); await new Promise(() => {}); };   // the upload never finishes
@@ -130,7 +132,7 @@ test('6. need_reload (protocol mismatch): the extension never claims', opts, () 
   assert.equal(clients[0].need_reload, true);
 }));
 
-test('7. two accounts, one stalled: the other account still completes', opts, () => withBackend({}, async (b, later) => {
+test('7. two accounts, one stalled: the other account still completes', opts, () => withBackend({ E2E_STALE_AFTER: '20' }, async (b, later) => {
   const a = await connect(b, A); track(later, a.profile, a.fake);
   const c = await connect(b, B); track(later, c.profile, c.fake);
   let hung; const hungP = new Promise((r) => { hung = r; });

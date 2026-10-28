@@ -427,6 +427,8 @@ def _withdraw_newer(s: Session, parent: ScheduledUpload) -> bool:
     conditional UPDATE that authorize races against). False if it may already be publishing (authorized+)."""
     if parent.status in ("pending", "pending_ext"):
         return True
+    if parent.status == "failed" and not parent.publish_uncertain:
+        return True  # the retry ended definitely unsent: the job is not "failed - not posted", it is on TikTok
     if parent.status != "waiting_ext":
         return False
     won = s.exec(update(ExtensionJob).where(
@@ -599,7 +601,8 @@ def _launch_for(job_id: str, user_id: str, now: datetime) -> None:
         s.refresh(client)
         launched_at = now if won else _utc(client.last_launch_at)
         s.exec(update(ExtensionJob).where(ExtensionJob.id == job_id, ExtensionJob.state == "queued",
-                                          ExtensionJob.launched_at.is_(None)).values(launched_at=launched_at))
+                                          ExtensionJob.launched_at.is_(None)).values(launched_at=launched_at,
+                                                                                     note=None))  # stale reason
         s.commit()
     if won:
         ok = launcher(exe, profile)

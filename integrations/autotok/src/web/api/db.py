@@ -144,6 +144,31 @@ def _add_column(conn, table: str, column: str, ddl: str) -> bool:
     return True
 
 
+_CHROME = "(SELECT publisher FROM accounts WHERE id = NEW.account_id) = 'chrome'"
+CHROME_TRIGGERS = {
+    # Rollback safety at the database level, whatever version runs (v3.1.0 claims any 'pending' row):
+    # a Chrome account's job never goes to 'running' (the cookie upload path)...
+    "tr_chrome_job_never_running": "BEFORE UPDATE OF status ON scheduled_uploads "
+                                   f"WHEN NEW.status = 'running' AND {_CHROME} BEGIN SELECT RAISE(IGNORE); END",
+    # ...and never stays 'pending', where v3.1.0 would retry its refused claim forever and block the
+    # other accounts' jobs behind it. pending_ext is waited on by the Chrome publisher.
+    "tr_chrome_job_pending_insert": "AFTER INSERT ON scheduled_uploads "
+                                    f"WHEN NEW.status = 'pending' AND {_CHROME} BEGIN UPDATE scheduled_uploads "
+                                    "SET status = 'pending_ext' WHERE id = NEW.id; END",
+    "tr_chrome_job_pending_update": "AFTER UPDATE OF status ON scheduled_uploads "
+                                    f"WHEN NEW.status = 'pending' AND {_CHROME} BEGIN UPDATE scheduled_uploads "
+                                    "SET status = 'pending_ext' WHERE id = NEW.id; END",
+}
+
+
+def _chrome_triggers(conn) -> None:
+    columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(accounts)")}
+    if "publisher" not in columns or not list(conn.exec_driver_sql("PRAGMA table_info(scheduled_uploads)")):
+        return  # before the v4 step (it runs again at the end of _migrate)
+    for name, body in CHROME_TRIGGERS.items():
+        conn.exec_driver_sql(f"CREATE TRIGGER IF NOT EXISTS {name} {body}")
+
+
 def _migrate(eng: Engine) -> None:
     """Bring databases created by older versions up to date.
 
@@ -153,6 +178,7 @@ def _migrate(eng: Engine) -> None:
     startup on the same database, so the other one may get to a step first."""
     with eng.begin() as conn:
         version = conn.exec_driver_sql("PRAGMA user_version").scalar()
+        _chrome_triggers(conn)  # every start: databases migrated by an earlier build get them too
         if version >= SCHEMA_VERSION:
             return
         if version < 1:
@@ -185,14 +211,6 @@ def _migrate(eng: Engine) -> None:
             # pending_ext/waiting_ext statuses. extension_clients/extension_jobs come from create_all.
             _add_column(conn, "accounts", "publisher", "VARCHAR(16) NOT NULL DEFAULT 'cookies'")
             _add_column(conn, "accounts", "chrome_user_id", "VARCHAR(32)")
-            # Rollback safety at the database level: no version (v3.1.0 included, which claims any 'pending'
-            # row) can move a Chrome account's job to 'running', i.e. into the cookie upload path.
-            if list(conn.exec_driver_sql("PRAGMA table_info(scheduled_uploads)")):
-                conn.exec_driver_sql(
-                    "CREATE TRIGGER IF NOT EXISTS tr_chrome_job_never_running BEFORE UPDATE OF status "
-                    "ON scheduled_uploads WHEN NEW.status = 'running' AND "
-                    "(SELECT publisher FROM accounts WHERE id = NEW.account_id) = 'chrome' "
-                    "BEGIN SELECT RAISE(IGNORE); END")
             if list(conn.exec_driver_sql("PRAGMA table_info(extension_jobs)")):
                 conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ux_extension_jobs_active_account "
                                      "ON extension_jobs (account_id) WHERE state NOT IN "
@@ -203,6 +221,7 @@ def _migrate(eng: Engine) -> None:
             _add_column(conn, "extension_clients", "chrome_profile_dir", "VARCHAR(64)")
             _add_column(conn, "extension_clients", "last_launch_at", "DATETIME")
             _add_column(conn, "extension_jobs", "launched_at", "DATETIME")
+        _chrome_triggers(conn)  # now that accounts.publisher exists
         conn.exec_driver_sql(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
